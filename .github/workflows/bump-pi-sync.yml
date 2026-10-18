@@ -1,0 +1,48 @@
+name: bump-pi-sync
+
+# Keeps PI_SYNC_COMMIT on pi-sync's main: tests the new pin, then opens a pull request.
+# Merging it is the release; nothing here pushes to main.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find pi-sync main
+        id: upstream
+        run: |
+          sha=$(git ls-remote https://github.com/bry-guy/pi-sync refs/heads/main | cut -f1)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ "$sha" = "$(tr -d '[:space:]' < PI_SYNC_COMMIT)" ]; then echo "current=true" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.upstream.outputs.current != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.upstream.outputs.current != 'true'
+        name: Test the new pin
+        run: |
+          echo "${{ steps.upstream.outputs.sha }}" > PI_SYNC_COMMIT
+          npm ci
+          npm test
+      - if: steps.upstream.outputs.current != 'true'
+        name: Open a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          branch="bump/pi-sync-${SHA:0:12}"
+          if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "chore(sync): pin pi-sync ${SHA:0:12}"
+          git push origin "$branch"
+          gh pr create --title "chore(sync): pin pi-sync ${SHA:0:12}" --body "https://github.com/bry-guy/pi-sync/compare/$(git show HEAD~1:PI_SYNC_COMMIT | tr -d '[:space:]')...$SHA"
