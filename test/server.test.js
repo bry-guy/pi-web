@@ -59,13 +59,14 @@ test("removed 1Password endpoints and state leave legacy files untouched", async
   assert.equal(fs.statSync(credential).mode & 0o777, mode);
 });
 
-test("bare synchronization scope errors preserve their HTTP status", async () => {
+test("scope errors from a session command preserve their HTTP status", async () => {
   const { createApp } = await import("../server/index.js");
   const failure = Object.assign(new Error("conversation belongs to a different Git repository"), {
     code: "workspace_mismatch",
     status: 409,
   });
-  const { app } = createApp({ syncCoordinator: { beginMutation: async () => { throw failure; } } });
+  const { app, sup } = createApp({});
+  sup.message = async () => { throw failure; };
   const created = await app.request("http://pi-web.test/api/chats", { method: "POST" });
   assert.equal(created.status, 200);
   const { id } = await created.json();

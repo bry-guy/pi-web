@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadBindings, loadConfig, prepareSessionVisibilityReplacement } from "../config.js";
+import { exportSyncEnvironment, loadBindings, loadConfig, prepareSessionVisibilityReplacement } from "../config.js";
 import { commandInfo, parseSlashCommand } from "../commands.js";
 import { activityFromEntry, activityFromToolResult, normalizeActivity } from "../activity.js";
 import { SubagentActivityStore } from "../subagent-activity.js";
@@ -14,7 +14,8 @@ import { GitHubClient } from "../github.js";
 import { findProjectByWorkspace } from "../lifecycle.js";
 import { gitCredentialEnvironment } from "../git-credentials.js";
 import { resolveProjectEnvironment } from "../project-environment.js";
-import { settleSync } from "../sync/settlement.js";
+import { activePiSyncExtensionPath } from "../pi-sync.js";
+import { ExtensionUiHost } from "../extension-ui.js";
 import { writeLog } from "../logging.js";
 
 function errorDetails(error) {
@@ -89,6 +90,7 @@ async function dirStamp(dir) {
 export class RealSupervisor {
   constructor(hub) {
     this.hub = hub;
+    this.extensionUi = new ExtensionUiHost({ hub, supervisor: this }); // binds dialogs and status for every SDK session
     this.live = new Map();       // sessionId -> attached runtime state
     this.paths = new Map();      // sessionId -> session file path
     this.info = new Map();       // sessionId -> discovered SessionInfo metadata
@@ -96,11 +98,7 @@ export class RealSupervisor {
     this.runtime = null;         // shared ModelRuntime for all attached sessions
     this.runtimePromise = null;   // prevents concurrent runtime initialization
     this.attachPromises = new Map(); // sessionId -> in-flight attach
-    this.syncOperations = new Map();
     this.pendingPrompts = new Map();
-    this.pendingSyncHeads = new Map(); // sessionId -> canonical head to restore on attach
-    this.syncCoordinator = null;
-    this.syncAdapter = null;
     this.preferredPaths = new Map();
     this.sessionCreateTail = Promise.resolve(); // serialize SDK resource setup
     this.models = null;
@@ -142,6 +140,7 @@ export class RealSupervisor {
 
   // Chats this process created or is running stay listed before their first prompt.
   isOpen(id) { return this.live.has(id) || !!this.opened?.has(id); }
+  isLive(id) { return this.live.has(id); }
 
   async listSessions(cwd) {
     const { SessionManager } = await SDK();
@@ -215,17 +214,6 @@ export class RealSupervisor {
   }
 
   async _discover(id) {
-    const boundFile = await this.syncAdapter?.materializedFile?.(id);
-    if (boundFile && !this.live.has(id)) {
-      const { SessionManager } = await SDK();
-      if (!fs.existsSync(boundFile)) throw Object.assign(new Error("The synchronized snapshot is unavailable."), { code: "sync_snapshot_stale" });
-      const manager = SessionManager.open(boundFile);
-      if (manager.getSessionId() !== id) throw Object.assign(new Error("The synchronized snapshot has a different identity."), { code: "sync_identity_mismatch" });
-      this.paths.set(id, boundFile);
-      this.preferredPaths.set(id, boundFile);
-      this.info.set(id, { id, path: boundFile, cwd: manager.getCwd(), name: manager.getSessionName?.() || null });
-      return true;
-    }
     if (this.paths.has(id) || this.info.has(id)) return true;
     const { SessionManager } = await SDK();
     const infos = this._selectSessionInfos(await SessionManager.listAll());
@@ -258,12 +246,13 @@ export class RealSupervisor {
     return model;
   }
 
-  async _createConfiguredSession({ cwd, sessionManager, modelRuntime, model, syncSessionId: _syncSessionId = null, sessionStartEvent = undefined }) {
+  async _createConfiguredSession({ cwd, sessionManager, modelRuntime, model, sessionStartEvent = undefined }) {
     const SDKModule = await SDK();
     const runtime = modelRuntime || await this._modelRuntime();
     try {
       const agentDir = SDKModule.getAgentDir();
-      const syncExtensionPath = await this.syncAdapter?.extensionPath?.() || null;
+      exportSyncEnvironment();
+      const syncExtensionPath = await activePiSyncExtensionPath();
       const extensionPaths = [WEB_SUBAGENT_EXTENSION, ...(syncExtensionPath ? [syncExtensionPath] : [])];
       const resolved = await this.piConfiguration.resolve();
       const configuredPackages = Array.isArray(resolved.settings?.packages) ? resolved.settings.packages : [];
@@ -372,15 +361,7 @@ export class RealSupervisor {
         ...(!hasThinkingLevel ? { thinkingLevel: loadConfig().defaultThinkingLevel } : {}),
         ...(sessionStartEvent ? { sessionStartEvent } : {}),
       });
-      const extensionBindings = this.syncAdapter?.extensionBindings?.(result.session.sessionId) || {
-        mode: "json",
-        onError: error => this.hub.emit(result.session.sessionId, "extension_error", {
-          extensionPath: error.extensionPath,
-          event: error.event,
-          error: error.error,
-        }),
-      };
-      await result.session.bindExtensions(extensionBindings);
+      await result.session.bindExtensions(this.extensionUi.extensionBindings(result.session.sessionId));
       const packageErrors = this.packageSetupError
         ? [{ path: "<pi-packages>", error: this.packageSetupError }]
         : [];
@@ -420,7 +401,6 @@ export class RealSupervisor {
       sessionManager,
       modelRuntime: runtime,
       model,
-      syncSessionId: id,
     }));
     const actualModel = modelRef(session.model);
     const fallback = unavailableModel && actualModel !== unavailableModel;
@@ -430,17 +410,12 @@ export class RealSupervisor {
       ...(fallback ? { requestedModel: unavailableModel, modelFallback: true } : {}),
       ...(!actualModel && unavailableModel ? { requestedModel: unavailableModel, modelUnavailable: true } : {}),
     });
-    // Once per conversation: in-place sync catch-ups reattach often.
+    // Once per conversation: in-place catch-ups reattach often.
     if (unavailableModel && !(this.modelFallbackNoticed ||= new Set()).has(session.sessionId)) {
       this.modelFallbackNoticed.add(session.sessionId);
       const wanted = String(unavailableModel);
       const using = actualModel || "no model";
       this.hub?.emit(session.sessionId, "extension_ui_notify", { message: `${wanted} is not available here; using ${using}.`, level: "info" });
-    }
-    const pendingHead = this.pendingSyncHeads.get(session.sessionId);
-    if (pendingHead) {
-      this.pendingSyncHeads.delete(session.sessionId);
-      await session.navigateTree(pendingHead, { summarize: false });
     }
     return this.live.get(session.sessionId);
   }
@@ -590,17 +565,11 @@ export class RealSupervisor {
           this._endTurnWithError(id, st, error);
           break;
         }
-        if (st.turnEnded) {
-          if (!st.session?.isStreaming) settleSync(this.syncCoordinator, id);
-          break;
-        }
+        if (st.turnEnded) break;
         const reason = st.aborted ? "stopped" : "done";
         st.aborted = false;
         st.turnEnded = true;
         hub.emit(id, "turn_end", { turnId: st.turnId, reason });
-        // AgentEvent delivery is synchronous, but synchronization deliberately
-        // runs after the settled event so the complete JSONL file is flushed.
-        if (!st.session?.isStreaming) settleSync(this.syncCoordinator, id);
         break;
       }
       case "session_info_changed":
@@ -614,14 +583,6 @@ export class RealSupervisor {
         break;
       default: break;
     }
-  }
-
-  setSyncCoordinator(coordinator) {
-    this.syncCoordinator = coordinator || null;
-  }
-
-  setSyncAdapter(adapter) {
-    this.syncAdapter = adapter || null;
   }
 
   _registerLiveSession(session, cwd, extra = {}) {
@@ -664,59 +625,9 @@ export class RealSupervisor {
     }));
   }
 
-  async syncSessionInfo(id) {
-    if (!await this._discover(id)) return null;
-    const live = this.live.get(id);
-    const file = live?.session?.sessionFile || this.paths.get(id) || this.info.get(id)?.path;
-    if (!file) return null;
-    const manager = live?.session?.sessionManager || this._managerFor(id);
-    const info = this.info.get(id) || {};
-    return {
-      id,
-      file,
-      cwd: this._boundCwd(id, live?.cwd || manager.getCwd?.()),
-      headEntryId: manager.getLeafId?.() || "",
-      title: live?.session?.sessionName || manager.getSessionName?.() || info.name || "",
-      parentSessionId: info.parentSessionId || null,
-    };
-  }
-
   async sessionFile(id) {
-    const info = await this.syncSessionInfo(id);
-    return info?.file || null;
-  }
-
-  sessionIdFromFile(file) { return this._idFromPath(file); }
-
-  async prepareSyncSnapshot(id, envelope, materialize) {
-    if (this.isStreaming(id)) throw Object.assign(new Error("Stop the current response before synchronizing this conversation."), { code: "session_streaming" });
-    if (this.isCompacting(id)) throw Object.assign(new Error("Wait for compaction to finish before synchronizing this conversation."), { code: "session_compacting" });
-    const info = await this.syncSessionInfo(id);
-    if (!info) throw Object.assign(new Error("No such session."), { code: "no_such_session" });
-    const live = this.live.get(id);
-    if (live) {
-      await this._disposeLiveState(live, "sync-materialize");
-      this.live.delete(id);
-    }
-    const parentSessionPath = envelope.parentSessionId ? await this.sessionFile(envelope.parentSessionId) : undefined;
-    await materialize(info.file, envelope, { cwd: info.cwd || process.cwd(), ...(parentSessionPath ? { parentSessionPath } : {}) });
-    this.paths.set(id, info.file);
-    this.info.set(id, {
-      ...(this.info.get(id) || {}),
-      id,
-      path: info.file,
-      cwd: info.cwd,
-      name: envelope.title || null,
-      parentSessionId: envelope.parentSessionId || null,
-    });
-    this.pendingSyncHeads.set(id, envelope.headEntryId);
-    return { ...info, title: envelope.title || null, parentSessionId: envelope.parentSessionId || null };
-  }
-
-  /** The SDK's session directory for a working directory; creating the manager writes nothing until a message. */
-  async sessionDirFor(cwd) {
-    const { SessionManager } = await SDK();
-    return SessionManager.create(cwd).getSessionDir();
+    if (!await this._discover(id)) return null;
+    return this.live.get(id)?.session?.sessionFile || this.paths.get(id) || this.info.get(id)?.path || null;
   }
 
   async createSession({ cwd, name }) {
@@ -730,20 +641,12 @@ export class RealSupervisor {
       id, path: file, cwd, name: name || null, parentSessionId: null,
     });
     (this.opened ??= new Set()).add(id);
-    void this.syncCoordinator?.sessionCreated?.(id);
-    void this.syncAdapter?.sessionCreated?.(id);
     return { id };
   }
 
-  async message(id, text, mode, images = [], clientMessageId = null, snapshotToken = null) {
-    let st = await this._attachById(id);
-    if (this.pendingPrompts.has(id) && !st.session.isStreaming) throw Object.assign(new Error("The conversation is busy."), { code: "sync_busy" });
-    if (!["steer", "followUp"].includes(mode) && !String(text || "").startsWith("/")) {
-      const sync = await this.syncAdapter?.beforePrompt?.(id);
-      if (sync?.sessionId) id = sync.sessionId;
-      if (sync?.switched) st = await this._attachById(id);
-      await this.syncAdapter?.assertSnapshot?.(id, snapshotToken, st.session.sessionFile);
-    }
+  async message(id, text, mode, images = [], clientMessageId = null) {
+    const st = await this._attachById(id);
+    if (this.pendingPrompts.has(id) && !st.session.isStreaming) throw Object.assign(new Error("The conversation is busy."), { code: "session_busy" });
     if (!isUsableModel(st.session.model)) {
       throw Object.assign(new Error("model_required"), { code: "model_required" });
     }
@@ -826,9 +729,8 @@ export class RealSupervisor {
     return { url: gist.html_url };
   }
 
-  async command(id, text, mode, snapshotToken = null) {
-    const commandText = this.syncAdapter?.commandText?.(text) || text;
-    const parsed = parseSlashCommand(commandText);
+  async command(id, text, mode) {
+    const parsed = parseSlashCommand(text);
     if (!parsed) throw Object.assign(new Error("invalid_slash_command"), { code: "invalid_slash_command" });
     const arg = commandArgument(parsed.args);
 
@@ -904,10 +806,9 @@ export class RealSupervisor {
     }
 
     const st = await this._attachById(id);
-    if (this.pendingPrompts.has(id) && !st.session.isStreaming) throw Object.assign(new Error("The conversation is busy."), { code: "sync_busy" });
+    if (this.pendingPrompts.has(id) && !st.session.isStreaming) throw Object.assign(new Error("The conversation is busy."), { code: "session_busy" });
     const extensionCommand = st.session.extensionRunner?.getCommand?.(parsed.name);
     if (extensionCommand) {
-      if (parsed.name !== "sync") await this.syncAdapter?.assertSnapshot?.(id, snapshotToken, st.session.sessionFile);
       const result = await extensionCommand.handler(parsed.args, st.session.extensionRunner.createCommandContext());
       return { action: "handled", name: parsed.name, ...(result?.outcome ? result : {}) };
     }
@@ -917,12 +818,7 @@ export class RealSupervisor {
     const options = st.session.isStreaming
       ? { source: "rpc", streamingBehavior: mode === "followUp" ? "followUp" : "steer" }
       : { source: "rpc" };
-    if (this.syncAdapter) {
-      await this.syncAdapter.assertSnapshot(id, snapshotToken, st.session.sessionFile);
-      this._startPrompt(id, () => st.session.prompt(parsed.text, options), error => this._endTurnWithError(id, st, error));
-    } else {
-      await st.session.prompt(parsed.text, options);
-    }
+    this._startPrompt(id, () => st.session.prompt(parsed.text, options), error => this._endTurnWithError(id, st, error));
     return { action: "handled", name: parsed.name };
   }
 
@@ -933,37 +829,6 @@ export class RealSupervisor {
       if (remaining) this.pendingPrompts.set(id, remaining);
       else this.pendingPrompts.delete(id);
     });
-  }
-
-  async withSyncOperation(id, task, kind = "exclusive") {
-    // Background sync checks finish in about a second; wait them out instead of bouncing the user's request.
-    for (let waited = 0; this.syncOperations.has(id) && waited < 15_000; waited += 100) await new Promise(resolve => setTimeout(resolve, 100));
-    if (this.syncOperations.has(id) || (this.pendingPrompts.has(id) && !this.isStreaming(id))) throw Object.assign(new Error("The conversation is busy."), { code: "sync_busy" });
-    const operation = { kind };
-    this.syncOperations.set(id, operation);
-    try { return await task(); }
-    finally { if (this.syncOperations.get(id) === operation) this.syncOperations.delete(id); }
-  }
-
-  async streamingControlDuringBang(id, text, mode, images, clientMessageId, snapshotToken) {
-    const operation = this.syncOperations.get(id);
-    const st = this.live.get(id);
-    const busy = () => Object.assign(new Error("The conversation is busy."), { code: "sync_busy" });
-    if (operation?.kind !== "bang" || !st?.session.isStreaming) throw busy();
-    await this.syncAdapter.assertSnapshot(id, snapshotToken, st.session.sessionFile);
-    if (this.syncOperations.get(id) !== operation || this.live.get(id) !== st || !st.session.isStreaming) throw busy();
-    if (!isUsableModel(st.session.model)) throw Object.assign(new Error("model_required"), { code: "model_required" });
-    if (clientMessageId) st.pendingMessages.push({ clientMessageId, text });
-    try { return await (mode === "steer" ? st.session.steer(text, images) : st.session.followUp(text, images)); }
-    catch (error) {
-      if (clientMessageId) st.pendingMessages = st.pendingMessages.filter(item => item.clientMessageId !== clientMessageId);
-      throw error;
-    }
-  }
-
-  async trySyncOperation(id, task) {
-    if (this.syncOperations.has(id) || this.pendingPrompts.has(id) || this.isStreaming(id) || this.isCompacting(id)) return { outcome: "busy" };
-    return this.withSyncOperation(id, task);
   }
 
   async waitForIdle(id) {
@@ -989,7 +854,7 @@ export class RealSupervisor {
     const targetCwd = visibility.workspacePath || fallbackCwd;
     const existingTarget = this.live.get(targetId);
     if (existingTarget && existingTarget !== current) {
-      if (this.pendingPrompts.has(targetId) || this.syncOperations.has(targetId)) throw Object.assign(new Error("The target session is busy."), { code: "sync_busy" });
+      if (this.pendingPrompts.has(targetId)) throw Object.assign(new Error("The target session is busy."), { code: "session_busy" });
       if (existingTarget.session.isStreaming) throw Object.assign(new Error("The target session is still running."), { code: "session_streaming" });
     }
 
@@ -1043,7 +908,6 @@ export class RealSupervisor {
         sessionManager: targetManager,
         modelRuntime: runtime,
         model: undefined,
-        syncSessionId: targetId,
         ...(targetFile ? { sessionStartEvent: {
           type: "session_start",
           reason,
@@ -1217,11 +1081,10 @@ export class RealSupervisor {
     if (!st) return;
     st.aborted = true;
     await st.session.abort();
-    if (!st.session?.isStreaming) await this.syncCoordinator?.agentSettled?.(id);
   }
 
   async _disposeLiveState(st, reason = "quit", targetSessionFile) {
-    this.syncAdapter?.cancelSession?.(st.session.sessionId);
+    this.extensionUi.cancelSession(st.session.sessionId);
     const shutdown = Promise.resolve()
       .then(() => st.session.extensionRunner?.emit?.({ type: "session_shutdown", reason, ...(targetSessionFile ? { targetSessionFile } : {}) }))
       .catch(() => {});
@@ -1276,7 +1139,8 @@ export class RealSupervisor {
       const agentDir = SDKModule.getAgentDir();
       await this.piConfiguration.resolve();
       const { settingsManager } = await this.piConfiguration.createSettingsManager(cwd, agentDir, SDKModule.SettingsManager, { loadPackages: true });
-      const syncExtensionPath = await this.syncAdapter?.extensionPath?.() || null;
+      exportSyncEnvironment();
+      const syncExtensionPath = await activePiSyncExtensionPath();
       await new SDKModule.DefaultResourceLoader({ cwd, agentDir, settingsManager, additionalExtensionPaths: [WEB_SUBAGENT_EXTENSION, ...(syncExtensionPath ? [syncExtensionPath] : [])] }).reload();
       console.log(`pi-ez-web: prewarmed in ${Math.round(performance.now() - started)}ms`);
     } catch (error) {
@@ -1525,8 +1389,7 @@ export class RealSupervisor {
   }
 
   async setName(id, name) {
-    const stickyName = await this.syncAdapter?.stickyName?.(id);
-    const normalized = stickyName === undefined ? String(name || "").trim() : stickyName;
+    const normalized = String(name || "").trim();
     const st = this.live.get(id);
     if (st) {
       st.session.setSessionName(normalized);
@@ -1557,7 +1420,7 @@ export class RealSupervisor {
     if (entry && !entry.parentId) sm.resetLeaf();
     const runtime = await this._modelRuntime();
     const { session } = await this._withSessionCreateLock(() =>
-      this._createConfiguredSession({ cwd, sessionManager: sm, modelRuntime: runtime, syncSessionId: null }),
+      this._createConfiguredSession({ cwd, sessionManager: sm, modelRuntime: runtime }),
     );
     if (entry?.parentId) await session.navigateTree(entry.parentId);
     if (name) session.setSessionName(name);
@@ -1565,8 +1428,6 @@ export class RealSupervisor {
     this.paths.set(id, session.sessionFile);
     this.info.set(id, { id, path: session.sessionFile, cwd, parentSessionId: parentId });
     this._registerLiveSession(session, cwd, { parentSessionId: parentId });
-    void this.syncCoordinator?.sessionCreated?.(id);
-    void this.syncAdapter?.sessionCreated?.(id);
     return { id };
   }
 

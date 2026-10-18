@@ -7,24 +7,6 @@ const JH = { "content-type": "application/json" };
 export const BASE = new URL(".", document.baseURI).pathname;
 const withBase = url => typeof url === "string" && url.startsWith("/") ? BASE + url.slice(1) : url;
 const fetch = (url, init) => globalThis.fetch(withBase(url), init);
-const syncRefreshes = new Map();
-
-function requestSyncRefresh(id, operationId = null) {
-  const existing = syncRefreshes.get(id);
-  if (existing) return existing;
-  const request = fetch(`/api/sessions/${encodeURIComponent(id)}/sync/refresh`, {
-    method: "POST",
-    headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) },
-    body: JSON.stringify(operationId ? { operationId } : {}),
-  }).then(j);
-  syncRefreshes.set(id, request);
-  request.then(
-    () => { if (syncRefreshes.get(id) === request) syncRefreshes.delete(id); },
-    () => { if (syncRefreshes.get(id) === request) syncRefreshes.delete(id); },
-  );
-  return request;
-}
-
 export function formatDuration(durationMs) {
   return durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`;
 }
@@ -68,10 +50,6 @@ export const api = {
   authInput: (id, promptId, value) => fetch(`/api/auth-flows/${encodeURIComponent(id)}/input`, { method: "POST", headers: JH, body: JSON.stringify({ promptId, value }) }).then(j),
   authCancel: id => fetch(`/api/auth-flows/${encodeURIComponent(id)}`, { method: "DELETE" }).then(j),
   providerLogout: providerId => fetch(`/api/providers/${encodeURIComponent(providerId)}/logout`, { method: "POST" }).then(j),
-  syncSession: (id, operationId = null) => fetch(`/api/sessions/${encodeURIComponent(id)}/sync`, { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify(operationId ? { operationId } : {}) }).then(j),
-  refreshSyncSession: requestSyncRefresh,
-  checkSyncSession: id => fetch(`/api/sessions/${encodeURIComponent(id)}/sync/check`, { method: "POST", headers: JH, body: JSON.stringify({}) }).then(j),
-  syncStatus: id => fetch(`/api/sessions/${encodeURIComponent(id)}/sync`).then(j),
   fetchProject: (id, operationId = null, sessionId = null) => fetch(`/api/projects/${encodeURIComponent(id)}/fetch`, { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify({ ...(operationId ? { operationId } : {}), ...(sessionId ? { sessionId } : {}) }) }).then(j),
   newChat: () => fetch("/api/chats", { method: "POST" }).then(j),
   newProject: value => {
@@ -113,17 +91,17 @@ export const api = {
   },
   transcript: (id) => fetch(`/api/sessions/${id}/transcript`).then(j),
   meta: (id) => fetch(`/api/sessions/${id}/meta`).then(j),
-  message: (id, text, mode = "prompt", images = [], clientMessageId = null, snapshotToken) => fetch(`/api/sessions/${id}/message`, {
-    method: "POST", headers: JH, body: JSON.stringify({ text, mode, images, ...(clientMessageId ? { clientMessageId } : {}), ...(snapshotToken !== undefined ? { snapshotToken } : {}) }),
+  message: (id, text, mode = "prompt", images = [], clientMessageId = null) => fetch(`/api/sessions/${id}/message`, {
+    method: "POST", headers: JH, body: JSON.stringify({ text, mode, images, ...(clientMessageId ? { clientMessageId } : {}) }),
   }).then(j),
   stop: (id) => fetch(`/api/sessions/${id}/stop`, { method: "POST" }).then(j),
-  bang: (id, cmd, snapshotToken) => fetch(`/api/sessions/${id}/bang`, { method: "POST", headers: JH, body: JSON.stringify({ cmd, ...(snapshotToken !== undefined ? { snapshotToken } : {}) }) }).then(j),
+  bang: (id, cmd) => fetch(`/api/sessions/${id}/bang`, { method: "POST", headers: JH, body: JSON.stringify({ cmd }) }).then(j),
   setModel: (id, model) => fetch(`/api/sessions/${id}/model`, { method: "POST", headers: JH, body: JSON.stringify({ model }) }).then(j),
   context: id => fetch(`/api/sessions/${encodeURIComponent(id)}/context`).then(j),
   thinking: id => fetch(`/api/sessions/${encodeURIComponent(id)}/thinking`).then(j),
   setThinking: (id, level) => fetch(`/api/sessions/${encodeURIComponent(id)}/thinking`, { method: "POST", headers: JH, body: JSON.stringify({ level }) }).then(j),
   commands: id => fetch(`/api/sessions/${encodeURIComponent(id)}/commands`).then(j),
-  command: (id, text, mode = "prompt", snapshotToken) => fetch(`/api/sessions/${encodeURIComponent(id)}/command`, { method: "POST", headers: JH, body: JSON.stringify({ text, mode, ...(snapshotToken !== undefined ? { snapshotToken } : {}) }) }).then(j),
+  command: (id, text, mode = "prompt") => fetch(`/api/sessions/${encodeURIComponent(id)}/command`, { method: "POST", headers: JH, body: JSON.stringify({ text, mode }) }).then(j),
   extensionUiResponse: (sessionId, requestId, body) => fetch(`/api/sessions/${encodeURIComponent(sessionId)}/extension-ui/${encodeURIComponent(requestId)}`, { method: "POST", headers: JH, body: JSON.stringify(body || {}) }).then(j),
   extensionUiCancel: (sessionId, requestId) => fetch(`/api/sessions/${encodeURIComponent(sessionId)}/extension-ui/${encodeURIComponent(requestId)}`, { method: "DELETE" }).then(j),
   exportSession: (id, format = "html") => `/api/sessions/${encodeURIComponent(id)}/export?format=${encodeURIComponent(format)}`,
@@ -248,8 +226,7 @@ async function fetchTranscriptWithRetry(id, delays = [300, 900, 2000]) {
   for (let attempt = 0; ; attempt++) {
     try { return await api.transcript(id); }
     catch (err) {
-      const staleSnapshot = err.status === 409 && err.error === "sync_snapshot_stale";
-      if ((err.error && !staleSnapshot) || attempt >= delays.length) throw err;
+      if (err.error || attempt >= delays.length) throw err;
       await sleep(delays[attempt]);
     }
   }
@@ -274,7 +251,6 @@ export async function openTranscript(id, { scrollToLatest = true, operation = nu
     }
     store.state.transcripts[id] = {
       records,
-      snapshotToken: snap.snapshotToken ?? null,
       streaming: !!snap.streaming,
       compacting: !!snap.compacting,
       seq: snap.seq ?? -1,
@@ -305,9 +281,6 @@ let recoveryTimer = null;
 let recoveryAttempt = 0;
 let recoveryInFlight = false;
 let reloadIssued = false;
-const pendingSessionSwitches = new Map();
-let syncAutoTask = null;
-let syncAutoPending = false;
 
 function stopRecovery() {
   if (recoveryTimer) clearTimeout(recoveryTimer);
@@ -338,7 +311,6 @@ async function recoverConnection() {
     // Same guard as the 3.5s refresh timer: don't rewrite state under an open picker or confirm.
     if (!store.state.sessionPicker && !store.state.confirm) await refreshState();
     stopRecovery();
-    void checkActiveSync();
   } catch {
     recoveryAttempt += 1;
     const delay = Math.min(10000, 500 * (2 ** Math.min(recoveryAttempt, 4)));
@@ -362,111 +334,6 @@ function viewingSession(id) {
   return !!id && store.state.view === "chat" && store.activeKey() === id;
 }
 
-// pi-sync catches up in place (same session, same file), so a draft survives it and only
-// switching to a different session must wait for the draft to be finished or cleared.
-function canCatchUpSession(id, { allowDraft = false } = {}) {
-  const transcript = store.transcript(id);
-  return viewingSession(id)
-    && globalThis.document?.visibilityState === "visible"
-    && globalThis.navigator?.onLine !== false && !store.state.offline
-    && !transcript.streaming && !transcript.compacting && (allowDraft || !store.hasDraft(id));
-}
-
-function showCatchUpNotice(id) {
-  const notice = store.state.commandNotice;
-  if (notice?.sessionId === id && notice.title === "Pi Sync") return;
-  store.set({ commandNotice: { sessionId: id, title: "Pi Sync", message: "A replacement is ready in another tab. Finish or clear this draft to catch up." } });
-}
-
-function clearCatchUpNotice(id) {
-  const notice = store.state.commandNotice;
-  if (notice?.sessionId === id && notice.title === "Pi Sync") store.set({ commandNotice: null });
-}
-
-async function openSwitchedSession(sourceId, targetId) {
-  const allowDraft = targetId === sourceId;
-  if (!canCatchUpSession(sourceId, { allowDraft })) return false;
-  const { selectSessionById } = await import("./shell.js");
-  if (!canCatchUpSession(sourceId, { allowDraft })) return false;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    await refreshState();
-    if (!canCatchUpSession(sourceId, { allowDraft })) return false;
-    if (targetId === sourceId) {
-      await openTranscript(sourceId, { scrollToLatest: false });
-      return canCatchUpSession(sourceId, { allowDraft });
-    }
-    if (selectSessionById(targetId)) return true;
-  }
-  throw new Error("The synchronized conversation is not available locally.");
-}
-
-function canCheckActiveSync(id) {
-  return !!findSessionInState(store.state, id)?.synchronized && canCatchUpSession(id, { allowDraft: true });
-}
-
-export async function checkActiveSync() {
-  const id = store.activeKey();
-  if (!id || !viewingSession(id)) return;
-  if (syncAutoTask) {
-    syncAutoPending = true;
-    await syncAutoTask;
-    return;
-  }
-
-  const targetId = pendingSessionSwitches.get(id);
-  if (targetId !== undefined && !canCatchUpSession(id, { allowDraft: targetId === id })) {
-    // A same-session catch-up only waits for streaming or visibility; there is nothing for the user to do.
-    if (targetId !== id) showCatchUpNotice(id);
-    return;
-  }
-  if (targetId === undefined && !canCheckActiveSync(id)) return;
-
-  const task = (async () => {
-    if (targetId !== undefined) {
-      try {
-        const opened = await openSwitchedSession(id, targetId);
-        if (opened && pendingSessionSwitches.get(id) === targetId) {
-          pendingSessionSwitches.delete(id);
-          clearCatchUpNotice(id);
-        }
-      } catch (error) {
-        if (viewingSession(id)) store.setError(`Could not open the synchronized conversation: ${error.message || error}`);
-      }
-      return;
-    }
-    try {
-      const result = await api.checkSyncSession(id);
-      if (!canCatchUpSession(id, { allowDraft: true })) return;
-      if (result.outcome === "refreshed" && result.sessionId && result.sessionId !== id) {
-        pendingSessionSwitches.set(id, result.sessionId);
-        const opened = await openSwitchedSession(id, result.sessionId);
-        if (opened && pendingSessionSwitches.get(id) === result.sessionId) pendingSessionSwitches.delete(id);
-        return;
-      }
-      const tokenChanged = typeof result.snapshotToken === "string"
-        && result.snapshotToken !== store.transcript(id).snapshotToken;
-      if (result.outcome !== "refreshed" && !tokenChanged) return;
-      await openTranscript(id, { scrollToLatest: false });
-      if (!viewingSession(id)) return;
-      await refreshState();
-    } catch (error) {
-      if (viewingSession(id)) store.setError(`Could not check synchronized conversation: ${error.message || error}`);
-    }
-  })();
-  syncAutoTask = task;
-  try { await task; }
-  finally {
-    if (syncAutoTask === task) syncAutoTask = null;
-    if (syncAutoPending) {
-      syncAutoPending = false;
-      queueMicrotask(() => void checkActiveSync());
-    }
-  }
-}
-
-// Re-check when a draft is cleared (e.g. after a pending switch); not on every keystroke.
-store.subscribe(what => { if (what === "draft" && !store.hasDraft(store.activeKey())) void checkActiveSync(); });
-
 export function resumeConnection() {
   if (globalThis.navigator?.onLine === false) {
     store.set({ offline: true, reconnecting: false });
@@ -474,7 +341,6 @@ export function resumeConnection() {
   }
   store.set({ offline: false });
   connectSSE();
-  void checkActiveSync();
   void recoverConnection();
 }
 
@@ -487,7 +353,6 @@ export function connectSSE() {
       recoveryTimer = null;
       void recoverConnection();
     }
-    void checkActiveSync();
   };
   es.onmessage = (m) => {
     let evt;
@@ -517,9 +382,15 @@ function byId(records, id) { return records.find(r => r.id === id); }
 // Event families that never touch transcript sequence state; true means handled.
 function applyUiEvent(evt) {
   if (evt.type === "session_switched" && evt.toSessionId) {
-    if (!viewingSession(evt.sessionId)) return true;
-    pendingSessionSwitches.set(evt.sessionId, evt.toSessionId);
-    void checkActiveSync();
+    // pi-sync catches up in place: the same id reloads its transcript, a different id selects the replacement.
+    if (evt.toSessionId === evt.sessionId) {
+      void openTranscript(evt.sessionId, { scrollToLatest: false });
+      void refreshState().catch(err => store.setError(`Could not refresh state: ${err.message || err}`));
+    } else if (viewingSession(evt.sessionId)) {
+      void refreshState()
+        .then(async () => { if (viewingSession(evt.sessionId)) (await import("./shell.js")).selectSessionById(evt.toSessionId); })
+        .catch(err => store.setError(`Could not refresh state: ${err.message || err}`));
+    }
     return true;
   }
   if (evt.type === "extension_ui_request") {
@@ -716,7 +587,6 @@ function applyTranscriptEvent(evt, t, replay) {
     case "session_forked":
     case "session_meta":
     case "session_merged":
-    case "sync_state":
     case "git_merge":
     case "git_branch_deleted":
       refreshState().catch(err => store.setError(`Could not refresh state: ${err.message || err}`));

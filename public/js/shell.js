@@ -1,4 +1,4 @@
-import { api, checkActiveSync, openTranscript, refreshState, transcriptLoading } from "./api.js";
+import { api, openTranscript, refreshState, transcriptLoading } from "./api.js";
 import { activeOperations, beginOperation, completeOperation, operationForScope, operationHint } from "./operations.js";
 import { setHTML, store } from "./store.js";
 
@@ -90,7 +90,6 @@ export function selectSession(projectId, sessionId, { showOperation = false } = 
     })
     : null;
   openTranscript(sessionId, { operation });
-  void checkActiveSync();
 }
 export function selectSessionById(sessionId, options = {}) {
   for (const project of store.state.projects) {
@@ -123,7 +122,6 @@ export function selectChat(chatId) {
   saveActiveSession({ kind: "chat", id: chatId });
   store.markRead(chatId);
   openTranscript(chatId);
-  void checkActiveSync();
 }
 
 // On reload, open the saved conversation before /api/state returns so its
@@ -170,7 +168,6 @@ export async function newProjectSession(projectId) {
 let closeOperationInFlight = false;
 const closeErrorMessage = error => ({
   session_streaming: "Stop the current response before closing this conversation.",
-  sync_lease_uncertain: "The synchronized lease could not be verified. Try again after the service recovers.",
 }[error?.error] || error?.detail || error?.message || error?.error || "Could not close this conversation.");
 
 export async function closeConversation(id, kind = "session") {
@@ -476,7 +473,7 @@ class PiHeader extends HTMLElement {
     const title = s.view === "settings" ? "Settings"
       : chat ? chat.title : node ? node.title : (s.chatId ? "New chat" : (p ? p.name : "Chat"));
     const activeSession = node || chat;
-    const syncInfo = syncSummary(activeSession, activeSession?.id && store.state.extensionStatuses[activeSession.id]?.["pi-sync"]);
+    const syncInfo = syncSummary(activeSession?.id && store.state.extensionStatuses[activeSession.id]?.["pi-sync"]);
     const syncLine = syncInfo ? `<button class="sync-label ${syncInfo.tone}" data-act="sync-detail" data-detail="${esc(syncInfo.full)}" title="${esc(syncInfo.full)}" aria-label="${esc(syncInfo.full)}">${esc(`${syncInfo.state}: ${syncInfo.message}`)}</button>` : "";
     const workspace = inProject ? this.sessionContext() : null;
     const branch = workspace ? this.contextLabel(workspace) : null;
@@ -525,21 +522,12 @@ class PiHeader extends HTMLElement {
 
 }
 
-// The header's one sync label: "<state>: <message>", with everything known in `full`.
-export function syncSummary(session, extension = "") {
-  if (!session) return null;
-  const detail = String(extension || "").replace(/^sync:\s*/, "");
-  const withDetail = base => [base, detail && `Pi extension: ${detail}`].filter(Boolean).join(". ");
-  if (session.syncState === "error") {
-    const error = session.syncError?.message;
-    return error || detail ? { tone: "error", state: "Sync error", message: error || detail, full: withDetail(error || "Sync failed") } : null;
-  }
-  if (session.syncState === "in_use") {
-    const holder = session.leaseHolder || "another device";
-    return { tone: "busy", state: "In use", message: holder, full: withDetail(`In use by ${holder}${session.leaseExpiresAt ? ` until ${session.leaseExpiresAt}` : ""}`) };
-  }
-  if (session.synchronized) return { tone: "ok", state: "Synced", message: detail || "available", full: withDetail("This conversation is synchronized") };
-  return detail ? { tone: "", state: "Sync", message: detail, full: detail } : null;
+// The header's sync label comes from the pi-sync extension's status text ("sync: up to date").
+export function syncSummary(extensionText = "") {
+  const detail = String(extensionText || "").replace(/^sync:\s*/, "");
+  if (!detail) return null;
+  const tone = /in use/.test(detail) ? "busy" : /offline|missing|taken over|failed|error|unavailable/.test(detail) ? "error" : "";
+  return { tone, state: "Sync", message: detail, full: detail };
 }
 
 // Plain-words Git state shared by the header and the Files panel.

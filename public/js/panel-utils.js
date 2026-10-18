@@ -24,7 +24,6 @@ export const gitErrorMessage = error => ({
   detached_head: "This workspace is detached and has no branch to push.",
   branch_delete_failed: "Git could not delete this branch.",
   sessions_active: "Stop active sessions before changing this branch.",
-  sync_workspace_in_use: "A synchronized conversation is using this branch.",
   merge_rehome_failed: "The merge landed, but sessions could not return to the primary branch.",
   merge_cleanup_failed: "The merge landed, but the source branch could not be removed.",
 }[error?.error] || error?.detail || error?.message || error?.error || "Git operation failed.");

@@ -31,11 +31,6 @@ const routesBeforeA2 = [
   "POST /sessions/:id/branch-context",
   "GET /projects/:id/files",
   "GET /projects/:id/file",
-  "GET /sessions/:id/sync",
-  "POST /sessions/:id/sync",
-  "POST /sessions/:id/sync/refresh",
-  "POST /sessions/:id/sync/check",
-  "POST /sessions/:id/enroll",
   "GET /sessions/:id/commands",
   "POST /sessions/:id/command",
   "GET /sessions/:id/export",
@@ -64,14 +59,14 @@ const routesBeforeA2 = [
 
 test("buildApi route inventory removes only the retired legacy merge route", () => {
   const retiredRoute = "POST /sessions/:id/merge";
-  assert.equal(routesBeforeA2.length, 57);
+  assert.equal(routesBeforeA2.length, 52);
   assert.equal(routesBeforeA2.filter(route => route === retiredRoute).length, 1);
 
-  const api = buildApi({}, { syncCoordinator: { state: () => ({}) } });
+  const api = buildApi({});
   const routesAfterA2 = api.routes.map(({ method, path }) => `${method} ${path}`);
   const addedSince = ["GET /projects/:id/synced-sessions", "POST /pi/reload", "GET /sessions/:id/history"];
   assert.deepEqual(routesAfterA2.filter(route => !addedSince.includes(route)), routesBeforeA2.filter(route => route !== retiredRoute));
-  assert.equal(routesAfterA2.length, 56 + addedSince.length);
+  assert.equal(routesAfterA2.length, 51 + addedSince.length);
 });
 
 test("POST /pi/reload reloads Pi configuration and refuses while a turn is running", async () => {
@@ -80,7 +75,7 @@ test("POST /pi/reload reloads Pi configuration and refuses while a turn is runni
     if (busy) throw Object.assign(new Error("pi_configuration_busy"), { code: "pi_configuration_busy" });
     return { profile: { status: "none" } };
   } };
-  const api = buildApi(sup, { syncCoordinator: { state: () => ({}) } });
+  const api = buildApi(sup);
   const refused = await api.request("/pi/reload", { method: "POST" });
   assert.equal(refused.status, 409);
   assert.equal((await refused.json()).error, "pi_configuration_busy");

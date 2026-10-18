@@ -60,6 +60,8 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
   const serviceAccountName = grant.serviceAccount || null;
   const env = [
     ["PORT", String(WORKSPACE_PORT)], ["PI_WEB_MODE", "real"],
+    // Shared conversations name the machine that last wrote them; a worker is "web-<project>" in that list.
+    ["PI_SYNC_DEVICE_LABEL", `web-${name}`],
     ["HOME", HOME], ["XDG_CONFIG_HOME", `${HOME}/.config`], ["XDG_DATA_HOME", `${HOME}/.local/share`], ["XDG_CACHE_HOME", `${HOME}/.cache`],
     ["PI_WEB_HOME", `${DATA}/pi-ez-web`], ["PI_CODING_AGENT_DIR", `${DATA}/pi-ez-agent`], ["PI_WEB_REPOS_ROOT", `${DATA}/repos`],
     ["PI_WEB_GITHUB_AUTH_FILE", `${GITHUB_DIR}/github-auth.json`],

@@ -1,5 +1,8 @@
+import { exportSyncEnvironment } from "../config.js";
+import { piSyncState } from "../pi-sync.js";
+
 export function register(api, deps) {
-  const { loadConfig, normalizeHookSets, normalizePiConfig, normalizeSyncConfig, normalizeThinkingLevel, reposRoot, saveConfig, syncConfig, normalizeGitHubOwner, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID, createOperationReporter, operationRequestId, err, repositorySourceState, settingsState, sync, github, sup, syncAdapter } = deps;
+  const { loadConfig, normalizeHookSets, normalizePiConfig, normalizeSyncConfig, normalizeThinkingLevel, reposRoot, saveConfig, syncConfig, syncEnvironmentOverrides, normalizeGitHubOwner, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID, createOperationReporter, operationRequestId, err, repositorySourceState, settingsState, github, sup } = deps;
 
 
   // ---------- settings ----------
@@ -41,16 +44,15 @@ export function register(api, deps) {
     }
     if (body.sync !== undefined) {
       if (!body.sync || typeof body.sync !== "object" || Array.isArray(body.sync)) return err(c, 400, "invalid_sync_configuration", { message: "Sync configuration must be an object." });
-      if (body.sync.serverUrl !== undefined && process.env.PI_SYNC_SERVER_URL !== undefined) {
+      if (body.sync.serverUrl !== undefined && syncEnvironmentOverrides().serverUrl) {
         return err(c, 409, "setting_overridden", { field: "sync.serverUrl", source: "PI_SYNC_SERVER_URL" });
       }
-      if (body.sync.allConversations !== undefined && process.env.PI_WEB_SYNC_ALL_CONVERSATIONS !== undefined) {
+      if (body.sync.allConversations !== undefined && syncEnvironmentOverrides().allConversations) {
         return err(c, 409, "setting_overridden", { field: "sync.allConversations", source: "PI_WEB_SYNC_ALL_CONVERSATIONS" });
       }
       try {
         const previousSync = syncConfig(cfg);
         const nextSync = normalizeSyncConfig({ ...cfg.sync, ...body.sync }, { strict: true });
-        sync.assertConfigurationChangeAllowed?.(previousSync, nextSync);
         syncConfigurationChanged = JSON.stringify(previousSync) !== JSON.stringify(nextSync);
         if (syncConfigurationChanged) sup.assertPiConfigurationReloadable?.();
         cfg.sync = nextSync;
@@ -98,7 +100,7 @@ export function register(api, deps) {
       cfg.projectHookSets = normalizeHookSets(body.projectHookSets);
     }
     saveConfig(cfg);
-    if (syncConfigurationChanged) syncAdapter?.resetExtensionPath?.();
+    exportSyncEnvironment(cfg);
     const piConfiguration = nextPiConfiguration || syncConfigurationChanged
       ? await sup.reloadPiConfiguration({ report: reporter?.log, sessionId: body.activeSessionId || null })
       : await sup.piConfigurationState();
@@ -129,7 +131,7 @@ export function register(api, deps) {
       reposRootSource: process.env.PI_WEB_REPOS_ROOT ? "environment" : cfg.reposRoot ? "config" : "default",
       repositorySources: repositorySourceState(cfg, github),
       settings: settingsState(cfg, github),
-      sync: sync.state(),
+      sync: piSyncState(cfg),
       ...(operation ? { operation } : {}),
     });
   });

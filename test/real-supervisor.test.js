@@ -57,7 +57,7 @@ test("effective model metadata never presents an unavailable recorded model as a
   );
 });
 
-test("unavailable synchronized models attach with the explicit web default", async () => {
+test("unavailable recorded models attach with the explicit web default", async () => {
   const fallback = { provider: "openai-codex", id: "gpt-6-luna", api: "openai-codex-responses" };
   const runtime = {
     getModel(provider, id) {
@@ -159,83 +159,6 @@ test("model-less session attachment resolves the configured default before creat
   assert.deepEqual(attached, ["session-1", "/tmp", "openai-codex/gpt-5.6-luna"]);
 });
 
-test("attachment is passive and never reconciles the conversation", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-passive-attach-"));
-  try {
-    const file = path.join(tmp, "same-id.jsonl");
-    fs.writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "same-id", timestamp: "2026-01-01T00:00:00Z", cwd: tmp }) + "\n");
-    const supervisor = new RealSupervisor({});
-    supervisor.paths.set("same-id", file);
-    supervisor._modelRuntime = async () => ({});
-    supervisor._resolveModel = async () => undefined;
-    supervisor._createConfiguredSession = async () => ({ session: { sessionId: "same-id", sessionFile: file } });
-    supervisor._registerLiveSession = session => {
-      const state = { session };
-      supervisor.live.set(session.sessionId, state);
-      return state;
-    };
-    supervisor.syncAdapter = { beforePrompt: () => { throw new Error("attachment must not reconcile"); } };
-    assert.equal((await supervisor._attach("same-id", tmp)).session.sessionId, "same-id");
-  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
-});
-
-test("messages reconcile synchronized sessions before a normal prompt", async () => {
-  const prompted = [];
-  const session = {
-    model: { provider: "test", id: "model", api: "test" },
-    isStreaming: false,
-    prompt: async text => prompted.push(text),
-  };
-  const supervisor = new RealSupervisor({});
-  supervisor.live.set("session-1", {
-    session,
-    pendingMessages: [],
-  });
-  supervisor.syncAdapter = {
-    beforePrompt: async id => {
-      assert.equal(id, "session-1");
-      return { switched: false, sessionId: id };
-    },
-  };
-  await supervisor.message("session-1", "hello", "prompt");
-  assert.deepEqual(prompted, ["hello"]);
-});
-
-test("pre-prompt replacement rejects a stale draft before invoking the model", async () => {
-  let prompted = false;
-  const supervisor = new RealSupervisor({});
-  supervisor.live.set("same-id", { session: {
-    model: { provider: "test", id: "model", api: "test" },
-    prompt: async () => { prompted = true; },
-  }, pendingMessages: [] });
-  supervisor.syncAdapter = {
-    beforePrompt: async () => ({ switched: true, sessionId: "same-id" }),
-    assertSnapshot: async (_id, token) => {
-      assert.equal(token, "old-snapshot");
-      throw Object.assign(new Error("stale"), { code: "sync_snapshot_stale" });
-    },
-  };
-  await assert.rejects(supervisor.message("same-id", "draft", "prompt", [], null, "old-snapshot"), error => error.code === "sync_snapshot_stale");
-  assert.equal(prompted, false);
-});
-
-test("automatic checks skip a prompt before SDK streaming begins", async () => {
-  let settle;
-  const supervisor = new RealSupervisor({});
-  supervisor.live.set("same-id", { session: {
-    model: { provider: "test", id: "model", api: "test" },
-    isStreaming: false,
-    prompt: () => new Promise(resolve => { settle = resolve; }),
-  }, pendingMessages: [] });
-  await supervisor.message("same-id", "hello", "prompt");
-  assert.deepEqual(await supervisor.trySyncOperation("same-id", () => { throw new Error("replacement admitted"); }), { outcome: "busy" });
-  await assert.rejects(supervisor.withSyncOperation("same-id", () => { throw new Error("manual refresh admitted"); }), error => error.code === "sync_busy");
-  await new Promise(resolve => setImmediate(resolve));
-  settle();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(await supervisor.trySyncOperation("same-id", () => ({ outcome: "unchanged" })), { outcome: "unchanged" });
-});
-
 test("overlapping prompt admission is rejected before SDK streaming begins", async () => {
   let settle;
   const supervisor = new RealSupervisor({});
@@ -245,41 +168,10 @@ test("overlapping prompt admission is rejected before SDK streaming begins", asy
     prompt: () => new Promise(resolve => { settle = resolve; }),
   }, pendingMessages: [] });
   await supervisor.message("same-id", "one", "prompt");
-  await assert.rejects(supervisor.message("same-id", "two", "prompt"), error => error.code === "sync_busy");
-  assert.deepEqual(await supervisor.trySyncOperation("same-id", () => { throw new Error("replacement admitted"); }), { outcome: "busy" });
+  await assert.rejects(supervisor.message("same-id", "two", "prompt"), error => error.code === "session_busy");
   await new Promise(resolve => setImmediate(resolve));
   settle();
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(await supervisor.trySyncOperation("same-id", () => ({ outcome: "unchanged" })), { outcome: "unchanged" });
-});
-
-test("automatic checks skip active admission and release after failure", async () => {
-  const supervisor = new RealSupervisor({});
-  let release;
-  const admission = supervisor.withSyncOperation("same-id", () => new Promise(resolve => { release = resolve; }));
-  assert.deepEqual(await supervisor.trySyncOperation("same-id", () => { throw new Error("should not run"); }), { outcome: "busy" });
-  release();
-  await admission;
-  await assert.rejects(supervisor.trySyncOperation("same-id", () => { throw new Error("failure"); }), /failure/);
-  assert.deepEqual(await supervisor.trySyncOperation("same-id", () => ({ outcome: "unchanged" })), { outcome: "unchanged" });
-});
-
-test("restart discovery uses the bound materialization instead of a newer same-ID file", async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-binding-discovery-"));
-  try {
-    const older = path.join(tmp, "older.jsonl");
-    const newer = path.join(tmp, "newer.jsonl");
-    const header = JSON.stringify({ type: "session", version: 3, id: "same-id", timestamp: "2026-01-01T00:00:00Z", cwd: tmp }) + "\n";
-    fs.writeFileSync(older, header);
-    fs.writeFileSync(newer, header);
-    const supervisor = new RealSupervisor({});
-    supervisor.paths.set("same-id", newer);
-    supervisor.syncAdapter = { materializedFile: async () => older };
-    assert.equal(await supervisor._discover("same-id"), true);
-    assert.equal(await supervisor.sessionFile("same-id"), older);
-    fs.writeFileSync(older, JSON.stringify({ type: "session", version: 3, id: "wrong-id", timestamp: "2026-01-01T00:00:00Z", cwd: tmp }) + "\n");
-    await assert.rejects(supervisor._discover("same-id"), error => error.code === "sync_identity_mismatch");
-  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
 test("replacement commits project visibility before announcing the target", async () => {
@@ -576,23 +468,6 @@ test("manual compact reports expected no-op states instead of an internal error"
       action: "notice", title: "Compact", message: expected,
     });
   }
-});
-
-test("prompt-producing slash commands require the current snapshot", async () => {
-  const supervisor = new RealSupervisor({});
-  let prompted = false;
-  supervisor.syncAdapter = { assertSnapshot: async (_id, token) => {
-    if (token !== "current") throw Object.assign(new Error("stale"), { code: "sync_snapshot_stale" });
-  } };
-  supervisor._attachById = async () => ({ session: {
-    extensionRunner: { getCommand: () => undefined },
-    isStreaming: false,
-    prompt: async () => { prompted = true; },
-    promptTemplates: [{ name: "draft" }],
-    resourceLoader: { getSkills: () => ({ skills: [] }) },
-  } });
-  await assert.rejects(supervisor.command("same-id", "/draft", "prompt", "old"), error => error.code === "sync_snapshot_stale");
-  assert.equal(prompted, false);
 });
 
 test("extension command failures propagate through the web supervisor", async () => {

@@ -48,21 +48,16 @@ exec "$PI_TEST_REAL_GIT" "$@"
       const health = await fixture.get('/api/health');
       const { hub } = await import(${JSON.stringify(new URL("../server/events.js", import.meta.url).href)});
       const { loadBindings, saveBindings } = await import(${JSON.stringify(new URL("../server/config.js", import.meta.url).href)});
-      const { FakeSyncCoordinator } = await import(${JSON.stringify(new URL("../server/sync/coordinator.js", import.meta.url).href)});
       const events = [];
       const emit = hub.emit.bind(hub);
       hub.emit = (id, type, data) => { if (['session_meta', 'workspace_switched', 'session_returned'].includes(type)) events.push({ id, type, data }); return emit(id, type, data); };
       const original = fixture.supervisor.isStreaming.bind(fixture.supervisor);
       let streaming = null;
-      let synchronized = null;
       fixture.supervisor.isStreaming = id => id === streaming || original(id);
-      const status = FakeSyncCoordinator.prototype.status;
-      FakeSyncCoordinator.prototype.status = function(id) { return { ...status.call(this, id), ...(id === synchronized ? { synchronized: true } : {}) }; };
       process.on('message', async message => {
         if (message.observe) return process.send({ bindings: loadBindings(), events, cwd: (await fixture.supervisor.meta(fixture.mainSessionId)).cwd });
         if (message.worktree) return process.send(await fixture.createWorktreeSession(message.worktree));
         streaming = message.streaming || null;
-        synchronized = message.synchronized || null;
         if (message.cwd) {
           const id = message.id || fixture.mainSessionId;
           await fixture.supervisor.rehome(id, message.cwd);
@@ -148,11 +143,6 @@ exec "$PI_TEST_REAL_GIT" "$@"
     assert.equal(streamed.body.error, "sessions_active");
     assert.deepEqual(snapshot(), beforeFailure);
     await command({ streaming: null });
-    const synced = await held("read", { branch: "failing" }, { synchronized: siblingId });
-    assert.equal(synced.status, 409);
-    assert.equal(synced.body.error, "sync_shared_workspace");
-    assert.deepEqual(snapshot(), beforeFailure);
-    await command({ synchronized: null });
     const worktree = await command({ worktree: "feature-isolated" });
     const movedSibling = await held("switch", { branch: "failing" }, { id: siblingId, cwd: worktree.workspacePath, branch: "feature-isolated" });
     assert.equal(movedSibling.status, 200, JSON.stringify(movedSibling.body));
@@ -182,13 +172,6 @@ exec "$PI_TEST_REAL_GIT" "$@"
     git(repo, "branch", "trunk");
     git(repo, "update-ref", "refs/remotes/origin/trunk", "HEAD");
     git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk");
-    await command({ synchronized: worktree.sessionId });
-    const beforeTrunk = snapshot();
-    const protectedTrunk = await request(switchRoute, { branch: "trunk" });
-    assert.equal(protectedTrunk.status, 409);
-    assert.equal(protectedTrunk.body.error, "sync_shared_workspace");
-    assert.deepEqual(snapshot(), beforeTrunk);
-    await command({ synchronized: null });
     const trunk = await held("switch", { branch: "trunk" });
     assert.equal(trunk.status, 200, JSON.stringify(trunk.body));
     assert.equal(trunk.body.branch, "trunk");

@@ -6,7 +6,7 @@ import { settingsRoute } from "./settings.js";
 import "./files.js";
 import "./repo-picker.js";
 import "./app.js";
-import { checkActiveSync, connectSSE, openTranscript, paintCachedState, refreshState, resumeConnection } from "./api.js";
+import { connectSSE, openTranscript, paintCachedState, refreshState, resumeConnection } from "./api.js";
 import { store } from "./store.js";
 import { openSavedSelectionEarly, restoreLastSelection, selectChat, selectSession } from "./shell.js";
 
@@ -52,8 +52,6 @@ async function registerServiceWorker() {
 
 window.addEventListener("offline", () => store.set({ offline: true, reconnecting: false }));
 window.addEventListener("online", resumeConnection);
-window.addEventListener("focus", checkActiveSync);
-setInterval(() => { if (document.visibilityState === "visible") void checkActiveSync(); }, 20_000);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resumeConnection(); });
 window.addEventListener("pageshow", resumeConnection);
 paintCachedState();

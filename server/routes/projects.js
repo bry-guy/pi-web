@@ -1,5 +1,8 @@
+import { syncConfig } from "../config.js";
+import { remoteConversationsForRepository } from "../pi-sync.js";
+
 export function register(api, deps) {
-  const { path, loadConfig, newId, sessionWorkspace, normalizeHooks, repositorySource, reposRoot, resolvePath, saveConfig, hub, ws, cloneRepository, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, projectContext, projectContextAsync, bindSessionToContext, branchContextAsync, ensureBranchContext, sessionBelongsToProject, github, sup, syncAdapter } = deps;
+  const { path, loadConfig, newId, sessionWorkspace, normalizeHooks, repositorySource, reposRoot, resolvePath, saveConfig, hub, ws, cloneRepository, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, projectContext, projectContextAsync, bindSessionToContext, branchContextAsync, ensureBranchContext, sessionBelongsToProject, github, sup } = deps;
 
 
   api.post("/projects", async c => {
@@ -86,9 +89,11 @@ export function register(api, deps) {
   api.get("/projects/:id/synced-sessions", async c => {
     const project = loadConfig().projects.find(p => p.id === c.req.param("id"));
     if (!project) return err(c, 404, "no_such_project");
-    if (!syncAdapter) return c.json({ sessions: [] });
-    try { return c.json({ sessions: await syncAdapter.remoteForRepository(project.repoPath) }); }
-    catch { return c.json({ sessions: [], unavailable: true }); }
+    if (!syncConfig(loadConfig()).serverUrl) return c.json({ sessions: [] });
+    try {
+      const localIds = new Set((await sup.allSessions()).map(session => session.id));
+      return c.json({ sessions: await remoteConversationsForRepository(project.repoPath, localIds) });
+    } catch { return c.json({ sessions: [], unavailable: true }); }
   });
 
   api.post("/projects/:id/sessions", async c => {
@@ -135,10 +140,22 @@ export function register(api, deps) {
         return c.json({ id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch, workspacePath: context.path, forkedFrom: sourceSessionId, setup: null, setupNeeded, operation });
       }
       if (mode === "synced") {
-        if (!syncAdapter || typeof body.syncSessionId !== "string" || !body.syncSessionId) return err(c, 400, "bad_sync_session");
+        if (!syncConfig(loadConfig()).serverUrl) return err(c, 409, "sync_not_configured");
+        if (typeof body.syncSessionId !== "string" || !body.syncSessionId) return err(c, 400, "bad_sync_session");
         reporter.log({ type: "phase", phase: "open-synced", message: `Opening synchronized conversation ${body.syncSessionId}.` });
-        const { id: sessionId } = await syncAdapter.openRemote(body.syncSessionId, { cwd: context.path, sessionDir: await sup.sessionDirFor(context.path) });
-        bindSessionToContext(sessionId, project, context);
+        const { id: createdId } = await sup.createSession({ cwd: context.path });
+        // The pi-sync extension's /sync open replaces this session in place with the shared one.
+        try { await sup.command(createdId, `/sync open ${body.syncSessionId}`, "prompt"); }
+        catch (error) {
+          const operation = reporter.finish({ status: "error", httpStatus: 409, message: error.message || "The conversation could not be opened." });
+          return err(c, 409, "sync_open_failed", { message: error.message, operation });
+        }
+        const sessionId = sup.isLive(body.syncSessionId) ? body.syncSessionId : createdId;
+        if (sessionId === createdId) {
+          const operation = reporter.finish({ status: "error", httpStatus: 409, message: "The conversation could not be opened." });
+          return err(c, 409, "sync_open_failed", { operation });
+        }
+        // No binding write: without a binding the session's workspace is its cwd (server/domain.js).
         hub.emit(sessionId, "session_created", { session: { id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch } });
         const operation = reporter.finish({ httpStatus: 200, message: `Opened synchronized conversation on ${context.branch}.` });
         return c.json({ id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch, workspacePath: context.path, setup: null, setupNeeded, operation });

@@ -251,9 +251,7 @@ class PiSettings extends HTMLElement {
     } catch (err) {
       const message = err.error === "setting_overridden"
         ? "One or more synchronization settings are deployment-controlled."
-        : err.error === "sync_active"
-          ? "Finish the active synchronized operation before changing the sync server."
-          : `Synchronization settings failed: ${err.error || err.message || err}`;
+        : `Synchronization settings failed: ${err.error || err.message || err}`;
       this.setFeedback(message, "error");
     }
   }
@@ -612,13 +610,7 @@ class PiSettings extends HTMLElement {
     const syncServerEditable = syncSettings.serverUrl?.editable !== false;
     const syncAll = !!syncSettings.allConversations?.value;
     const syncAllEditable = syncSettings.allConversations?.editable !== false;
-    const syncLabel = !syncState.configured
-      ? "Not configured"
-      : syncState.connection === "available"
-        ? "Connected"
-        : syncState.connection === "disabled"
-          ? "Disabled"
-          : "Sync client unavailable";
+    const syncLabel = syncState.configured ? "Connected" : "Local only";
     return `<section class="settings-section">
         <div class="settings-card settings-card-spaced">
           ${syncServerEditable ? `<div class="settings-row settings-path-row">
@@ -629,7 +621,7 @@ class PiSettings extends HTMLElement {
             <div class="sr-main"><div class="sr-title">Synchronize all conversations</div><div class="sr-sub">${syncAllEditable ? "Enroll every conversation automatically. Otherwise use <span class=\"settings-mono\">/sync</span> in a conversation." : "Set by the deployment. Use <span class=\"settings-mono\">/sync</span> to enroll a conversation."}</div></div>
             <label class="sync-toggle"><input type="checkbox" data-setting="syncAllConversations" ${syncAll ? "checked" : ""} ${syncAllEditable ? "" : "disabled"}><span>${syncAll ? "On" : "Off"}</span></label>
           </div>
-          <div class="settings-row"><div class="sr-main"><div class="sr-title">${esc(syncLabel)}</div><div class="sr-sub">${syncState.implementation === "fake" ? "Using the development coordinator; no network calls are made." : esc(syncState.error?.message || syncServerUrl)}</div></div><span class="status-dot ${syncState.connection === "available" ? "" : "off"}"></span></div>
+          <div class="settings-row"><div class="sr-main"><div class="sr-title">${esc(syncLabel)}</div><div class="sr-sub">${syncState.configured ? esc(syncState.serverUrl || syncServerUrl) : "No sync server configured; conversations stay on this host."}</div></div><span class="status-dot ${syncState.configured ? "" : "off"}"></span></div>
           ${syncServerEditable || syncAllEditable ? `<div class="settings-row settings-actions-row"><span></span><button class="settings-save" data-act="save-sync-settings">Save</button></div>` : ""}
         </div>
       </section>`;

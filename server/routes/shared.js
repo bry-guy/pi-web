@@ -20,19 +20,6 @@ export const withRepositoryAdmission = async (c, repoPath, task, reporter = null
   }
 };
 export const formatDuration = durationMs => durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`;
-export const SYNC_ERROR_STATUS = Object.freeze({
-  sync_not_configured: 409, sync_not_enrolled: 409, sync_not_persistent: 409,
-  sync_ui_required: 409, sync_repair_cancelled: 409, sync_server_mismatch: 409,
-  sync_duplicate: 409, sync_identity_mismatch: 409, sync_workspace_mismatch: 409, sync_session_not_found: 409,
-  workspace_mismatch: 409, workspace_required: 409,
-  sync_workspace_setup_required: 409, sync_materialization_failed: 409,
-  sync_stale_etag: 409, sync_snapshot_stale: 409, sync_busy: 409, sync_conflict: 409, conflict: 409, duplicate_enrollment: 409,
-  session_streaming: 409, session_compacting: 409, session_binding_conflict: 409,
-  active_lease: 423, lease_invalid: 423, lease_required: 423, sync_lease_uncertain: 423,
-  request_too_large: 413,
-  sync_client_unavailable: 503, sync_unavailable: 503, network_error: 503, timeout: 503, not_found: 503,
-  invalid_response: 502, sync_enrollment_failed: 502,
-});
 
 // Collisions count like humans do: foo, foo-2, foo-3.
 // The `.N` namespace is reserved for fork children (see forkWorkspace).
@@ -88,14 +75,6 @@ export async function suggestedWorktreeBranch(repoPath, sessionId, sup) {
     const candidate = `${base}-${n}`;
     if (!branches.includes(candidate)) return candidate;
   }
-}
-
-export async function hasSynchronizedSibling(sessions, currentId, sync) {
-  for (const session of sessions || []) {
-    if (session.id === currentId) continue;
-    if ((await sync.status(session.id)).synchronized) return true;
-  }
-  return false;
 }
 
 export function projectContext(project, requestedId) {

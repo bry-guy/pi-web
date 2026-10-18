@@ -1,0 +1,96 @@
+// Locates the installed pi-sync package. The app only loads its Pi extension
+// (which owns sync) and lists shared conversations; it has no sync layer of its own.
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadConfig, syncConfig } from "./config.js";
+
+const DEFAULT_MODULE = "@bry-guy/pi-sync";
+const modulePromises = new Map();
+const extensionPromises = new Map();
+
+export function syncClientModuleName() {
+  return process.env.PI_WEB_SYNC_CLIENT_MODULE || DEFAULT_MODULE;
+}
+
+export async function loadPiSyncModule() {
+  const specifier = importSpecifier();
+  if (!modulePromises.has(specifier)) {
+    modulePromises.set(specifier, import(specifier).catch(error => {
+      modulePromises.delete(specifier);
+      throw Object.assign(new Error("The pi-sync client is not installed."), { code: "sync_client_unavailable", cause: error });
+    }));
+  }
+  return modulePromises.get(specifier);
+}
+
+export async function createSyncClient(baseUrl, options = {}) {
+  const module = options.module || await loadPiSyncModule();
+  if (typeof module.SyncClient !== "function") {
+    throw Object.assign(new Error("The installed pi-sync package does not expose SyncClient."), { code: "sync_client_unavailable" });
+  }
+  return new module.SyncClient({ baseUrl, timeoutMs: options.timeoutMs ?? 8_000, ...(options.fetch ? { fetch: options.fetch } : {}) });
+}
+
+async function resolveExtensionPath() {
+  const resolved = await import.meta.resolve(importSpecifier());
+  const root = path.resolve(path.dirname(fileURLToPath(resolved)), "../..");
+  const extension = [
+    path.join(root, "dist", "extensions", "sync.js"),
+    path.join(root, "extensions", "sync.js"),
+    path.join(root, "extensions", "sync.ts"),
+  ].find(candidate => fs.existsSync(candidate));
+  if (!extension) throw Object.assign(new Error("The installed pi-sync package does not expose its Pi extension."), { code: "sync_client_unavailable" });
+  return extension;
+}
+
+/** The pi-sync extension file, but only when a sync server is configured; null otherwise or if unavailable. */
+export async function activePiSyncExtensionPath(cfg = loadConfig()) {
+  if (!syncConfig(cfg).serverUrl) return null;
+  const key = syncClientModuleName();
+  if (!extensionPromises.has(key)) {
+    extensionPromises.set(key, resolveExtensionPath().catch(error => {
+      extensionPromises.delete(key);
+      console.error("pi-ez-web: pi-sync extension unavailable", error?.message || error);
+      return null;
+    }));
+  }
+  return extensionPromises.get(key);
+}
+
+export function piSyncState(cfg = loadConfig()) {
+  const effective = syncConfig(cfg);
+  return { configured: !!effective.serverUrl, serverUrl: effective.serverUrl, allConversations: effective.allConversations };
+}
+
+/** Shared conversations for this repository that are not on this host yet, newest first. */
+export async function remoteConversationsForRepository(cwd, localIds) {
+  const module = await loadPiSyncModule();
+  const repository = await module.deriveRepositoryIdentity(cwd);
+  if (!repository) return [];
+  const client = await createSyncClient(syncConfig(loadConfig()).serverUrl);
+  return (await client.list()).sessions
+    .filter(item => module.repositoryIdentity(item.workspace) === repository && !localIds.has(item.sessionId))
+    .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
+    .map(item => ({
+      sessionId: item.sessionId,
+      title: typeof item.title === "string" && item.title.trim() ? item.title.trim() : null,
+      branch: item.workspace?.branch || null,
+      updatedAt: item.updatedAt || item.createdAt,
+      leaseHolder: item.leaseHolder || null,
+    }));
+}
+
+function importSpecifier() {
+  const raw = syncClientModuleName();
+  let filePath = raw;
+  try {
+    if (raw.startsWith("file:")) filePath = fileURLToPath(raw);
+    if (path.isAbsolute(filePath) && fs.existsSync(path.join(filePath, "package.json"))) {
+      return pathToFileURL(path.join(filePath, "dist/src/index.js")).href;
+    }
+  } catch {
+    // Let the normal dynamic import produce the stable unavailable error.
+  }
+  return raw;
+}

@@ -4,6 +4,8 @@
 unchecked acceptance criteria, including live credentialed CLI-to-web acceptance,
 remain unverified.
 
+**Update (extension-only path):** the app no longer has `server/sync/*` or `/sync` routes. It loads the pi-sync extension and relies on its catch-up (same-id `switchSession` reloads the transcript in place). Badges come from `extension_ui_status` with key `pi-sync`. Snapshot tokens were dropped on purpose: the extension's input-time catch-up guards stale sends. Sections below that name `server/sync/web-adapter.js`, `sync_snapshot_stale`, or the `/sync/check` and `/sync/refresh` endpoints describe the superseded design.
+
 ## Goal and limits
 
 An opened, visible, synchronized conversation should show settled remote changes automatically, usually within 20 seconds plus network/materialization time. This is snapshot refresh, not remote token streaming. Hidden tabs catch up on focus. Local conflicts require explicit user resolution. Keep JSON mode and pi-sync as the only authority for ETags, leases, fingerprints, and materialization.

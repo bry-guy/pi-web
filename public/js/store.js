@@ -222,26 +222,10 @@ export const store = {
     const attachments = this.draftData(id)?.attachments;
     return Array.isArray(attachments) ? attachments : [];
   },
-  draftSnapshotToken(id = this.activeKey()) {
-    const draft = this.draftData(id);
-    return draft && Object.hasOwn(draft, "snapshotToken") ? draft.snapshotToken : undefined;
-  },
-  pinDraftSnapshot(id = this.activeKey()) {
-    if (!id) return undefined;
-    const draft = this.ensureDraft(id);
-    // Typing can start before the transcript (and its token) loads; pin only a known token.
-    if (draft.snapshotToken == null) {
-      const token = this.state.transcripts[id]?.snapshotToken;
-      if (token == null) delete draft.snapshotToken;
-      else draft.snapshotToken = token;
-    }
-    return draft.snapshotToken;
-  },
   setDraft(value, id = this.activeKey()) {
     if (!id) return;
     const draft = this.ensureDraft(id);
     const text = value || "";
-    if (text && text !== draft.text) this.pinDraftSnapshot(id);
     if (text !== draft.text) draft.revision = (draft.revision || 0) + 1;
     draft.text = text;
     this.trimDraft(id);
@@ -251,7 +235,6 @@ export const store = {
     if (!id) return;
     const draft = this.ensureDraft(id);
     const next = attachments || [];
-    if (next.length) this.pinDraftSnapshot(id);
     if (next !== draft.attachments) draft.revision = (draft.revision || 0) + 1;
     draft.attachments = next;
     this.trimDraft(id);

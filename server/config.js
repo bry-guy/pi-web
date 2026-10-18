@@ -136,9 +136,20 @@ function envBoolean(name, fallback) {
   return fallback;
 }
 
+// The URL this process last wrote into PI_SYNC_SERVER_URL; an env value equal to it is ours, not a deployment setting.
+let exportedSyncServerUrl = null;
+
+export function syncEnvironmentOverrides() {
+  const url = process.env.PI_SYNC_SERVER_URL;
+  return {
+    serverUrl: url !== undefined && url !== exportedSyncServerUrl,
+    allConversations: process.env.PI_WEB_SYNC_ALL_CONVERSATIONS !== undefined,
+  };
+}
+
 export function syncConfig(cfg = loadConfig()) {
   const configured = normalizeSyncConfig(cfg?.sync);
-  const rawServerUrl = process.env.PI_SYNC_SERVER_URL !== undefined
+  const rawServerUrl = syncEnvironmentOverrides().serverUrl
     ? String(process.env.PI_SYNC_SERVER_URL).trim()
     : configured.serverUrl;
   const serverUrl = rawServerUrl
@@ -150,18 +161,28 @@ export function syncConfig(cfg = loadConfig()) {
   };
 }
 
+// Writes the effective sync settings where the pi-sync extension reads them. Called before sessions load it.
+export function exportSyncEnvironment(cfg = loadConfig()) {
+  const effective = syncConfig(cfg);
+  process.env.PI_SYNC_ALL_SESSIONS = effective.allConversations ? "on" : "off";
+  if (syncEnvironmentOverrides().serverUrl) return;
+  exportedSyncServerUrl = effective.serverUrl;
+  if (effective.serverUrl) process.env.PI_SYNC_SERVER_URL = effective.serverUrl;
+  else delete process.env.PI_SYNC_SERVER_URL;
+}
+
 export function syncSettingsState(cfg = loadConfig()) {
   const effective = syncConfig(cfg);
   return {
     serverUrl: {
       value: effective.serverUrl,
-      source: process.env.PI_SYNC_SERVER_URL !== undefined ? "PI_SYNC_SERVER_URL" : cfg.sync?.serverUrl ? "config" : "default",
-      editable: process.env.PI_SYNC_SERVER_URL === undefined,
+      source: syncEnvironmentOverrides().serverUrl ? "PI_SYNC_SERVER_URL" : cfg.sync?.serverUrl ? "config" : "default",
+      editable: !syncEnvironmentOverrides().serverUrl,
     },
     allConversations: {
       value: effective.allConversations,
-      source: process.env.PI_WEB_SYNC_ALL_CONVERSATIONS !== undefined ? "PI_WEB_SYNC_ALL_CONVERSATIONS" : cfg.sync?.allConversations ? "config" : "default",
-      editable: process.env.PI_WEB_SYNC_ALL_CONVERSATIONS === undefined,
+      source: syncEnvironmentOverrides().allConversations ? "PI_WEB_SYNC_ALL_CONVERSATIONS" : cfg.sync?.allConversations ? "config" : "default",
+      editable: !syncEnvironmentOverrides().allConversations,
     },
   };
 }

@@ -32,7 +32,7 @@ const state = {
     ],
   }],
   chats: [],
-  sync: { version: 1, configured: true, enabled: true, connection: "available", implementation: "fake", error: null },
+  sync: { configured: false, serverUrl: "", allConversations: false },
   providers: [
     { id: "anthropic", name: "Anthropic", configured: true, sourceLabel: "OAuth", availableModels: 2, authMethods: [{ id: "oauth", label: "Anthropic OAuth" }], canLogout: true },
     { id: "openai", name: "OpenAI", configured: false, availableModels: 0, authMethods: [{ id: "api_key", label: "OpenAI API key" }], canLogout: false },
@@ -60,14 +60,6 @@ async function boot() {
   let narrowViewport = false;
   let stateReads = 0;
   dom.setNarrowViewport = value => { narrowViewport = value; };
-  const realSetInterval = globalThis.setInterval;
-  dom.window.__intervals = [];
-  globalThis.setInterval = (fn, ms, ...args) => {
-    if (ms === 20_000) dom.window.__intervals.push(fn);
-    const timer = realSetInterval(fn, ms, ...args);
-    timer.unref?.();
-    return timer;
-  };
   Object.assign(globalThis, {
     window: dom.window,
     document: dom.window.document,
@@ -107,10 +99,6 @@ async function boot() {
       if (url === "/api/github/device-login/ghf1" && options.method === "DELETE") return json({ ok: true });
       if (url.startsWith("/api/sessions/") && url.endsWith("/transcript")) {
         dom.window.__transcriptReads = (dom.window.__transcriptReads || 0) + 1;
-        if (dom.window.__staleTranscriptResponses > 0) {
-          dom.window.__staleTranscriptResponses--;
-          return json({ error: "sync_snapshot_stale" }, false, 409);
-        }
         if (dom.window.__transcriptError) return json(dom.window.__transcriptError, false, dom.window.__transcriptErrorStatus || 409);
         if (dom.window.__holdTranscript) return new Promise(resolve => { (dom.window.__transcriptResolvers ||= []).push(() => resolve(json(dom.window.__transcriptResponse || transcript))); });
         return json(dom.window.__transcriptResponse || transcript);
@@ -137,24 +125,6 @@ async function boot() {
         const operationId = options.headers?.["x-pi-operation-id"] || options.headers?.get?.("x-pi-operation-id") || "test-fetch";
         return json({ ok: true, projectId: "p1", fetched: true, operation: { id: operationId, status: "success", httpStatus: 200, events: [{ at: Date.now(), type: "result", message: "Fetched Git branches." }] } });
       }
-      if (url.endsWith("/sync/check") && options.method === "POST") {
-        dom.window.__syncCheckCalls = (dom.window.__syncCheckCalls || 0) + 1;
-        dom.window.__syncCheckActive = (dom.window.__syncCheckActive || 0) + 1;
-        dom.window.__syncCheckMaxActive = Math.max(dom.window.__syncCheckMaxActive || 0, dom.window.__syncCheckActive);
-        const finish = () => {
-          dom.window.__syncCheckActive--;
-          return json({ outcome: dom.window.__syncCheckOutcome || "unchanged", sessionId: "s1", snapshotToken: dom.window.__syncCheckToken || "snapshot-1" });
-        };
-        if (dom.window.__holdSyncCheck) return new Promise(resolve => { (dom.window.__syncCheckResolvers ||= []).push(() => resolve(finish())); });
-        return finish();
-      }
-      if (url === "/api/sessions/s1/sync/refresh" && options.method === "POST") {
-        dom.window.__refreshCalls = (dom.window.__refreshCalls || 0) + 1;
-        const operationId = options.headers?.["x-pi-operation-id"] || options.headers?.get?.("x-pi-operation-id") || "test-refresh";
-        const response = () => json({ ok: true, refreshed: true, sessionId: "s1", synchronized: true, syncState: "available", operation: { id: operationId, status: "success", httpStatus: 200, events: [{ at: Date.now(), type: "result", message: "Canonical conversation refreshed." }] } });
-        if (dom.window.__holdRefresh) return new Promise(resolve => { dom.window.__resolveRefresh = () => resolve(response()); });
-        return response();
-      }
       if (url.includes("/api/sessions/") && url.endsWith("/close") && options.method === "POST") {
         const operationId = options.headers?.["x-pi-operation-id"] || "test-close";
         return json({ ok: true, operation: { id: operationId, status: "success", httpStatus: 200, events: [{ at: Date.now(), type: "result", message: "Session closed." }] } });
@@ -162,14 +132,14 @@ async function boot() {
       if (url.endsWith("/message") && options.method === "POST") {
         const request = { url, body: JSON.parse(options.body || "{}") };
         dom.window.__writeRequests = [...(dom.window.__writeRequests || []), request];
-        const response = () => dom.window.__staleWrites ? json({ error: "sync_snapshot_stale" }, false, 409) : json({ ok: true });
+        const response = () => dom.window.__failWrites ? json({ error: "session_busy" }, false, 409) : json({ ok: true });
         if (dom.window.__holdMessage) return new Promise(resolve => { dom.window.__releaseMessage = () => resolve(response()); });
         return response();
       }
       if (url.endsWith("/bang") && options.method === "POST") {
         const request = { url, body: JSON.parse(options.body || "{}") };
         dom.window.__writeRequests = [...(dom.window.__writeRequests || []), request];
-        return dom.window.__staleWrites ? json({ error: "sync_snapshot_stale" }, false, 409) : json({ ok: true });
+        return dom.window.__failWrites ? json({ error: "session_busy" }, false, 409) : json({ ok: true });
       }
       if (url === "/api/sessions/s1/commands") return json({ commands: [
         { name: "settings", description: "Open settings", source: "pi" },
@@ -179,7 +149,7 @@ async function boot() {
       if (url === "/api/sessions/s1/command" && options.method === "POST") {
         const request = { url, body: JSON.parse(options.body || "{}") };
         dom.window.__writeRequests = [...(dom.window.__writeRequests || []), request];
-        if (dom.window.__staleWrites && !request.body.text.startsWith("/sync")) return json({ error: "sync_snapshot_stale" }, false, 409);
+        if (dom.window.__failWrites && !request.body.text.startsWith("/sync")) return json({ error: "session_busy" }, false, 409);
         return json({ ok: true, action: request.body.text.startsWith("/sync") ? "notice" : "session_meta", message: "sync is available" });
       }
       if (url === "/api/sessions/s1/branch-context" && options.method === "POST" && JSON.parse(options.body || "{}").mode === "fork") {
@@ -273,7 +243,7 @@ async function boot() {
 test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   const dom = await boot();
   const { store } = await import("../public/js/store.js");
-  const { api, applyEvent: applyEventNow, checkActiveSync, openTranscript, refreshState, shouldBufferEvent } = await import("../public/js/api.js");
+  const { api, applyEvent: applyEventNow, openTranscript, refreshState, shouldBufferEvent } = await import("../public/js/api.js");
   // The thread renders streaming events once per frame; assertions read the DOM right away, so flush it.
   const flushThreads = () => dom.window.document?.querySelectorAll("pi-thread")?.forEach(thread => { if (thread.renderQueued) thread.render(); });
   const applyEvent = (...args) => { const result = applyEventNow(...args); flushThreads(); return result; };
@@ -281,18 +251,12 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.notify = (...args) => { const result = notify(...args); flushThreads(); return result; };
   assert.equal(shouldBufferEvent("text_delta"), true);
   assert.equal(shouldBufferEvent("session_switched"), false);
-  await api.message("s1", "token message", "prompt", [], "token-client", "message-token");
-  await api.bang("s1", "pwd", "bang-token");
-  await api.command("s1", "/skill test", "prompt", "command-token");
+  await api.message("s1", "token message", "prompt", [], "token-client");
+  await api.bang("s1", "pwd");
+  await api.command("s1", "/skill test", "prompt");
   await api.command("s1", "/sync status");
-  assert.deepEqual(dom.window.__writeRequests.map(request => request.body.snapshotToken), [
-    "message-token", "bang-token", "command-token", undefined,
-  ]);
+  assert.deepEqual(dom.window.__writeRequests.slice(-4).map(request => Object.keys(request.body).sort()), [["clientMessageId", "images", "mode", "text"], ["cmd"], ["mode", "text"], ["mode", "text"]]);
   let transcriptReads = dom.window.__transcriptReads || 0;
-  dom.window.__staleTranscriptResponses = 1;
-  await openTranscript("s1");
-  assert.equal(dom.window.__transcriptReads, transcriptReads + 2, "only sync_snapshot_stale transcript responses retry");
-  transcriptReads = dom.window.__transcriptReads;
   dom.window.__transcriptError = { error: "other_conflict" };
   await openTranscript("s1");
   assert.equal(dom.window.__transcriptReads, transcriptReads + 1, "other transcript 409 errors fail fast");
@@ -301,7 +265,6 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   const { openSessionPicker, selectSession } = await import("../public/js/shell.js");
   const root = dom.window.document.querySelector("pi-app");
   Object.defineProperty(dom.window.document, "visibilityState", { configurable: true, value: "visible" });
-  assert.equal(dom.window.__intervals.length, 1, "one 20-second auto-check loop is installed");
   assert.ok(root.querySelector("pi-sidebar"));
   assert.match(root.querySelector(".model-chip").textContent, /Mock Fast/);
   const parentSession = store.state.projects[0].sessions[0];
@@ -439,48 +402,24 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.state.operations[0].status = "success";
   store.notify("state");
   const currentProject = store.state.projects.find(item => item.id === "p1");
-  const currentSession = store.findSession("s1", currentProject.sessions);
-  Object.assign(currentSession, {
-    synchronized: true,
-    syncState: "available",
-    syncSessionId: "sync-1",
-    syncTitle: "Canonical session",
-    syncWorkspace: { gitRemote: "https://github.com/owner/demo.git", branch: "main", commit: "0123456789abcdef" },
-  });
-  Object.assign(currentProject.contexts[0].sessions[0], { synchronized: true, syncState: "available" });
-  Object.assign(state.projects[0].sessions.find(item => item.id === "s1"), {
-    synchronized: true, syncState: "available", syncSessionId: "sync-1", syncTitle: "Canonical session",
-  });
-  Object.assign(state.projects[0].contexts[0].sessions[0], { synchronized: true, syncState: "available" });
-  store.notify("state");
-  assert.deepEqual([...root.querySelectorAll(".session-picker-actions .session-detail-row")].map(row => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]), [
-    ["Sync", "Available"],
-    ["Conversation", "Canonical session"],
-    ["Upstream", "main@01234567"],
-  ]);
   assert.deepEqual([...root.querySelectorAll(".session-branch-actions .session-detail-row")].map(row => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]), [
     ["Branch", "main"],
     ["Commit", "abcdef12 Initial project commit"],
     ["Workspace", "checkout · /tmp/demo"],
     ["Status", "1 file staged, 2 files unstaged, 1 file untracked"],
   ]);
-  const syncLabel = root.querySelector("pi-header .bar-sub .sync-label");
-  assert.equal(syncLabel.textContent, "Synced: available", "one compact sync label, on the git line");
-  assert.equal(root.querySelectorAll("pi-header .sync-label").length, 1);
-  assert.equal(root.querySelector("pi-header .bar-status"), null, "no separate sync line");
-  assert.match(syncLabel.title, /This conversation is synchronized/);
+  const syncLabel = () => root.querySelector("pi-header .bar-sub .sync-label");
+  assert.equal(syncLabel(), null, "no sync label without a pi-sync status");
   store.state.extensionStatuses.s1 = { "pi-sync": "sync: up to date" };
   store.notify("state");
-  assert.equal(root.querySelector("pi-header .sync-label").textContent, "Synced: up to date", "extension detail is the message");
-  root.querySelector("pi-header .sync-label").click();
+  assert.equal(syncLabel().textContent, "Sync: up to date", "the pi-sync extension status is the label");
+  syncLabel().click();
   assert.equal(store.state.commandNotice?.title, "Sync", "tap shows the full sync detail");
-  assert.match(store.state.commandNotice.message, /This conversation is synchronized\. Pi extension: up to date/);
-  delete store.state.extensionStatuses.s1;
-  Object.assign(store.state.projects[0].sessions.find(item => item.id === "s1"), { syncState: "in_use", leaseHolder: "Laptop" });
+  assert.equal(store.state.commandNotice.message, "up to date");
+  store.state.extensionStatuses.s1 = { "pi-sync": "sync: in use by Laptop" };
   store.notify("state");
-  assert.equal(root.querySelector("pi-header .sync-label").textContent, "In use: Laptop");
   assert.ok(root.querySelector("pi-header .sync-label.busy"));
-  Object.assign(store.state.projects[0].sessions.find(item => item.id === "s1"), { syncState: "available", leaseHolder: null });
+  delete store.state.extensionStatuses.s1;
   store.notify("state");
   root.querySelector("[data-act='close-session-picker']").click();
   // The whole header row is the hit target; its own buttons keep their actions.
@@ -504,149 +443,39 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(root.querySelector(".history-entry-head").getAttribute("aria-expanded"), "true");
   root.querySelector("[data-act='close-session-picker']").click();
   assert.equal(root.querySelector("pi-header [data-act='refresh-sync']"), null, "Sync refresh is available through slash commands only");
-  dom.window.__transcriptResponse = { ...transcript, snapshotToken: "snapshot-1" };
-  selectSession("p1", "sibling");
+  const readsBeforeSwitch = dom.window.__transcriptReads || 0;
+  applyEvent({ v: 1, seq: 100, sessionId: "s1", type: "session_switched", toSessionId: "s1" });
   await new Promise(resolve => setTimeout(resolve, 20));
-  selectSession("p1", "s1");
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(dom.window.__syncCheckCalls, 1, "selection checks sync state through the automatic endpoint");
-  assert.equal(dom.window.__refreshCalls || 0, 0, "automatic checks do not use explicit manual refresh");
-  dom.window.__holdRefresh = true;
-  const firstRefresh = api.refreshSyncSession("s1");
-  const secondRefresh = api.refreshSyncSession("s1");
-  assert.strictEqual(firstRefresh, secondRefresh);
-  dom.window.__resolveRefresh();
-  await Promise.all([firstRefresh, secondRefresh]);
-  dom.window.__holdRefresh = false;
-  assert.equal(dom.window.__refreshCalls, 1);
-
-  const checkCount = () => dom.window.__syncCheckCalls || 0;
-  let checks = checkCount();
-  store.state.drafts.s1 = { text: "pending", attachments: [] };
-  await checkActiveSync();
-  assert.equal(checkCount(), ++checks, "in-place catch-up keeps running while a draft is open");
-  assert.equal(store.state.drafts.s1.text, "pending", "the draft survives the check");
-  delete store.state.drafts.s1;
-  store.transcript("s1").streaming = true;
-  await checkActiveSync();
-  assert.equal(checkCount(), checks, "streaming suppresses automatic checks");
-  store.transcript("s1").streaming = false;
-  store.transcript("s1").compacting = true;
-  await checkActiveSync();
-  assert.equal(checkCount(), checks, "compaction suppresses automatic checks");
-  store.transcript("s1").compacting = false;
-  store.set({ offline: true });
-  await checkActiveSync();
-  assert.equal(checkCount(), checks, "offline suppresses automatic checks");
-  store.set({ offline: false });
-  Object.defineProperty(dom.window.document, "visibilityState", { configurable: true, value: "hidden" });
-  await checkActiveSync();
-  assert.equal(checkCount(), checks, "hidden tabs suppress automatic checks");
-  Object.defineProperty(dom.window.document, "visibilityState", { configurable: true, value: "visible" });
-  dom.window.dispatchEvent(new dom.window.Event("focus"));
-  await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(checkCount(), ++checks, "focus triggers an automatic check");
-  dom.window.__intervals[0]();
-  await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(checkCount(), ++checks, "the single timer triggers an automatic check");
-  dom.window.__holdSyncCheck = true;
-  const overlapping = checkActiveSync();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  dom.window.dispatchEvent(new dom.window.Event("focus"));
-  dom.window.__intervals[0]();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(checkCount(), ++checks, "overlapping triggers share one in-flight check");
-  assert.equal(dom.window.__syncCheckMaxActive, 1);
-  dom.window.__holdSyncCheck = false;
-  dom.window.__syncCheckResolvers.shift()();
-  await overlapping;
-  await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(checkCount(), ++checks, "a coalesced trigger runs after the previous check");
-  assert.equal(dom.window.__syncCheckMaxActive, 1);
-  store.set({ sync: { ...store.state.sync, implementation: "extension" } });
-  const refreshCallsBeforeExtensionCheck = dom.window.__refreshCalls;
-  await checkActiveSync();
-  assert.equal(checkCount(), ++checks, "extension-backed sessions still use automatic checks");
-  assert.equal(dom.window.__refreshCalls, refreshCallsBeforeExtensionCheck, "automatic extension checks remain separate from manual refresh");
-  store.set({ sync: { ...store.state.sync, implementation: "fake" } });
-  dom.window.__syncCheckToken = "snapshot-next";
-  dom.window.__transcriptResponse = { ...transcript, snapshotToken: "snapshot-next" };
-  transcriptReads = dom.window.__transcriptReads;
-  await checkActiveSync();
-  assert.equal(dom.window.__transcriptReads, transcriptReads + 1, "unchanged checks still reload when the binding token changed");
-  assert.equal(store.transcript("s1").snapshotToken, "snapshot-next");
+  assert.equal(dom.window.__transcriptReads, readsBeforeSwitch + 1, "a same-ID catch-up reloads the transcript in place");
+  assert.equal(store.state.sessionId, "s1");
 
   const composer = root.querySelector("pi-composer");
   const textarea = composer.querySelector("textarea");
-  store.transcript("s1").snapshotToken = "token-old";
-  textarea.value = "draft before transcript refresh";
+  textarea.value = "draft kept across transcript reload";
   textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  assert.equal(store.draftSnapshotToken("s1"), "token-old");
-  dom.window.__transcriptResponse = { ...transcript, snapshotToken: "token-new" };
   await openTranscript("s1");
-  assert.equal(store.transcript("s1").snapshotToken, "token-new");
-  assert.equal(store.draftSnapshotToken("s1"), "token-old", "transcript loads never upgrade pinned draft tokens");
-  assert.equal(textarea.value, "draft before transcript refresh");
-
-  dom.window.__staleWrites = true;
-  let writes = dom.window.__writeRequests.length;
-  await composer.send();
-  assert.equal(dom.window.__writeRequests.length, ++writes);
-  assert.equal(dom.window.__writeRequests.at(-1).body.snapshotToken, "token-old");
-  assert.equal(textarea.value, "draft before transcript refresh");
-  assert.equal(store.draftSnapshotToken("s1"), "token-old");
-  await new Promise(resolve => setTimeout(resolve, 10));
-  assert.equal(dom.window.__writeRequests.length, writes, "stale message failures are never automatically resent");
-
-  textarea.value = "!pwd";
+  assert.equal(textarea.value, "draft kept across transcript reload", "transcript reloads keep the draft");
+  textarea.value = "";
   textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  await composer.send();
-  assert.equal(dom.window.__writeRequests.at(-1).body.snapshotToken, "token-old", "bang requests use the pinned token");
-  assert.equal(textarea.value, "!pwd", "stale bang failures preserve the draft");
-
-  textarea.value = "/skill test";
-  textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  await composer.send();
-  assert.equal(dom.window.__writeRequests.at(-1).body.snapshotToken, "token-old", "prompt-producing commands use the pinned token");
-  assert.equal(textarea.value, "/skill test", "stale command failures preserve the draft");
-
-  textarea.value = "/sync status";
-  textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  await composer.send();
-  assert.equal(Object.hasOwn(dom.window.__writeRequests.at(-1).body, "snapshotToken"), false, "/sync management remains tokenless");
-  assert.equal(store.draft("s1"), "");
-  dom.window.__staleWrites = false;
 
   const originalFileReader = globalThis.FileReader;
   let finishFileRead;
   globalThis.FileReader = class {
     readAsDataURL() { finishFileRead = () => { this.result = "data:image/png;base64,Zm9v"; this.onload(); }; }
   };
-  store.transcript("s1").snapshotToken = "attachment-token";
   const attachmentFile = new dom.window.File(["image"], "draft.png", { type: "image/png" });
   const fileRead = composer.addFiles([attachmentFile]);
-  assert.equal(store.draftSnapshotToken("s1"), "attachment-token", "attachments pin the token before FileReader completes");
-  store.transcript("s1").snapshotToken = "attachment-replacement";
-  dom.window.__syncCheckToken = "attachment-replacement";
-  dom.window.__transcriptResponse = { ...transcript, snapshotToken: "attachment-replacement" };
-  await openTranscript("s1");
-  assert.equal(store.draftSnapshotToken("s1"), "attachment-token");
   finishFileRead();
   await fileRead;
+  globalThis.FileReader = originalFileReader;
   assert.equal(store.draftAttachments("s1").length, 1);
   textarea.value = "attachment draft";
   textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  dom.window.__staleWrites = true;
   await composer.send();
-  assert.equal(dom.window.__writeRequests.at(-1).body.snapshotToken, "attachment-token");
   assert.equal(dom.window.__writeRequests.at(-1).body.images[0].data, "Zm9v");
-  assert.equal(textarea.value, "attachment draft");
-  assert.equal(store.draftAttachments("s1").length, 1, "stale failures preserve attachments");
-  globalThis.FileReader = originalFileReader;
-  textarea.value = "";
-  textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  composer.querySelector("[data-remove-image]").click();
-  dom.window.__staleWrites = false;
+  assert.deepEqual(Object.keys(dom.window.__writeRequests.at(-1).body).sort(), ["clientMessageId", "images", "mode", "text"]);
+  assert.equal(store.draftAttachments("s1").length, 0, "a delivered message clears its attachments");
+  store.transcript("s1").records = store.transcript("s1").records.filter(record => !record.pending);
 
   root.querySelector("pi-header [data-act='workspace-settings']").click();
   assert.equal(root.querySelector("[data-act='run-hook']").textContent, "Check");
@@ -1403,20 +1232,13 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(store.state.sessionId, "s1", "switches from another conversation do not move this tab");
 
-  store.transcript("s1").snapshotToken = "same-old";
-  dom.window.__syncCheckToken = "same-new";
-  dom.window.__transcriptResponse = { ...transcript, snapshotToken: "same-new" };
   textarea.value = "same-id draft";
   textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   applyEvent({ v: 1, seq: 103, sessionId: "s1", type: "session_switched", toSessionId: "s1" });
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(store.state.sessionId, "s1");
-  assert.equal(textarea.value, "same-id draft");
-  assert.equal(store.draftSnapshotToken("s1"), "same-old");
-  assert.doesNotMatch(root.querySelector(".command-notice")?.textContent || "", /replacement is ready/, "a same-ID catch-up never waits on the draft");
-  await openTranscript("s1");
-  assert.equal(store.transcript("s1").snapshotToken, "same-new");
-  assert.equal(store.draftSnapshotToken("s1"), "same-old", "same-ID transcript reloads preserve the draft token");
+  assert.equal(textarea.value, "same-id draft", "a same-ID catch-up keeps the draft");
+  assert.doesNotMatch(root.querySelector(".command-notice")?.textContent || "", /replacement is ready/);
   textarea.value = "";
   textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await new Promise(resolve => setTimeout(resolve, 50));
@@ -1424,22 +1246,13 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(store.state.commandNotice, null);
 
   dom.window.__addSyncTargetOnStateRefresh = true;
-  dom.window.__syncCheckToken = "same-new";
-  dom.window.__transcriptResponse = { ...transcript, snapshotToken: "same-new" };
   textarea.value = "source draft";
   textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  const sourceToken = store.draftSnapshotToken("s1");
   applyEvent({ v: 1, seq: 104, sessionId: "s1", type: "session_switched", toSessionId: "sync-target" });
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(store.state.sessionId, "s1", "a replacement waits while the source has a draft");
-  assert.equal(store.draft("s1"), "source draft");
-  assert.equal(store.draftSnapshotToken("s1"), sourceToken);
-  assert.match(root.querySelector(".command-notice")?.textContent || "", /replacement is ready/);
-  textarea.value = "";
-  textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   await new Promise(resolve => setTimeout(resolve, 60));
-  assert.equal(store.state.sessionId, "sync-target", "clearing the source draft catches up to the replacement");
-  assert.equal(store.draft("s1"), "");
+  assert.equal(store.state.sessionId, "sync-target", "a replacement opens without waiting for the source draft");
+  assert.equal(store.draft("s1"), "source draft", "the source draft stays with its conversation");
+  store.clearDraft("s1");
 
   selectSession("p1", "s1");
   await new Promise(resolve => setTimeout(resolve, 20));
@@ -1454,7 +1267,6 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(store.state.sessionId, "sibling", "selection changes during state refresh prevent stale SSE navigation");
 
   selectSession("p1", "s1");
-  store.transcript("s1").snapshotToken = "newer-edit-token";
   textarea.value = "first submission";
   textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   dom.window.__holdMessage = true;
@@ -1467,7 +1279,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(store.draftAttachments("s1").length, 1, "a completed send cannot clear newer attachments");
   assert.equal(textarea.value, "newer unsent text");
 
-  dom.window.__staleWrites = true;
+  dom.window.__failWrites = true;
   const failing = composer.send();
   store.setDraft("latest unsent text", "s1");
   store.setDraftAttachments([{ type: "image", data: "YmFy", mimeType: "image/png", name: "latest.png" }], "s1");
@@ -1476,17 +1288,9 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(store.draft("s1"), "latest unsent text", "a failed send cannot restore over newer text");
   assert.equal(store.draftAttachments("s1")[0].name, "latest.png", "a failed send cannot restore over newer attachments");
   dom.window.__holdMessage = false;
-  dom.window.__staleWrites = false;
+  dom.window.__failWrites = false;
   store.clearDraft("s1");
-
-  state.chats.push({ id: "sync-chat", title: "Standalone sync", synchronized: true, streaming: false });
-  await refreshState();
-  const { selectChat } = await import("../public/js/shell.js");
-  const chatChecksBefore = checkCount();
-  selectChat("sync-chat");
-  await checkActiveSync();
-  assert.ok(checkCount() > chatChecksBefore, "standalone synchronized chats check on selection");
-  assert.equal(store.state.chatId, "sync-chat");
+  state.chats.push({ id: "fallback-chat", title: "Standalone chat", streaming: false });
 
   selectSession("p1", "s1");
   await new Promise(resolve => setTimeout(resolve, 30));
@@ -1500,11 +1304,11 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   state.projects[0].sessions = [];
   await refreshState();
   assert.equal(store.state.sessionId, "s1");
-  assert.equal(state.chats[0].id, "sync-chat");
+  assert.equal(state.chats[0].id, "fallback-chat");
   applyEvent({ v: 1, seq: 200, sessionId: "s1", type: "session_closed" });
   assert.equal(store.transcript("s1").seq, 200);
   await new Promise(resolve => setTimeout(resolve, 30));
-  assert.equal(store.state.chatId, "sync-chat", "closing the last project session falls back to a chat");
+  assert.equal(store.state.chatId, "fallback-chat", "closing the last project session falls back to a chat");
   assert.deepEqual({
     model: store.state.model,
     requestedModel: store.state.requestedModel,

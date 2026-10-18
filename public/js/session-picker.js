@@ -166,21 +166,6 @@ class PiSessionPicker extends HTMLElement {
     ];
   }
 
-  // Shared-conversation facts for an open session; empty unless it is synchronized.
-  syncRows(session) {
-    if (!session?.synchronized) return [];
-    const state = { available: "Available", in_use: "In use", error: "Error" }[session.syncState] || session.syncState || "Unknown";
-    const workspace = session.syncWorkspace;
-    const rows = [
-      ["Sync", state],
-      ["Conversation", session.syncTitle && session.syncTitle !== session.syncSessionId ? session.syncTitle : "Untitled conversation"],
-      ["Upstream", workspace ? `${workspace.branch}@${String(workspace.commit || "").slice(0, 8)}` : "Unscoped", workspace ? `${workspace.gitRemote} ${workspace.branch}@${workspace.commit}` : ""],
-    ];
-    if (session.syncState === "in_use") rows.push(["Lease", `${session.leaseHolder || "Active here"}${session.leaseExpiresAt ? ` · until ${session.leaseExpiresAt}` : ""}`]);
-    if (session.syncError?.message) rows.push(["Problem", session.syncError.message]);
-    return rows;
-  }
-
   async fetchBranches() {
     if (this.busy) return;
     const picker = this.picker();
@@ -571,10 +556,8 @@ class PiSessionPicker extends HTMLElement {
           const hint = name === "setup" ? "Runs the project's setup script (e.g. npm ci) in this worktree." : `Runs the project's ${name} hook in this worktree.`;
           return actionRow(label, hint, `<button class="btn btn-secondary" data-act="run-hook" data-hook="${esc(name)}" ${running ? "disabled" : ""}>${esc(running ? "Running…" : label)}</button>`);
         }).join("");
-        const syncRows = this.syncRows(sourceSession);
         const sessionSection = `<section class="session-picker-actions" aria-label="Session">
           <div class="session-context-heading"><span>Session</span></div>
-          ${syncRows.length ? detailList(syncRows) : ""}
           <div class="panel-rows session-picker-session-buttons">
             ${actionRow("Fork", "Copies this conversation to a new branch and worktree.", `<button class="btn btn-secondary" data-act="open-fork" ${this.busy ? "disabled" : ""}>Fork…</button>`)}
             ${hookRows}

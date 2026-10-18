@@ -1,5 +1,5 @@
 export function register(api, deps) {
-  const { execFile, chatsDir, loadConfig, newId, sessionWorkspace, findProjectByWorkspace, hub, hookResult, projectHooks, runHook, resolveProjectEnvironment, gitCredentialEnvironment, createOperationReporter, operationRequestId, err, formatDuration, mutate, withAdmission, sup } = deps;
+  const { execFile, chatsDir, loadConfig, newId, sessionWorkspace, findProjectByWorkspace, hub, hookResult, projectHooks, runHook, resolveProjectEnvironment, gitCredentialEnvironment, createOperationReporter, operationRequestId, err, formatDuration, sup } = deps;
 
 
   // Configured project hooks run in the current session workspace. Hook names
@@ -43,10 +43,8 @@ export function register(api, deps) {
   // agent tool calls end-to-end (orange ! rendering keyed on bang_* events).
   api.post("/sessions/:id/bang", async c => {
     const id = c.req.param("id");
-    return mutate(id, async () => {
-    const { cmd, snapshotToken } = await c.req.json();
+    const { cmd } = await c.req.json();
     if (!cmd?.trim()) return err(c, 400, "empty_command");
-    try { return await withAdmission(id, snapshotToken, async () => {
     const cwd = (await sessionWorkspace(id, sup)) || chatsDir();
     let env;
     try {
@@ -72,10 +70,5 @@ export function register(api, deps) {
     hub.emit(id, "bang_end", { bangId, exit, durationMs, stdout: out });
     await sup.bangRecord(id, { id: bangId, role: "bang", cmd, meta, out });
     return c.json({ exit, durationMs });
-    }, "bang"); } catch (error) {
-      if (error.code === "sync_snapshot_stale" || error.code === "sync_busy") return err(c, 409, error.code);
-      throw error;
-    }
-    });
   });
 }

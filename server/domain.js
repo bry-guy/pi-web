@@ -18,15 +18,6 @@ function pathKey(value) {
   try { return path.resolve(value); } catch { return String(value || ""); }
 }
 
-export async function sessionSyncState(sessionId, sync) {
-  if (!sync?.status) return { synchronized: false };
-  try {
-    return await sync.status(sessionId);
-  } catch {
-    return { synchronized: false, syncState: "error", leaseHolder: null };
-  }
-}
-
 function unavailableContext(project, binding) {
   const workspacePath = binding.workspacePath;
   return {
@@ -115,7 +106,7 @@ async function sessionsForContexts(project, workspacePath, sup, bindings, contex
     }));
 }
 
-export async function projectState(project, sup, sync = null) {
+export async function projectState(project, sup) {
   const cfg = loadConfig();
   const bindings = loadBindings();
   // Read repository-level Git facts once per snapshot and share them.
@@ -130,7 +121,6 @@ export async function projectState(project, sup, sync = null) {
   const closed = loadClosed();
   const discovered = await discoverProjectSessions(contexts, bindings, closed, sup, project.id);
   const all = discovered.filter(s => !s.closed);
-  const syncStates = new Map(await Promise.all(all.map(async session => [session.id, await sessionSyncState(session.id, sync)])));
 
   // Session tree from fork lineage. Walk through closed ancestors so visible
   // descendants occupy the closed node's former position.
@@ -152,7 +142,6 @@ export async function projectState(project, sup, sync = null) {
       name: n.name || null,
       contextId: pathToContext[pathKey(n.cwd)]?.id || null,
       branch: pathToContext[pathKey(n.cwd)]?.branch || null,
-      ...syncStates.get(n.id),
       workspacePath: n.cwd || null,
       streaming: sup.isStreaming(n.id),
       model: n.model || null,
@@ -175,7 +164,6 @@ export async function projectState(project, sup, sync = null) {
       id: session.id,
       title: titleOf(session),
       streaming: sup.isStreaming(session.id),
-      ...syncStates.get(session.id),
       updatedAt: isoTime(session.modified),
       when: rel(session.modified),
     }));
@@ -204,7 +192,7 @@ export async function projectState(project, sup, sync = null) {
   };
 }
 
-export async function chatsState(sup, sync = null) {
+export async function chatsState(sup) {
   const root = chatsDir();
   const cwds = [root];
   try {
@@ -222,13 +210,11 @@ export async function chatsState(sup, sync = null) {
   // An unprompted, unnamed chat that nothing has open is an empty scratch file.
   // Hide it from the sidebar without touching the file.
   const list = discovered.filter(s => !closed.has(s.id) && (hasPrompt(s) || promptText(s.name) || sup.isStreaming(s.id) || sup.isOpen?.(s.id)));
-  const syncStates = new Map(await Promise.all(list.map(async session => [session.id, await sessionSyncState(session.id, sync)])));
   return list
     .sort((a, b) => compareTimestamp(b.modified, a.modified))
     .map(s => ({
       id: s.id,
       title: titleOf(s),
-      ...syncStates.get(s.id),
       when: rel(s.modified),
       updatedAt: isoTime(s.modified),
       activityAt: isoTime(s.modified),

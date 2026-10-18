@@ -7,12 +7,10 @@ import os from "node:os";
 import { Hono } from "hono";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureHome, loadConfig } from "./config.js";
+import { ensureHome, exportSyncEnvironment, loadConfig } from "./config.js";
 import { hub } from "./events.js";
 import { buildApi } from "./routes.js";
 import { createSupervisor } from "./supervisor/index.js";
-import { createSyncCoordinator } from "./sync/coordinator.js";
-import { PiSyncWebAdapter } from "./sync/web-adapter.js";
 import { publicError } from "./pi-configuration.js";
 import { writeLog } from "./logging.js";
 import { BUILD_ID } from "./version.js";
@@ -118,7 +116,7 @@ function addStaticRoutes(app, { uiOnly }) {
   app.use("/*", serveStatic({ root: path.join(root, "public") }));
 }
 
-export function createApp({ syncCoordinator = null, uiOnly = uiOnlyEnabled() } = {}) {
+export function createApp({ uiOnly = uiOnlyEnabled() } = {}) {
   const app = new Hono();
   let sup = null;
   app.onError((error, c) => {
@@ -130,10 +128,7 @@ export function createApp({ syncCoordinator = null, uiOnly = uiOnlyEnabled() } =
     c.header("x-request-id", requestId);
     const code = typeof error?.code === "string" ? error.code : "";
     const status = Number(error?.status);
-    if (status >= 400 && status < 500 && (code.startsWith("sync_") || ["active_lease", "session_streaming", "session_compacting", "workspace_mismatch", "workspace_required"].includes(code))) {
-      return c.json({ error: code, ...(error.message ? { message: error.message } : {}), ...(error.details ? { details: error.details } : {}) }, status);
-    }
-    if (status >= 500 && status < 600 && code.startsWith("sync_")) {
+    if (status >= 400 && status < 500 && ["session_busy", "session_streaming", "session_compacting", "sync_open_failed", "workspace_mismatch", "workspace_required"].includes(code)) {
       return c.json({ error: code, ...(error.message ? { message: error.message } : {}), ...(error.details ? { details: error.details } : {}) }, status);
     }
     return c.json({ error: "internal_error", requestId }, 500);
@@ -144,19 +139,16 @@ export function createApp({ syncCoordinator = null, uiOnly = uiOnlyEnabled() } =
     if ((process.env.PI_WEB_MODE || "real") !== "mock") linkJitiCache();
     sup = createSupervisor(hub);
     const realMode = (process.env.PI_WEB_MODE || "real") !== "mock";
-    const adapter = !syncCoordinator && realMode
-      ? new PiSyncWebAdapter({ hub, supervisor: sup, configProvider: loadConfig })
-      : null;
-    const coordinator = syncCoordinator || (adapter || createSyncCoordinator({ supervisor: sup, configProvider: loadConfig }));
-    if (adapter) sup.setSyncAdapter?.(adapter);
-    else sup.setSyncCoordinator?.(coordinator);
+    // Mock mode has no SDK sessions, so no extension UI to bind.
+    const extensionUi = realMode ? sup.extensionUi : null;
+    if (realMode) exportSyncEnvironment();
     app.use("/api/*", async (c, next) => {
       const requestId = randomUUID();
       c.set("requestId", requestId);
       c.header("x-request-id", requestId);
       await next();
     });
-    app.route("/api", buildApi(sup, { syncCoordinator: adapter ? null : coordinator, syncAdapter: adapter }));
+    app.route("/api", buildApi(sup, { extensionUi }));
   }
   addStaticRoutes(app, { uiOnly });
   return { app, sup };

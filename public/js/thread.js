@@ -92,22 +92,6 @@ function turnStats(turn) {
   return { steps: turn.records.filter(record => record.role === "tool").length, duration: duration >= 1000 ? duration : 0 };
 }
 
-function syncFailureText(error) {
-  const details = error?.details || {};
-  return {
-    active_lease: details.holder ? `This conversation is in use by ${details.holder}.` : "This conversation is in use by another client.",
-    sync_unavailable: "The synchronization service is temporarily unavailable.",
-    sync_conflict: "The canonical conversation changed elsewhere; the local copy was preserved.",
-    sync_snapshot_stale: "This conversation was replaced elsewhere. Your draft is preserved; clear it to compose against the replacement.",
-    sync_lease_uncertain: "The synchronization lease could not be verified. Try again after the service recovers.",
-    sync_session_not_found: "The sync server no longer has this conversation.",
-    sync_workspace_setup_required: error?.message || "Prepare the recorded Git workspace before continuing.",
-  }[error?.error] || "";
-}
-
-function syncFailureMessage(error, prefix) {
-  return `${prefix}: ${syncFailureText(error) || error?.message || error?.error || String(error)}`;
-}
 
 /* ---------------- thread ---------------- */
 const EMPTY_STATE = `<div class="empty-pi"><div class="tile">π</div><h1 class="empty-greeting">What shall we <em>build</em>?</h1></div>`;
@@ -1022,7 +1006,6 @@ class PiComposer extends HTMLElement {
 
     this.ta.addEventListener("input", () => {
       const id = store.activeKey();
-      if (this.ta.value) store.pinDraftSnapshot(id);
       store.setDraft(this.ta.value, id);
       this.resizeEditor();
       void this.syncCommands();
@@ -1317,7 +1300,6 @@ class PiComposer extends HTMLElement {
       const draft = store.draftData(id);
       if (!file.type.startsWith("image/") || store.draftAttachments(id).length + (draft?.pendingAttachments || 0) >= 4) continue;
       if (file.size > 6_000_000) { store.setError("Images must be smaller than 6 MB."); continue; }
-      store.pinDraftSnapshot(id);
       store.setDraftPendingAttachments((draft?.pendingAttachments || 0) + 1, id);
       if (store.activeKey() === id) this.sync();
       try {
@@ -1351,11 +1333,6 @@ class PiComposer extends HTMLElement {
     const attachments = store.draftAttachments(id).slice();
     if (!id || (!text && !attachments.length) || store.transcript(id).compacting
       || draft?.pendingAttachments || this.sendingIds.has(id)) return;
-    const snapshotToken = store.pinDraftSnapshot(id);
-    const draftRecord = store.draftData(id);
-    const snapshotTokenCaptured = Object.hasOwn(draftRecord, "snapshotToken");
-    const session = store.findAnySession(id);
-    const writeToken = session?.synchronized ? snapshotToken : undefined;
     const images = attachments.map(({ type, data, mimeType }) => ({ type, data, mimeType }));
     const pendingId = !text.startsWith("/") && !text.startsWith("!")
       ? this.addPendingMessage(id, text, images)
@@ -1371,36 +1348,33 @@ class PiComposer extends HTMLElement {
     store.setDraft("", id);
     store.setDraftAttachments([], id);
     const sentRevision = store.draftData(id)?.revision;
-    delete store.draftData(id)?.snapshotToken;
     store.set({ commandNotice: null });
     this.sync();
     const streaming = store.transcript(id).streaming;
     const mode = forcedMode || (streaming ? "steer" : "prompt");
     try {
       if (text.startsWith("!")) {
-        await api.bang(id, text.slice(1).trim(), writeToken);
+        await api.bang(id, text.slice(1).trim());
       } else if (text.startsWith("/")) {
-        const commandToken = session?.synchronized && !/^\/sync(?:\s|$)/.test(text) ? snapshotToken : undefined;
-        const result = await api.command(id, text, mode, commandToken);
+        const result = await api.command(id, text, mode);
         if (store.activeKey() === id) await this.handleCommandResult(id, result);
       } else {
-        await api.message(id, text, mode, images, pendingId, writeToken);
+        await api.message(id, text, mode, images, pendingId);
       }
       if (store.draftData(id)?.revision === sentRevision) store.clearDraft(id);
     } catch (err) {
       const message = err.error === "model_required"
         ? "No model is available."
-        : syncFailureText(err) || err.message || err.error || String(err);
+        : err.message || err.error || String(err);
       this.markPendingMessage(id, pendingId, message);
       const currentDraft = store.draftData(id);
       if (currentDraft?.revision === sentRevision) {
-        if (snapshotTokenCaptured) currentDraft.snapshotToken = snapshotToken;
         store.setDraft(rawText, id);
         store.setDraftAttachments(attachments, id);
       }
       store.setError(err.error === "model_required"
         ? "No model is available. Connect a provider or choose one in Settings."
-        : syncFailureMessage(err, "Send failed"));
+        : `Send failed: ${err.message || err.error || String(err)}`);
     } finally {
       this.sendingIds.delete(id);
       store.setDraftSending(false, id);

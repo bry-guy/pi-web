@@ -1,11 +1,13 @@
 # pi-sync integration
 
-Status: the real web runtime now loads the pi-sync extension through the Pi SDK
-when a sync server is configured. `PiSyncWebAdapter` supplies browser dialogs,
-extension status, and session replacement; the extension owns enrollment, leases,
-heartbeat, ETags, materialization, and settled-session upload. The old web
-coordinator remains available for mock-mode and compatibility tests while the
-extension path is validated.
+Status: the real web runtime loads the pi-sync extension through the Pi SDK
+when a sync server is configured. The app has no sync layer of its own: the
+extension owns enrollment, leases, heartbeat, ETags, materialization, catch-up,
+and settled-session upload. `server/extension-ui.js` (`ExtensionUiHost`) only
+supplies browser dialogs, extension status (the `pi-sync` key drives the header
+badge), and session replacement. The web coordinator, its `/sync` routes, and
+the snapshot-token write guard were removed. The extension's input-time catch-up
+guards stale sends, so the browser no longer pins a snapshot token per draft.
 
 ## Goals
 
@@ -38,7 +40,7 @@ pi-syncd
   canonical envelopes, ETags, and renewable exclusive leases
 ```
 
-`PiSyncWebAdapter` is a host integration, not a second synchronization client.
+`ExtensionUiHost` is a host integration, not a second synchronization client.
 It provides:
 
 - `select`, `confirm`, `input`, and `editor` through browser dialogs;
@@ -84,10 +86,8 @@ The pi-sync extension is authoritative in the real web runtime:
 9. The extension materializes the selected canonical snapshot and calls
    `ctx.switchSession`; the web adapter replaces the active `AgentSession`.
 
-The old `PiSyncCoordinator` is not installed in this path, so there is only one
-live lease state machine for a web session. It remains for mock-mode behavior and
-existing coordinator tests until extension-only end-to-end validation replaces
-them.
+The old `PiSyncCoordinator` is removed, so there is one live lease state machine
+for a web session: the extension's. Mock mode has no SDK sessions and no sync.
 
 Prompt turns and explicit sync operations use the extension-owned lifecycle.
 Attachment is passive; immediately before a normal prompt, the web host asks
@@ -162,15 +162,13 @@ The remaining acceptance tests are:
 - Git pointer transfer and non-blocking mismatch notifications;
 - representative third-party extensions and skills loading unchanged.
 
-The existing coordinator tests continue to cover the compatibility fake and the
-previous network lifecycle during the transition. They are not evidence that
-the extension-only web path is complete.
+The coordinator tests were removed with the coordinator. Extension-only end-to-end
+validation of the web path remains open.
 
 ## Explicit follow-up work
 
 These are intentionally not part of the initial sync cutover:
 
-- remove the compatibility coordinator after extension-only end-to-end tests;
 - make browser built-in command adapters thinner around Pi SDK operations;
 - expose Pi extension argument completions in the web composer;
 - improve fallback rendering for custom extension messages and tool results;

@@ -43,15 +43,12 @@ exec "$PI_TEST_REAL_GIT" "$@"
       import { createIsolatedServerFixture } from ${JSON.stringify(new URL("./helpers/isolated-server-fixture.js", import.meta.url).href)};
       const fixture = await createIsolatedServerFixture();
       const { loadBindings } = await import(${JSON.stringify(new URL("../server/config.js", import.meta.url).href)});
-      const { FakeSyncCoordinator } = await import(${JSON.stringify(new URL("../server/sync/coordinator.js", import.meta.url).href)});
       const streaming = fixture.supervisor.isStreaming.bind(fixture.supervisor), rehome = fixture.supervisor.rehome.bind(fixture.supervisor), stop = fixture.supervisor.stop.bind(fixture.supervisor);
-      const status = FakeSyncCoordinator.prototype.status;
       let flags = {};
       const stopped = [];
       fixture.supervisor.isStreaming = id => flags.streaming === id || streaming(id);
       fixture.supervisor.stop = async id => { await stop(id); stopped.push(id); if (flags.streaming === id) flags.streaming = null; };
       fixture.supervisor.rehome = (id, cwd) => { if (flags.failRehome === id) throw new Error('intentional rehome failure'); return rehome(id, cwd); };
-      FakeSyncCoordinator.prototype.status = function(id) { return { ...status.call(this, id), ...(flags.synchronized === id ? { synchronized: true } : {}) }; };
       process.on('message', async message => {
         if (message.source) {
           flags = {};
@@ -137,19 +134,12 @@ exec "$PI_TEST_REAL_GIT" "$@"
     const force = await held("delete-read", forced, "DELETE", null, { force: true });
     assert.equal(force.status, 200, JSON.stringify(force.body));
     assert.equal(fs.existsSync(forced.workspacePath), false);
-    const deleteSynced = await source(), beforeSync = git("show-ref");
-    const protectedDelete = await held("delete-read", deleteSynced, "DELETE", { synchronized: deleteSynced.sessionId });
-    assert.equal(protectedDelete.body.error, "sync_workspace_in_use");
-    assert.equal(git("show-ref"), beforeSync);
-    assert.equal(fs.existsSync(deleteSynced.workspacePath), true);
-    for (const flags of ["streaming", "synchronized"]) {
-      const item = await source(), before = git("show-ref");
-      const result = await held("read", item, "POST", { [flags]: item.sessionId });
-      assert.equal(result.status, 409);
-      assert.equal(result.body.error, flags === "streaming" ? "sessions_active" : "sync_workspace_in_use");
-      assert.equal(git("show-ref"), before);
-      assert.equal(fs.existsSync(item.workspacePath), true);
-    }
+    const streamed = await source(), beforeStreamed = git("show-ref");
+    const streamedResult = await held("read", streamed, "POST", { streaming: streamed.sessionId });
+    assert.equal(streamedResult.status, 409);
+    assert.equal(streamedResult.body.error, "sessions_active");
+    assert.equal(git("show-ref"), beforeStreamed);
+    assert.equal(fs.existsSync(streamed.workspacePath), true);
     const failed = await source(), before = git("show-ref");
     assert.equal((await held("merge-fail", failed, "POST")).body.error, "merge_conflict");
     assert.equal(git("show-ref"), before);

@@ -1,6 +1,6 @@
 import { readHistory } from "../workspace-history.js";
 export function register(api, deps) {
-  const { path, loadBindings, loadConfig, saveBindings, slug, worktreeRoot, sessionWorkspace, sessionsUsingWorkspaceAsync, findProjectByWorkspace, findProjectByWorkspaceAsync, returnSessionToMain, hub, ws, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, suggestedWorktreeBranch, hasSynchronizedSibling, bindSessionToContext, bindRehomedSession, primaryBranch, sync, guardedWorkspaceSessions, mutate, sup } = deps;
+  const { path, loadBindings, loadConfig, saveBindings, slug, worktreeRoot, sessionWorkspace, sessionsUsingWorkspaceAsync, findProjectByWorkspace, findProjectByWorkspaceAsync, returnSessionToMain, hub, ws, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, suggestedWorktreeBranch, bindSessionToContext, bindRehomedSession, primaryBranch, guardedWorkspaceSessions, sup } = deps;
 
 
   api.post("/sessions/:id/worktree", async c => {
@@ -9,7 +9,6 @@ export function register(api, deps) {
     const initialFound = initialCwd && await findProjectByWorkspaceAsync(initialCwd);
     if (!initialFound) return err(c, 404, "no_project_for_session");
     return withRepositoryAdmission(c, initialFound.project.repoPath, async identity => {
-      return mutate(id, async () => {
     const body = await c.req.json().catch(() => ({}));
     const fork = body.fork === true;
     const cwd = await sessionWorkspace(id, sup);
@@ -25,7 +24,6 @@ export function register(api, deps) {
     const mainBranch = await ws.defaultBranchAsync(project.repoPath, localBranches);
     const validateSource = async () => {
       const sessions = await sessionsUsingWorkspaceAsync(project, cwd, sup);
-      if (await hasSynchronizedSibling(sessions, id, sync)) throw Object.assign(new Error("sync_shared_workspace"), { code: "sync_shared_workspace" });
       const latest = await sessionWorkspace(id, sup);
       if (!latest || path.resolve(latest) !== path.resolve(cwd)) throw Object.assign(new Error("repository_changed"), { code: "repository_changed" });
       if (sup.isStreaming(id)) throw Object.assign(new Error("session_streaming"), { code: "session_streaming" });
@@ -65,7 +63,7 @@ export function register(api, deps) {
         if (e.code === "checkout_dirty") return err(c, 409, "checkout_dirty");
         if (e.code === "git_status_unavailable") return err(c, 409, e.code, e.detail ? { detail: e.detail } : {});
         if (e.code === "branch_exists") return err(c, 409, "branch_exists");
-        if (["main_worktree_forbidden", "session_streaming", "sessions_active", "sync_shared_workspace", "repository_changed", "stash_restore_failed"].includes(e.code)) return err(c, 409, e.code, e.detail ? { detail: e.detail, stashRef: e.stashRef, workspacePath: e.workspacePath } : {});
+        if (["main_worktree_forbidden", "session_streaming", "sessions_active", "repository_changed", "stash_restore_failed"].includes(e.code)) return err(c, 409, e.code, e.detail ? { detail: e.detail, stashRef: e.stashRef, workspacePath: e.workspacePath } : {});
         throw e;
       }
       const setupNeeded = !!projectHooks(cfg, project).setup;
@@ -80,7 +78,7 @@ export function register(api, deps) {
       } catch (e) {
         if (!childId) await cleanupUnusedFork(branchName, branchWorkspace);
         if (e.code === "bad_fork_record") return err(c, 400, "bad_fork_record");
-        if (["session_streaming", "sessions_active", "sync_shared_workspace", "repository_changed"].includes(e.code)) return err(c, 409, e.code);
+        if (["session_streaming", "sessions_active", "repository_changed"].includes(e.code)) return err(c, 409, e.code);
         throw e;
       }
     }
@@ -92,13 +90,13 @@ export function register(api, deps) {
         projectId: project.id, branch, fromRef: remoteSource || "HEAD", primaryBranch: mainBranch, beforeCreate: validateSource,
       });
     } catch (e) {
-      if (["checkout_branch", "main_worktree_forbidden", "session_streaming", "sessions_active", "sync_shared_workspace", "repository_changed"].includes(e.code)) return err(c, 409, e.code);
+      if (["checkout_branch", "main_worktree_forbidden", "session_streaming", "sessions_active", "repository_changed"].includes(e.code)) return err(c, 409, e.code);
       throw e;
     }
     if (path.resolve(target) === path.resolve(cwd)) return c.json({ ok: true, branch, workspacePath: target, setup: null, setupNeeded: false });
 
     try { await validateSource(); await sup.rehome(id, target); }
-    catch (e) { if (["session_streaming", "sessions_active", "sync_shared_workspace", "repository_changed"].includes(e.code)) return err(c, 409, e.code); throw e; }
+    catch (e) { if (["session_streaming", "sessions_active", "repository_changed"].includes(e.code)) return err(c, 409, e.code); throw e; }
     bindRehomedSession(id, project, cwd, target);
     const bindings = loadBindings();
     bindings[id] = { branch, workspacePath: target };
@@ -106,7 +104,6 @@ export function register(api, deps) {
     hub.emit(id, "session_meta", { branch });
     const setupNeeded = !existingTarget && !!projectHooks(cfg, project).setup;
     return c.json({ ok: true, branch, workspacePath: target, setup: null, setupNeeded });
-      });
     });
   });
 
@@ -116,7 +113,6 @@ export function register(api, deps) {
     const initialFound = initialCwd && await findProjectByWorkspaceAsync(initialCwd);
     if (!initialFound) return err(c, 404, "no_project_for_session");
     return withRepositoryAdmission(c, initialFound.project.repoPath, async identity => {
-      return mutate(id, async () => {
     const body = await c.req.json().catch(() => ({}));
     const cwd = await sessionWorkspace(id, sup);
     const found = cwd && await findProjectByWorkspaceAsync(cwd);
@@ -132,7 +128,6 @@ export function register(api, deps) {
     if (remoteSource && !remoteBranches.includes(remoteSource)) return err(c, 400, "invalid_remote_branch");
     const mainBranch = await ws.defaultBranchAsync(project.repoPath, localBranches);
     const beforeSwitch = async sessions => {
-      if (await hasSynchronizedSibling(sessions, id, sync)) throw Object.assign(new Error("sync_shared_workspace"), { code: "sync_shared_workspace" });
       const latestCwd = await sessionWorkspace(id, sup);
       if (!latestCwd || path.resolve(latestCwd) !== path.resolve(cwd)) throw Object.assign(new Error("repository_changed"), { code: "repository_changed" });
     };
@@ -140,11 +135,10 @@ export function register(api, deps) {
       if (remoteSource) return err(c, 409, "main_worktree_forbidden");
       if (await ws.currentBranchAsync(project.repoPath) !== mainBranch) {
         const affected = await sessionsUsingWorkspaceAsync(project, project.repoPath, sup);
-        if (await hasSynchronizedSibling(affected, id, sync)) return err(c, 409, "sync_shared_workspace");
       }
       try { return c.json(await returnSessionToMain(sup, hub, id, { beforeSwitch, expectedCwd: cwd })); }
       catch (e) {
-        const codes = { session_streaming: 409, no_project_for_session: 404, checkout_dirty: 409, git_status_unavailable: 409, sessions_active: 409, main_worktree_external: 409, return_rehome_failed: 409, git_switch_failed: 409, sync_shared_workspace: 409, repository_changed: 409 };
+        const codes = { session_streaming: 409, no_project_for_session: 404, checkout_dirty: 409, git_status_unavailable: 409, sessions_active: 409, main_worktree_external: 409, return_rehome_failed: 409, git_switch_failed: 409, repository_changed: 409 };
         if (codes[e.code]) return err(c, codes[e.code], e.code, e.detail ? { detail: e.detail, workspacePath: e.workspacePath } : e.workspacePath ? { workspacePath: e.workspacePath } : {});
         throw e;
       }
@@ -157,7 +151,6 @@ export function register(api, deps) {
     const target = worktrees[branch];
     if (target && path.resolve(target) !== path.resolve(cwd)) return err(c, 409, "branch_in_use", { workspacePath: target });
     let sessions = await sessionsUsingWorkspaceAsync(project, cwd, sup);
-    if (await hasSynchronizedSibling(sessions, id, sync)) return err(c, 409, "sync_shared_workspace");
     if (sessions.some(session => sup.isStreaming(session.id))) return err(c, 409, "sessions_active");
     try {
       if (await ws.isDirtyAsync(cwd)) return err(c, 409, "workspace_dirty");
@@ -166,7 +159,7 @@ export function register(api, deps) {
       if (sessions.some(session => sup.isStreaming(session.id))) return err(c, 409, "sessions_active");
       await ws.switchWorkspaceAsync({ repoPath: project.repoPath, workspacePath: cwd, branch, fromRef: remoteSource, primaryBranch: mainBranch });
     } catch (e) {
-      if (["git_status_unavailable", "git_switch_failed", "main_worktree_forbidden", "sync_shared_workspace", "repository_changed"].includes(e.code)) return err(c, 409, e.code, e.detail ? { detail: e.detail } : {});
+      if (["git_status_unavailable", "git_switch_failed", "main_worktree_forbidden", "repository_changed"].includes(e.code)) return err(c, 409, e.code, e.detail ? { detail: e.detail } : {});
       throw e;
     }
     sessions = await sessionsUsingWorkspaceAsync(project, cwd, sup);
@@ -179,7 +172,6 @@ export function register(api, deps) {
       hub.emit(session.id, "workspace_switched", { branch, workspacePath: cwd });
     }
     return c.json({ ok: true, branch, workspacePath: cwd, switched: true });
-      });
     });
   });
 
@@ -199,7 +191,6 @@ export function register(api, deps) {
     if (!initialFound) return err(c, 404, "no_project_for_session");
     reporter.bind(initialCwd);
     return withRepositoryAdmission(c, initialFound.project.repoPath, async identity => {
-      return mutate(id, async () => {
     const cwd = await sessionWorkspace(id, sup);
     const found = cwd && await findProjectByWorkspaceAsync(cwd);
     if (!found) return err(c, 404, "no_project_for_session");
@@ -217,7 +208,6 @@ export function register(api, deps) {
       if (e.code === "git_pull_failed") return err(c, 409, e.code, { detail: e.detail, operation });
       throw e;
     }
-      });
     });
   });
 
@@ -324,12 +314,6 @@ export function register(api, deps) {
         const operation = reporter.finish({ status: "error", httpStatus: 409, message: "Stop active sessions before merging this branch." });
         return err(c, 409, "sessions_active", { operation });
       }
-      for (const session of affected) {
-        if ((await sync.status(session.id)).synchronized) {
-          const operation = reporter.finish({ status: "error", httpStatus: 409, message: "A synchronized conversation is using this branch." });
-          return err(c, 409, "sync_workspace_in_use", { operation });
-        }
-      }
       let checkoutSessions = await sessionsUsingWorkspaceAsync(found.project, found.project.repoPath, sup);
       if (checkoutSessions.some(session => sup.isStreaming(session.id))) {
         const operation = reporter.finish({ status: "error", httpStatus: 409, message: "Stop active sessions in the primary checkout before merging." });
@@ -343,7 +327,6 @@ export function register(api, deps) {
         if (await ws.isDirtyAsync(found.project.repoPath)) throw Object.assign(new Error("checkout_dirty"), { code: "checkout_dirty" });
         affected = await sessionsUsingWorkspaceAsync(found.project, cwd, sup);
         checkoutSessions = await sessionsUsingWorkspaceAsync(found.project, found.project.repoPath, sup);
-        if (await hasSynchronizedSibling([...affected, ...checkoutSessions], null, sync)) throw Object.assign(new Error("sync_workspace_in_use"), { code: "sync_workspace_in_use" });
         const latest = await sessionWorkspace(id, sup);
         if (!latest || path.resolve(latest) !== path.resolve(cwd)) throw Object.assign(new Error("repository_changed"), { code: "repository_changed" });
         if ([...affected, ...checkoutSessions].some(session => sup.isStreaming(session.id))) throw Object.assign(new Error("sessions_active"), { code: "sessions_active" });
@@ -369,7 +352,6 @@ export function register(api, deps) {
         for (const session of affected) {
           const latest = await sessionWorkspace(session.id, sup);
           if (!latest || path.resolve(latest) !== path.resolve(cwd)) continue;
-          if ((await sync.status(session.id)).synchronized) throw Object.assign(new Error("sync_workspace_in_use"), { code: "sync_workspace_in_use" });
           if (sup.isStreaming(session.id)) throw Object.assign(new Error("sessions_active"), { code: "sessions_active" });
           reporter.log({ type: "phase", phase: "rehome-session", message: `Returning session ${session.id} to ${mainBranch}.` });
           await sup.rehome(session.id, main.path);
@@ -399,7 +381,7 @@ export function register(api, deps) {
       const operation = reporter.finish({ httpStatus: 200, message: `Merged ${branch} into ${mainBranch} and returned sessions to ${mainBranch}.` });
       return c.json({ ok: true, merged: branch, into: mainBranch, deleted: true, sessionIds: affected.map(session => session.id), command: `git merge --no-ff --no-edit ${branch} && git branch -D ${branch}`, stdout: mergedOutput, stderr: "", workspacePath: found.project.repoPath, operation });
     } catch (e) {
-      const statuses = { checkout_dirty: 409, git_status_unavailable: 409, main_worktree_external: 409, main_fetch_failed: 409, main_not_fast_forwardable: 409, git_switch_failed: 409, merge_conflict: 409, sessions_active: 409, sync_workspace_in_use: 409, merge_rehome_failed: 409, workspace_dirty: 409, branch_delete_failed: 409, repository_changed: 409 };
+      const statuses = { checkout_dirty: 409, git_status_unavailable: 409, main_worktree_external: 409, main_fetch_failed: 409, main_not_fast_forwardable: 409, git_switch_failed: 409, merge_conflict: 409, sessions_active: 409, merge_rehome_failed: 409, workspace_dirty: 409, branch_delete_failed: 409, repository_changed: 409 };
       const message = `${merged ? `Merge into ${mainBranch} completed; a subsequent step failed: ` : ""}${e.detail || e.message || e.code}`;
       if (statuses[e.code]) {
         const operation = reporter.finish({ status: "error", httpStatus: statuses[e.code], message });
