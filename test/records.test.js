@@ -23,6 +23,7 @@ test("thinking, timestamps, and pi-summarize entries map into the message model"
     { type: "message", id: "a1", parentId: "u1", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", content: [{ type: "thinking", thinking: "look first" }, { type: "toolCall", id: "tc1", name: "read", arguments: { path: "a.js" } }] } },
     { type: "message", id: "tr1", parentId: "a1", message: { role: "toolResult", toolCallId: "tc1", content: "src" } },
     { type: "custom", id: "s1", parentId: "tr1", timestamp: "2026-01-01T00:00:05.000Z", customType: "pi-summarize", data: { text: "Read a.js", at: Date.parse("2026-01-01T00:00:05.000Z"), toolCallIds: ["tc1"] } },
+    { type: "custom", id: "s2", parentId: "s1", timestamp: "2026-01-01T00:00:06.000Z", customType: "pi-summarize", data: { kind: "title", text: "A title", auto: true } },
   ];
   const records = entriesToRecords(entries);
   assert.equal(records.find(r => r.id === "u1").at, Date.parse("2026-01-01T00:00:00.000Z"));
@@ -31,5 +32,6 @@ test("thinking, timestamps, and pi-summarize entries map into the message model"
   assert.deepEqual(assistant.toolIds, ["tc1"]);
   assert.equal(assistant.text, "");
   assert.equal(records.find(r => r.id === "tc1").at, assistant.at);
+  assert.deepEqual(records.filter(r => r.role === "summary").map(r => r.id), ["s1"], "title entries are not step summaries");
   assert.deepEqual(records.find(r => r.role === "summary"), { id: "s1", role: "summary", text: "Read a.js", at: Date.parse("2026-01-01T00:00:05.000Z"), toolCallIds: ["tc1"] });
 });

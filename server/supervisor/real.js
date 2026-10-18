@@ -445,10 +445,10 @@ export class RealSupervisor {
           const pending = st.pendingMessages.shift();
           hub.emit(id, "user_record", { record, ...(pending?.clientMessageId ? { clientMessageId: pending.clientMessageId } : {}) });
         }
-        if (entry?.type === "custom" && entry.customType === "pi-summarize") {
-          const record = summaryRecord(entry);
-          st.liveRecords.set(record.id, record);
-          hub.emit(id, "summary", { record });
+        const summary = entry?.type === "custom" && entry.customType === "pi-summarize" ? summaryRecord(entry) : null;
+        if (summary) {
+          st.liveRecords.set(summary.id, summary);
+          hub.emit(id, "summary", { record: summary });
         }
         const activity = activityFromEntry(entry);
         if (activity) {
@@ -1534,7 +1534,8 @@ export function entriesToRecords(entries) {
       else records.push(activity);
     }
     if (entry.type === "custom" && entry.customType === "pi-summarize") {
-      records.push(summaryRecord(entry));
+      const summary = summaryRecord(entry);
+      if (summary) records.push(summary);
       continue;
     }
     if (entry.type === "custom" || entry.type === "custom_message") continue;
@@ -1605,8 +1606,10 @@ function toolStartRecord(evt) {
 }
 
 // pi-summarize writes a custom session entry that groups the tool calls it summarizes.
+// Its title entries (kind "title") are not step summaries.
 function summaryRecord(entry) {
   const data = entry.data || {};
+  if (data.kind === "title" || !data.text) return null;
   return {
     id: entry.id, role: "summary", text: String(data.text || ""),
     at: timeOf(data.at) || entryTime(entry),
