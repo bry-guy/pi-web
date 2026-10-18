@@ -34,8 +34,8 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  # Runs alongside tests: the sha tag is immutable, and deploy waits for both.
   publish:
-    needs: tests
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.source.outputs.sha }}
@@ -86,11 +86,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             PI_WEB_BUILD_ID=${{ steps.source.outputs.sha }}
+          cache-from: type=gha,scope=pi-ez-web
+          cache-to: type=gha,mode=max,scope=pi-ez-web
 
   # Push to feature/** deploys the preview UI; push to main deploys preview, then production.
   # Digests are committed to main under deploy/k8s, which Argo CD syncs.
   deploy:
-    needs: publish
+    needs: [tests, publish]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/feature/')
     runs-on: ubuntu-latest
     timeout-minutes: 30

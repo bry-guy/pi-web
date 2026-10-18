@@ -50,7 +50,7 @@ spec:
             httpGet:
               path: /ui-health
               port: http
-            periodSeconds: 10
+            periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /ui-health

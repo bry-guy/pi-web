@@ -1,15 +1,12 @@
 FROM node:22-bookworm-slim
 
-ARG PI_WEB_BUILD_ID=development
-
 ENV NODE_ENV=production \
     PORT=3141 \
     PI_WEB_MODE=real \
     HOME=/data/pi-ez-operator-home \
     XDG_CONFIG_HOME=/data/pi-ez-operator-home/.config \
     XDG_DATA_HOME=/data/pi-ez-operator-home/.local/share \
-    XDG_CACHE_HOME=/data/pi-ez-operator-home/.cache \
-    PI_WEB_BUILD_ID=$PI_WEB_BUILD_ID
+    XDG_CACHE_HOME=/data/pi-ez-operator-home/.cache
 
 WORKDIR /app
 
@@ -68,6 +65,10 @@ RUN mkdir -p /data/pi-ez-operator-home \
     && chmod 0755 /usr/local/bin/pi-ez-web-git-credential-helper \
     && git config --system credential.https://github.com.helper /usr/local/bin/pi-ez-web-git-credential-helper \
     && chown -R node:node /data
+
+# Last, so a new build ID does not invalidate the dependency layers above.
+ARG PI_WEB_BUILD_ID=development
+ENV PI_WEB_BUILD_ID=$PI_WEB_BUILD_ID
 
 USER node
 EXPOSE 3141

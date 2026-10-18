@@ -127,7 +127,7 @@ test("image publication workflow publishes immutable GHCR images", () => {
   assert.match(testsJob, /uses: actions\/checkout@v4[\s\S]*?ref: \$\{\{ github\.sha \}\}/);
   assert.match(testsJob, /uses: actions\/setup-node@v4[\s\S]*?node-version: 22[\s\S]*?cache: npm[\s\S]*?cache-dependency-path: package-lock\.json/);
   assert.match(testsJob, /run: npm ci[\s\S]*?run: npm test/);
-  assert.match(workflow, /^  publish:\n    needs: tests$/m);
+  assert.doesNotMatch(workflow, /^  publish:\n    needs:/m, "publish runs alongside tests, not after them");
   assert.match(workflow, /permissions:\n  contents: read\n  packages: write\n/);
   const publishJob = workflow.match(/^  publish:\n([\s\S]*?)(?=^  deploy:)/m)?.[1];
   assert.ok(publishJob);
@@ -140,13 +140,14 @@ test("image publication workflow publishes immutable GHCR images", () => {
   assert.match(workflow, /org\.opencontainers\.image\.revision=\$\{\{ steps\.source\.outputs\.sha \}\}/);
   assert.match(workflow, /PI_WEB_BUILD_ID=\$\{\{ steps\.source\.outputs\.sha \}\}/);
   assert.match(publishJob, /digest: \$\{\{ steps\.build\.outputs\.digest \}\}/);
+  assert.match(publishJob, /cache-from: type=gha,scope=pi-ez-web/);
 });
 
 test("deploy job pins the built digest and gates production on main", () => {
   const workflow = fs.readFileSync(path.join(root, ".github/workflows/publish-image.yml"), "utf8");
   const deployJob = workflow.match(/^  deploy:\n([\s\S]*)/m)?.[1];
   assert.ok(deployJob);
-  assert.match(deployJob, /needs: publish/);
+  assert.match(deployJob, /needs: \[tests, publish\]/);
   assert.match(deployJob, /DIGEST: \$\{\{ needs\.publish\.outputs\.digest \}\}/);
   assert.match(deployJob, /cancel-in-progress: false/);
   assert.match(deployJob, /run: \.\.\/src\/scripts\/deploy\.sh preview/);
