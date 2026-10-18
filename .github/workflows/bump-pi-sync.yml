@@ -1,7 +1,7 @@
 name: bump-pi-sync
 
-# Keeps PI_SYNC_COMMIT on pi-sync's main: tests the new pin, then opens a pull request.
-# Merging it is the release; nothing here pushes to main.
+# Keeps PI_SYNC_COMMIT on pi-sync's main: tests the new pin, then commits it to main,
+# which deploys like any other push to main.
 on:
   schedule:
     - cron: "17 * * * *"
@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - name: Find pi-sync main
@@ -33,16 +33,14 @@ jobs:
           npm ci
           npm test
       - if: steps.upstream.outputs.current != 'true'
-        name: Open a pull request
+        name: Commit the pin to main
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.upstream.outputs.sha }}
         run: |
-          branch="bump/pi-sync-${SHA:0:12}"
-          if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null; then exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$branch"
-          git commit -am "chore(sync): pin pi-sync ${SHA:0:12}"
-          git push origin "$branch"
-          gh pr create --title "chore(sync): pin pi-sync ${SHA:0:12}" --body "https://github.com/bry-guy/pi-sync/compare/$(git show HEAD~1:PI_SYNC_COMMIT | tr -d '[:space:]')...$SHA"
+          git commit -m "chore(sync): pin pi-sync ${SHA:0:12}" -- PI_SYNC_COMMIT
+          git push origin HEAD:main
+          # Pushes made with the workflow token start no workflows, so start the deploy here.
+          gh workflow run publish-image.yml --ref main
