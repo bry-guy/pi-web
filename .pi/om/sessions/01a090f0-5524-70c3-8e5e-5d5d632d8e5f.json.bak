@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "enabled": true,
+  "sessionId": "01a090f0-5524-70c3-8e5e-5d5d632d8e5f",
+  "sessionFile": "/Users/brain/.pi/agent/sessions/--Users-brain-dev-pi-ez-web--/2026-09-11T14-47-44-677Z_01a090f0-5524-70c3-8e5e-5d5d632d8e5f.jsonl",
+  "cwd": "/Users/brain/dev/pi-ez-web",
+  "scope": "session",
+  "status": "idle",
+  "observations": "",
+  "pendingMessageTokens": 0,
+  "observationTokens": 0,
+  "thresholds": {
+    "observation": 30000,
+    "reflection": 40000,
+    "blockAfter": 36000,
+    "bufferTokens": 6000,
+    "bufferActivation": 0.8
+  },
+  "settings": {
+    "observationModel": "google/gemini-2.5-flash",
+    "reflectionModel": "google/gemini-2.5-flash",
+    "caveman": false,
+    "observeAttachments": "auto",
+    "retrieval": {
+      "provider": "off",
+      "model": "local/hash-bow-v1",
+      "topK": 6,
+      "threshold": 0.12
+    }
+  },
+  "buffered": {
+    "observations": []
+  },
+  "updatedAt": "2026-09-11T14:47:46.580Z"
+}

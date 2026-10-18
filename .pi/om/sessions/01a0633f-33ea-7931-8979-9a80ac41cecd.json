@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "enabled": true,
+  "sessionId": "01a0633f-33ea-7931-8979-9a80ac41cecd",
+  "sessionFile": "/Users/brain/.pi/agent/sessions/--Users-brain-dev-pi-ez-web--/2026-09-02T17-51-21-578Z_01a0633f-33ea-7931-8979-9a80ac41cecd.jsonl",
+  "cwd": "/Users/brain/dev/pi-ez-web",
+  "scope": "session",
+  "status": "failed",
+  "observations": "- OM recovery: skipped ~1664k tokens of stale unobserved backlog after reload/corruption recovery; retained latest ~30k tokens for observation.",
+  "pendingMessageTokens": 30355,
+  "observationTokens": 36,
+  "thresholds": {
+    "observation": 30000,
+    "reflection": 40000,
+    "blockAfter": 36000,
+    "bufferTokens": 6000,
+    "bufferActivation": 0.8
+  },
+  "settings": {
+    "observationModel": "google/gemini-2.5-flash",
+    "reflectionModel": "google/gemini-2.5-flash",
+    "caveman": false,
+    "observeAttachments": "auto",
+    "retrieval": {
+      "provider": "off",
+      "model": "local/hash-bow-v1",
+      "topK": 6,
+      "threshold": 0.12
+    }
+  },
+  "buffered": {
+    "observations": []
+  },
+  "updatedAt": "2026-09-11T15:02:58.526Z",
+  "lastObservedEntryId": "a5b59980",
+  "lastOperation": {
+    "type": "observation",
+    "startedAt": "2026-09-11T14:47:50.095Z",
+    "endedAt": "2026-09-11T14:47:50.095Z",
+    "inputTokens": 0,
+    "outputTokens": 36
+  },
+  "lastError": "OM buffer failed: ENOENT: no such file or directory, rename '/Users/brain/dev/pi-ez-web/.pi/om/sessions/01a0633f-33ea-7931-8979-9a80ac41cecd.json.62054.1789138158018.tmp' -> '/Users/brain/dev/pi-ez-web/.pi/om/sessions/01a0633f-33ea-7931-8979-9a80ac41cecd.json'",
+  "operationLock": {
+    "type": "buffer",
+    "startedAt": "2026-09-11T14:49:18.008Z"
+  }
+}
