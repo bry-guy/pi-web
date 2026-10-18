@@ -273,7 +273,12 @@ async function boot() {
 test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   const dom = await boot();
   const { store } = await import("../public/js/store.js");
-  const { api, applyEvent, checkActiveSync, openTranscript, refreshState, shouldBufferEvent } = await import("../public/js/api.js");
+  const { api, applyEvent: applyEventNow, checkActiveSync, openTranscript, refreshState, shouldBufferEvent } = await import("../public/js/api.js");
+  // The thread renders streaming events once per frame; assertions read the DOM right away, so flush it.
+  const flushThreads = () => dom.window.document?.querySelectorAll("pi-thread")?.forEach(thread => { if (thread.renderQueued) thread.render(); });
+  const applyEvent = (...args) => { const result = applyEventNow(...args); flushThreads(); return result; };
+  const notify = store.notify.bind(store);
+  store.notify = (...args) => { const result = notify(...args); flushThreads(); return result; };
   assert.equal(shouldBufferEvent("text_delta"), true);
   assert.equal(shouldBufferEvent("session_switched"), false);
   await api.message("s1", "token message", "prompt", [], "token-client", "message-token");

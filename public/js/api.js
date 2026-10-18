@@ -152,6 +152,7 @@ export function paintCachedState() {
 }
 
 let stateRefreshPromise = null;
+let lastStateKey = null;
 // Workers page data. A 404 means this server runs without workspaced.
 export async function refreshWorkers() {
   try {
@@ -165,6 +166,10 @@ export function refreshState() {
   if (stateRefreshPromise) return stateRefreshPromise;
   const request = (async () => {
     const s = await api.state();
+    // Polled every few seconds: an unchanged answer must not re-render the sidebar and thread.
+    const key = `${store.activeKey()}\n${JSON.stringify(s)}`;
+    if (key === lastStateKey && !store.state.reconnecting) return;
+    lastStateKey = key;
     applyState(s);
     try { localStorage.setItem(STATE_CACHE, JSON.stringify({ projects: s.projects, chats: s.chats })); } catch { /* quota or private mode */ }
   })();

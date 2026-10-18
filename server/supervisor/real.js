@@ -78,6 +78,14 @@ function exportFormat(args) {
   throw Object.assign(new Error("usage: /export [html|jsonl]"), { code: "command_usage" });
 }
 
+async function dirStamp(dir) {
+  try {
+    const names = (await fs.promises.readdir(dir)).filter(name => name.endsWith(".jsonl")).sort();
+    const stats = await Promise.all(names.map(name => fs.promises.stat(path.join(dir, name)).then(st => `${name}:${st.mtimeMs}:${st.size}`, () => name)));
+    return stats.join("|");
+  } catch { return null; }
+}
+
 export class RealSupervisor {
   constructor(hub) {
     this.hub = hub;
@@ -137,7 +145,7 @@ export class RealSupervisor {
 
   async listSessions(cwd) {
     const { SessionManager } = await SDK();
-    const infos = this._selectSessionInfos(await SessionManager.list(cwd));
+    const infos = this._selectSessionInfos(await this._listInfos(SessionManager, cwd));
     const modelState = await this.modelState().catch(() => ({ models: [], effectiveDefault: null }));
     const availableModels = new Set((modelState.models || []).map(model => model.id));
     for (const info of infos) this.paths.set(info.id, info.path);
@@ -159,6 +167,18 @@ export class RealSupervisor {
       this.info.set(info.id, { ...item, path: info.path, parentSessionPath: info.parentSessionPath || null });
       return item;
     });
+  }
+
+  // SessionManager.list parses every session file; /api/state polls it, so re-list only when a file changed.
+  async _listInfos(SessionManager, cwd) {
+    this.listCache ||= new Map();
+    const cached = this.listCache.get(cwd);
+    const stamp = cached?.dir ? await dirStamp(cached.dir) : null;
+    if (cached && stamp !== null && stamp === cached.stamp) return cached.infos;
+    const infos = await SessionManager.list(cwd);
+    const dir = infos[0] ? path.dirname(infos[0].path) : null;
+    this.listCache.set(cwd, { infos, dir, stamp: dir ? await dirStamp(dir) : null });
+    return infos;
   }
 
   _sessionSummary(SessionManager, filePath) {

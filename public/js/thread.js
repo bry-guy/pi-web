@@ -134,7 +134,9 @@ class PiThread extends HTMLElement {
     this.onPopState = () => this.syncSteps();
     window.addEventListener("popstate", this.onPopState);
     this.unsub = store.subscribe(w => {
-      if (w === "state" || w === "transcript") this.render();
+      // Tool and turn events can arrive many per frame; render once per frame instead of once per event.
+      if (w === "state") this.render();
+      else if (w === "transcript") this.scheduleRender();
       else if (w === "delta:" + store.activeKey()) this.applyDelta();
       else if (w === "thinking:" + store.activeKey() && this.inSteps) this.render();
     });
@@ -305,7 +307,15 @@ class PiThread extends HTMLElement {
     return { records: selected, hasEarlier: selected.length < records.length };
   }
 
+  scheduleRender() {
+    if (this.renderQueued) return;
+    this.renderQueued = true;
+    const frame = typeof requestAnimationFrame === "function" ? requestAnimationFrame : callback => setTimeout(callback, 16);
+    frame(() => { if (this.renderQueued) { this.renderQueued = false; this.render(); } });
+  }
+
   render() {
+    this.renderQueued = false; // a synchronous render covers any queued one
     const activeKey = store.activeKey();
     const t = activeKey ? (store.state.transcripts[activeKey] || store.transcript(activeKey)) : null;
     let anchor = null;
