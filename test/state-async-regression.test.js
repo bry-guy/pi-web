@@ -127,7 +127,7 @@ test("projectState snapshots Git facts once and matches synchronous helpers", as
       await withGitTrace(async tracePath => {
         const state = await projectState(project, sup);
         const expectedContextSnapshot = expectedContexts.map(context => ({ ...context, sessions: [] }));
-        assert.deepEqual(Object.keys(state).sort(), ["branch", "branches", "contexts", "defaultBranch", "hooks", "id", "name", "remoteBranches", "repoPath", "sessions", "source", "updated", "updatedAt", "worktrees", "workspaceStatus"].sort());
+        assert.deepEqual(Object.keys(state).sort(), ["branch", "branches", "contexts", "defaultBranch", "ended", "hooks", "id", "name", "remoteBranches", "repoPath", "sessions", "source", "updated", "updatedAt", "worktrees", "workspaceStatus"].sort());
         assert.equal(state.branch, expectedCurrent);
         assert.equal(state.defaultBranch, "default");
         assert.deepEqual(state.branches, expectedBranches);
