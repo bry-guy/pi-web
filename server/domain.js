@@ -150,6 +150,8 @@ export async function projectState(project, sup) {
       requestedModel: n.requestedModel || null,
       modelFallback: !!n.modelFallback,
       modelUnavailable: !!n.modelUnavailable,
+      // Nothing sent yet: the sidebar leaves it out until the first prompt.
+      draft: !hasPrompt(n) && !promptText(n.name) && !sup.isStreaming(n.id),
       when: rel(n.modified),
       updatedAt,
       activityAt,

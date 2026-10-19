@@ -2,6 +2,7 @@ import "./shell.js";
 import "./thread.js";
 import "./dialogs.js";
 import "./session-picker.js";
+import "./project-menu.js";
 import { settingsRoute } from "./settings.js";
 import "./files.js";
 import "./repo-picker.js";

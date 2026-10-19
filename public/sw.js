@@ -10,6 +10,7 @@ const SHELL = [
   "./js/panel-utils.js",
   "./js/dialogs.js",
   "./js/session-picker.js",
+  "./js/project-menu.js",
   "./js/settings.js",
   "./js/files.js",
   "./js/repo-picker.js",

@@ -55,12 +55,17 @@ exec "$PI_TEST_REAL_GIT" "$@"
       const emit = hub.emit.bind(hub);
       const completed = new Map();
       hub.emit = (id, type, data) => { if (type === 'operation_complete') completed.set(data.operationId, data.operation); return emit(id, type, data); };
+      // While "unheld", the checkout's session is not open, so moving the checkout back to main is allowed.
+      let unheld = false;
+      const originalOpen = fixture.supervisor.isOpen.bind(fixture.supervisor);
+      fixture.supervisor.isOpen = id => !unheld && originalOpen(id);
       const original = fixture.supervisor.isStreaming.bind(fixture.supervisor);
       let streaming = false;
       fixture.supervisor.isStreaming = id => (streaming && id === fixture.mainSessionId) || original(id);
       process.on('message', async message => {
         if (message.operationId) return process.send({ completed: completed.get(message.operationId) });
         streaming = message.streaming || false;
+        unheld = message.unheld || false;
         if (message.cwd) {
           await fixture.supervisor.rehome(fixture.mainSessionId, message.cwd);
           const bindings = loadBindings();
@@ -132,6 +137,7 @@ exec "$PI_TEST_REAL_GIT" "$@"
     for (const name of ["-bad", "bad..name", "bad/"]) await assert.rejects(ws.validateBranchNameAsync(name), error => error.code === "bad_branch");
     assert.deepEqual(await ws.prepareMainAsync(repo, { fetch: false }), ws.prepareMain(repo, { fetch: false }));
     git(repo, "switch", "-c", "checkout-other");
+    await command({ unheld: true });
     const created = await held("read", `/api/projects/${projectId}/sessions`, { branch: "created-async", baseBranch: "main" });
     assert.equal(created.status, 200, JSON.stringify(created.body));
     assert.equal(created.body.branch, "created-async");
@@ -163,6 +169,7 @@ exec "$PI_TEST_REAL_GIT" "$@"
     const afterChange = await (await fetch(base + "/api/state")).json();
     assert.equal(afterChange.projects[0].sessions.find(session => session.id === sessionId).workspacePath, repo);
     git(repo, "switch", "checkout-other");
+    await command({ unheld: true });
     fs.writeFileSync(path.join(repo, "untracked.txt"), "preserve me\n");
     const beforeDirty = snapshot();
     const dirty = await request(`/api/projects/${projectId}/sessions`, { branch: "dirty-async", baseBranch: "main" });

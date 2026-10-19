@@ -6,7 +6,7 @@ import { workerErrorMessage } from "./panel-utils.js";
 
 const amounts = values => Object.entries(values || {}).filter(([, value]) => value).map(([key, value]) => `${key} ${value}`).join(" · ") || "not set";
 
-export function workerCard(worker, usageAvailable) {
+export function workerCard(worker, usageAvailable, { canDelete = true } = {}) {
   const name = esc(worker.name);
   const state = workerStateLabel(worker.state);
   const asleep = worker.state === "sleeping";
@@ -41,7 +41,7 @@ export function workerCard(worker, usageAvailable) {
           <button class="settings-action" data-act="restart-worker" data-name="${name}">Restart</button>
           <button class="settings-action" data-act="stop-worker" data-name="${name}" ${asleep ? "disabled" : ""} title="Put it to sleep now. Its disk is kept and it wakes on use.">Stop</button>
           <button class="settings-action danger" data-act="reset-worker" data-name="${name}">Reset</button>
-          <button class="settings-action danger" data-act="delete-worker" data-name="${name}">Delete</button>
+          ${canDelete ? `<button class="settings-action danger" data-act="delete-worker" data-name="${name}">Delete</button>` : ""}
         </div>
       </div>
     </div>`;

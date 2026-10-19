@@ -8,6 +8,23 @@ import { installHints } from "./hints.js";
 /* ---------------- app root ---------------- */
 class PiApp extends HTMLElement {
   connectedCallback() {
+    // Esc closes the topmost modal: a confirmation (unless it is mid-request), then the
+    // Project menu, then the session panel (a step goes back to its main screen first).
+    // Logs, the repo picker and extension prompts handle Esc themselves.
+    this.onModalEscape = e => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const s = store.state;
+      if (s.extensionUi) return;
+      if (s.confirm) {
+        if (!this.querySelector("pi-confirm")?.busy) store.set({ confirm: null });
+      } else if (s.projectMenu) store.set({ projectMenu: null });
+      else if (s.sessionPicker) {
+        if ((s.sessionPicker.screen || "main") !== "main") this.querySelector("pi-session-picker")?.showScreen("main");
+        else store.set({ sessionPicker: null, sessionPickerError: null });
+      } else return;
+      e.preventDefault();
+    };
+    document.addEventListener("keydown", this.onModalEscape);
     this.innerHTML = `
       <div class="frame">
         <div class="preview-banner hidden" data-preview-banner role="status" aria-label="Preview environment"></div>
@@ -31,6 +48,7 @@ class PiApp extends HTMLElement {
         </div>
         <pi-repo-picker></pi-repo-picker>
         <pi-session-picker></pi-session-picker>
+        <pi-project-menu></pi-project-menu>
         <pi-logs></pi-logs>
         <pi-confirm></pi-confirm>
         <pi-extension-ui></pi-extension-ui>
@@ -94,6 +112,7 @@ class PiApp extends HTMLElement {
   }
   disconnectedCallback() {
     this.unsub?.();
+    document.removeEventListener("keydown", this.onModalEscape);
     clearInterval(this.gitRefreshTimer);
     window.removeEventListener("resize", this.onResize);
     document.body?.classList.remove("modal-open");
@@ -173,7 +192,7 @@ class PiApp extends HTMLElement {
 
   sync() {
     const v = store.state.view;
-    const modalOpen = !!(store.state.repoPickerOpen || store.state.sessionPicker || store.state.logsOpen || store.state.confirm || store.state.extensionUi);
+    const modalOpen = !!(store.state.repoPickerOpen || store.state.sessionPicker || store.state.projectMenu || store.state.logsOpen || store.state.confirm || store.state.extensionUi);
     document.body?.classList.toggle("modal-open", modalOpen);
     const previewBanner = this.querySelector("[data-preview-banner]");
     const preview = store.state.uiConfig?.preview === true;

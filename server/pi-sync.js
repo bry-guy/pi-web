@@ -81,6 +81,27 @@ export async function remoteConversationsForRepository(cwd, localIds) {
     }));
 }
 
+/**
+ * A read-only look at a shared conversation (no lease taken): its active branch's user and
+ * assistant messages as transcript-style records, oldest first.
+ */
+export async function remoteConversationPreview(sessionId) {
+  const client = await createSyncClient(syncConfig(loadConfig()).serverUrl);
+  return previewRecords((await client.get(sessionId)).session);
+}
+
+export function previewRecords(envelope) {
+  const byId = new Map((envelope?.entries || []).map(entry => [entry.id, entry]));
+  const branch = [];
+  for (let entry = byId.get(envelope?.headEntryId); entry && branch.length < byId.size; entry = byId.get(entry.parentId)) branch.push(entry);
+  const text = content => typeof content === "string" ? content
+    : Array.isArray(content) ? content.filter(part => part?.type === "text" && typeof part.text === "string").map(part => part.text).join("\n") : "";
+  return branch.reverse()
+    .filter(entry => entry.type === "message" && ["user", "assistant"].includes(entry.message?.role))
+    .map(entry => ({ id: entry.id, role: entry.message.role, text: text(entry.message.content).trim(), at: Date.parse(entry.timestamp) || null }))
+    .filter(record => record.text);
+}
+
 function importSpecifier() {
   const raw = syncClientModuleName();
   let filePath = raw;

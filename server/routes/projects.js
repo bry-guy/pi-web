@@ -1,5 +1,5 @@
 import { syncConfig } from "../config.js";
-import { remoteConversationsForRepository } from "../pi-sync.js";
+import { remoteConversationPreview, remoteConversationsForRepository } from "../pi-sync.js";
 import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
 
 const IDLE_MS = 24 * 60 * 60 * 1000;
@@ -13,6 +13,8 @@ export function register(api, deps) {
     const reporter = createOperationReporter({ sessionId, kind: "pull", title: `Update ${mainBranch}` });
     reporter.bind(context.path);
     runRepositoryAdmission(project.repoPath, async () => {
+      // Never switch branches in the background: only update main while the checkout is still on it.
+      if (await ws.currentBranchAsync(project.repoPath) !== mainBranch) return reporter.finish({ status: "error", message: `Skipped: the checkout is no longer on ${mainBranch}.` });
       const sessions = await sessionsUsingWorkspaceAsync(project, context.path, sup);
       if (sessions.some(session => sup.isStreaming(session.id))) return reporter.finish({ status: "error", message: `Skipped: a session on ${mainBranch} is running.` });
       const result = await ws.prepareMainAsync(project.repoPath, { fetch: true, primaryBranch: mainBranch, report: reporter.log });
@@ -55,8 +57,12 @@ export function register(api, deps) {
           clone_in_progress: 409,
           clone_failed: 502,
         };
-        if (statuses[e.code]) return err(c, statuses[e.code], e.code, e.code === "clone_failed" ? { message: e.message } : {});
-        throw e;
+        // A removed project's clone is kept on disk; adding it again reuses it.
+        if (e.code === "repository_exists" && e.repoPath && !cfg.projects.some(p => p.repoPath === e.repoPath)) {
+          ({ repoPath, source: sourceInfo } = e);
+          cloned = false;
+        } else if (statuses[e.code]) return err(c, statuses[e.code], e.code, e.code === "clone_failed" ? { message: e.message } : {});
+        else throw e;
       }
     }
     if (cfg.projects.some(p => p.repoPath === repoPath)) return err(c, 409, "project_exists");
@@ -104,6 +110,19 @@ export function register(api, deps) {
   });
 
   // End every session tree with no activity for a day and nothing running in it.
+  // Remove a project: end its sessions and drop it from the list. The checkout on disk is kept.
+  api.delete("/projects/:id", async c => {
+    const cfg = loadConfig();
+    const project = cfg.projects.find(p => p.id === c.req.param("id"));
+    if (!project) return err(c, 404, "no_such_project");
+    const { sessions } = await projectState(project, sup);
+    for (const session of sessions) await closeSession(sup, hub, session.id);
+    const latest = loadConfig();
+    latest.projects = latest.projects.filter(p => p.id !== project.id);
+    saveConfig(latest);
+    return c.json({ ok: true, id: project.id, endedSessions: sessions.length });
+  });
+
   api.post("/projects/:id/end-idle", async c => {
     const project = loadConfig().projects.find(p => p.id === c.req.param("id"));
     if (!project) return err(c, 404, "no_such_project");
@@ -122,6 +141,13 @@ export function register(api, deps) {
       const localIds = new Set((await sup.allSessions()).map(session => session.id));
       return c.json({ sessions: await remoteConversationsForRepository(project.repoPath, localIds) });
     } catch { return c.json({ sessions: [], unavailable: true }); }
+  });
+
+  api.get("/projects/:id/synced-sessions/:syncId", async c => {
+    if (!loadConfig().projects.some(p => p.id === c.req.param("id"))) return err(c, 404, "no_such_project");
+    if (!syncConfig(loadConfig()).serverUrl) return err(c, 409, "sync_not_configured");
+    try { return c.json({ records: await remoteConversationPreview(c.req.param("syncId")) }); }
+    catch (error) { return err(c, 502, "sync_preview_failed", { message: error.message }); }
   });
 
   api.post("/projects/:id/sessions", async c => {
@@ -157,7 +183,17 @@ export function register(api, deps) {
         }
       }
       const existed = !!(await branchContextAsync(project, branch));
-      const context = await ensureBranchContext(project, branch, body.baseBranch || mainBranch, { syncMain: true, report: reporter.log });
+      let notice = null;
+      let context;
+      try {
+        context = await ensureBranchContext(project, branch, body.baseBranch || mainBranch, { syncMain: true, report: reporter.log, sup, except: sourceSessionId });
+      } catch (error) {
+        // A new session never moves a checkout others are working in: it starts where the checkout is.
+        if (error.code !== "checkout_in_use" || mode !== "new") throw error;
+        notice = `${error.detail} The new session starts on ${error.branch}.`;
+        reporter.log({ type: "phase", phase: "prepare-main", message: notice });
+        context = await branchContextAsync(project, error.branch) || await ws.contextStatusAsync({ repoPath: project.repoPath, workspacePath: project.repoPath, primaryBranch: mainBranch });
+      }
       const setupNeeded = !existed && context.kind !== "checkout" && !!projectHooks(loadConfig(), project).setup;
       if (mode === "fork") {
         reporter.log({ type: "phase", phase: "fork-session", message: `Forking from session ${sourceSessionId}.` });
@@ -194,9 +230,9 @@ export function register(api, deps) {
       if (body.pull === "background" && context.branch === mainBranch && context.kind === "checkout") pullMainLater(project, mainBranch, context, sessionId);
       hub.emit(sessionId, "session_created", { session: { id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch } });
       const operation = reporter.finish({ httpStatus: 200, message: `Created session ${sessionId} on ${context.branch}.` });
-      return c.json({ id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch, workspacePath: context.path, setup: null, setupNeeded, operation });
+      return c.json({ id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch, workspacePath: context.path, setup: null, setupNeeded, operation, ...(notice ? { notice } : {}) });
     } catch (e) {
-      const statuses = { bad_branch: 400, no_such_base_branch: 404, checkout_dirty: 409, git_status_unavailable: 409, main_worktree_external: 409, main_fetch_failed: 409, main_not_fast_forwardable: 409, git_switch_failed: 409 };
+      const statuses = { checkout_in_use: 409, bad_branch: 400, no_such_base_branch: 404, checkout_dirty: 409, git_status_unavailable: 409, main_worktree_external: 409, main_fetch_failed: 409, main_not_fast_forwardable: 409, git_switch_failed: 409 };
       if (statuses[e.code]) {
         const operation = reporter.finish({ status: "error", httpStatus: statuses[e.code], message: e.detail || e.message || e.code });
         return err(c, statuses[e.code], e.code, { ...(e.detail ? { detail: e.detail } : {}), operation });

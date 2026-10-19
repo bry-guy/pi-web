@@ -64,7 +64,7 @@ test("buildApi route inventory removes only the retired legacy merge route", () 
 
   const api = buildApi({});
   const routesAfterA2 = api.routes.map(({ method, path }) => `${method} ${path}`);
-  const addedSince = ["GET /projects/:id/synced-sessions", "POST /pi/reload", "GET /sessions/:id/history", "POST /sessions/:id/restore", "POST /projects/:id/end-idle"];
+  const addedSince = ["GET /projects/:id/synced-sessions", "GET /projects/:id/synced-sessions/:syncId", "POST /pi/reload", "GET /sessions/:id/history", "POST /sessions/:id/restore", "POST /projects/:id/end-idle", "DELETE /projects/:id"];
   assert.deepEqual(routesAfterA2.filter(route => !addedSince.includes(route)), routesBeforeA2.filter(route => route !== retiredRoute));
   assert.equal(routesAfterA2.length, 51 + addedSince.length);
 });

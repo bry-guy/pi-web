@@ -1,8 +1,7 @@
-import { api, refreshState, refreshWorkers } from "./api.js";
+import { api, refreshState } from "./api.js";
 import { beginOperation, completeOperation } from "./operations.js";
 import { setHTML, store, toast } from "./store.js";
 import { closeConversation, esc, icon, selectSession } from "./shell.js";
-import { workerAction, workerCard } from "./workers.js";
 import { gitErrorMessage, runningPickerOperation, pickerError, launchSetup, pickerOperationKinds, featureBranchForName } from "./panel-utils.js";
 
 // A fork's default name: the session's name plus the first free "(fork)", "(fork 2)", … among the project's sessions.
@@ -195,11 +194,6 @@ class PiSessionPicker extends HTMLElement {
       await this.selectBranch(e.target.closest("[data-act]").dataset.branch);
       return;
     }
-    if (act === "open-synced") {
-      const row = e.target.closest("[data-act]");
-      await this.submitSynced(row.dataset.syncId, row.dataset.branch);
-      return;
-    }
     if (act === "fetch-branches") {
       await this.fetchBranches();
       return;
@@ -235,63 +229,8 @@ class PiSessionPicker extends HTMLElement {
       if (id && !this.busy) { this.close(); await closeConversation(id, "session"); }
       return;
     }
-    if (act === "end-idle") {
-      const project = this.project();
-      if (!project || this.busy) return;
-      this.busy = true; this.render();
-      try {
-        const { ended } = await api.endIdle(project.id);
-        toast(ended.length ? `Ended ${ended.length} idle session${ended.length === 1 ? "" : "s"}. Restore them from Ended in the sidebar.` : "No idle sessions to end.");
-        await refreshState();
-      } catch (error) {
-        toast(`Could not end idle sessions: ${error.detail || error.message || error.error || error}`, "error");
-      } finally { this.busy = false; this.render(); }
-      return;
-    }
-    const worker = e.target.closest("[data-act$='-worker']");
-    if (worker) {
-      // Confirmations sit below this panel; close it so the dialog is visible.
-      if (["restart-worker", "reset-worker", "delete-worker"].includes(worker.dataset.act)) this.close();
-      await workerAction(worker.dataset.act, worker.dataset.name, worker.dataset.pinned === "1", (message, kind) => kind === "error" ? pickerError(message, this.picker()) : toast(message));
-      return;
-    }
     if (act === "pull-branch") await this.pull();
     if (act === "push-branch") await this.push();
-  }
-
-  /** Lists shared conversations from other devices once per picker opening. */
-  loadSynced() {
-    const picker = this.picker();
-    if (!picker || picker.synced !== undefined) return;
-    picker.synced = null;
-    api.syncedSessions(picker.projectId)
-      .then(result => { picker.synced = result.sessions || []; })
-      .catch(() => { picker.synced = []; })
-      .finally(() => { if (this.picker() === picker) this.render(); });
-  }
-
-  /** Opens a conversation from another device directly: no empty session is created first. */
-  async submitSynced(syncSessionId, branch) {
-    const picker = this.picker(); const project = this.project();
-    if (!picker || !project || this.busy || !syncSessionId) return;
-    this.busy = true;
-    this.busyLabel = "Opening conversation…";
-    this.render();
-    const operation = beginOperation("create-session", "Open synchronized conversation", "", "Request started.");
-    let result = null;
-    try {
-      const primary = project.defaultBranch || project.primaryBranch || "main";
-      result = await api.newProjectSession(project.id, { mode: "synced", syncSessionId, branch: branch || primary, baseBranch: primary, operationId: operation.id });
-      operation.sessionId = result.id;
-      completeOperation(operation, result);
-      store.set({ sessionPicker: null, sessionPickerError: null });
-      store.state.openTree[project.id] = true;
-      await refreshState().catch(() => undefined);
-      selectSession(project.id, result.id);
-    } catch (err) {
-      completeOperation(operation, result || {}, err);
-      pickerError(`Could not open the conversation: ${gitErrorMessage(err)}`, picker);
-    } finally { this.busy = false; this.busyLabel = null; this.afterOperation(); }
   }
 
   async submit(mode, forkBranch = null, nameOverride = undefined) {
@@ -498,7 +437,6 @@ class PiSessionPicker extends HTMLElement {
       return `${item.kind === "checkout" ? "CHECKOUT" : "WORKTREE"} · ${item.status || (item.dirty ? "dirty" : "clean")}`;
     };
     const detailList = rows => `<dl class="session-details-list">${rows.map(([key, value, title = ""]) => `<div class="session-detail-row"><dt>${esc(key)}</dt><dd${title ? ` title="${esc(title)}"` : ""}>${esc(value)}</dd></div>`).join("")}</dl>`;
-    this.loadSynced();
     this.loadHistory();
 
     let body;
@@ -514,7 +452,7 @@ class PiSessionPicker extends HTMLElement {
         ${gitRows.length ? detailList(gitRows) : `<p class="session-picker-help">Git details are unavailable for this session.</p>`}
         <div class="session-context-users branch-user-list">${userText}</div>
         <div class="session-action-row">${gitButtons}</div>
-        ${onCurrent ? `<div class="session-action-row session-danger-row"><button class="btn btn-caution" data-act="delete-branch" ${primarySelected || this.busy ? "disabled" : ""} title="${primarySelected ? esc(primaryReason) : "Delete local branch"}">Delete</button><button class="btn btn-primary" data-act="merge-branch" ${primarySelected || this.busy ? "disabled" : ""} title="${primarySelected ? esc(primaryReason) : `Merge to ${esc(primary)}`}">Merge to ${esc(primary)}</button></div>` : ""}
+        ${onCurrent ? `<div class="session-action-row session-danger-row"><button class="btn btn-caution" data-act="delete-branch" ${primarySelected || this.busy ? "disabled" : ""} title="${primarySelected ? esc(primaryReason) : "Delete local branch"}">Delete branch</button><button class="btn btn-primary" data-act="merge-branch" ${primarySelected || this.busy ? "disabled" : ""} title="${primarySelected ? esc(primaryReason) : `Merge to ${esc(primary)}`}">Merge to ${esc(primary)}</button></div>` : ""}
       </section>`;
       {
         const hookNames = picker.sourceSessionId ? Object.entries(project.hooks || {}).filter(([name, enabled]) => enabled && name).map(([name]) => name).sort((a, b) => (a === "setup" ? -1 : b === "setup" ? 1 : a.localeCompare(b))) : [];
@@ -526,24 +464,15 @@ class PiSessionPicker extends HTMLElement {
           const hint = name === "setup" ? "Runs the project's setup script (e.g. npm ci) in this worktree." : `Runs the project's ${name} hook in this worktree.`;
           return actionRow(label, hint, `<button class="btn btn-secondary" data-act="run-hook" data-hook="${esc(name)}" ${running ? "disabled" : ""}>${esc(running ? "Running…" : label)}</button>`);
         }).join("");
-        if (project.workspace && picker.workersLoaded !== true) { picker.workersLoaded = true; void refreshWorkers(); }
-        const worker = project.workspace && (store.state.workers?.workspaces || []).find(item => item.name === project.workspace);
-        const workerSection = !project.workspace ? ""
-          : `<div class="session-context-heading"><span>Worker</span></div>${worker ? workerCard(worker, store.state.workers.usageAvailable) : `<div class="session-history-empty">${esc(store.state.workersError || "Loading worker…")}</div>`}`;
         const sessionSection = `<section class="session-picker-actions" aria-label="Session">
           <div class="session-context-heading"><span>Session</span></div>
           <div class="panel-rows session-picker-session-buttons">
             ${actionRow("Fork", "Copies this conversation to a new branch and worktree.", `<button class="btn btn-secondary" data-act="open-fork" ${this.busy ? "disabled" : ""}>Fork…</button>`)}
             ${hookRows}
             ${actionRow("End session", "Stops it, withdraws it from sync on this server and archives it. Git is not touched.", `<button class="btn btn-caution" data-act="end-session" ${this.busy ? "disabled" : ""}>End</button>`)}
-            ${actionRow("End idle sessions", "Ends this project's sessions with no activity for a day. Nothing running is touched.", `<button class="btn btn-secondary" data-act="end-idle" ${this.busy ? "disabled" : ""}>End idle</button>`)}
           </div>
-          ${workerSection}
         </section>`;
-        // Shared conversations from other devices for this repository, opened as new sessions.
-        const syncedRows = (picker.synced || []).map(item => `<button type="button" class="session-history-row" data-act="open-synced" data-sync-id="${esc(item.sessionId)}" data-branch="${esc(item.branch || "")}" aria-label="Open ${esc(item.title || "Untitled conversation")}"><span class="session-history-main"><strong>${esc(item.title || "Untitled conversation")}</strong><small>${esc(item.branch || primary)}${item.leaseHolder ? ` · running on ${esc(item.leaseHolder)}` : ""}</small></span><span class="session-history-resume">Open</span></button>`).join("");
-        const syncedSection = picker.synced?.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>From other devices</span><span>${picker.synced.length}</span></div><div class="session-history-scroll">${syncedRows}</div></section>` : "";
-        body = `${sessionSection}${gitSection}${syncedSection}${this.historySection(picker)}`;
+        body = `${sessionSection}${gitSection}${this.historySection(picker)}`;
       }
     }
 

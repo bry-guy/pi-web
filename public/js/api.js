@@ -59,6 +59,7 @@ export const api = {
     return fetch("/api/projects", { method: "POST", headers: JH, body: JSON.stringify(body) }).then(j);
   },
   syncedSessions: (projectId) => fetch(`/api/projects/${projectId}/synced-sessions`).then(j),
+  syncedPreview: (projectId, syncId) => fetch(`/api/projects/${projectId}/synced-sessions/${encodeURIComponent(syncId)}`).then(j),
   newProjectSession: (projectId, options = {}) => fetch(`/api/projects/${projectId}/sessions`, { method: "POST", headers: { ...JH, ...(options?.operationId ? { "x-pi-operation-id": options.operationId } : {}) }, body: JSON.stringify(options || {}) }).then(j),
   forkSession: (id, name = null) => fetch(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", headers: JH, body: JSON.stringify({ name }) }).then(j),
   branchSession: (id, options = {}) => fetch(`/api/sessions/${encodeURIComponent(id)}/branch-context`, { method: "POST", headers: { ...JH, ...(options?.operationId ? { "x-pi-operation-id": options.operationId } : {}) }, body: JSON.stringify(options || {}) }).then(j),
@@ -120,6 +121,7 @@ export const api = {
     return fetch("/api/settings", { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify(patch || {}) }).then(j);
   },
   restore: id => fetch(`/api/sessions/${encodeURIComponent(id)}/restore`, { method: "POST", headers: JH, body: "{}" }).then(j),
+  removeProject: projectId => fetch(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" }).then(j),
   endIdle: projectId => fetch(`/api/projects/${encodeURIComponent(projectId)}/end-idle`, { method: "POST", headers: JH, body: "{}" }).then(j),
   close: (id, operationId = null, kind = "session") => fetch(`/api/sessions/${id}/close`, { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify({ ...(operationId ? { operationId } : {}), kind }) }).then(j),
 };
