@@ -240,9 +240,10 @@ class PiSettings extends HTMLElement {
     const syncSettings = store.state.settings?.sync || {};
     const patch = { sync: {} };
     if (syncSettings.serverUrl?.editable !== false) patch.sync.serverUrl = this.querySelector("[data-setting='syncServerUrl']")?.value.trim() || null;
-    if (syncSettings.allConversations?.editable !== false) patch.sync.allConversations = !!this.querySelector("[data-setting='syncAllConversations']")?.checked;
-    if (!Object.keys(patch.sync).length) return;
-    const snapshot = this.snapshotDrafts(Object.keys(patch.sync).map(key => key === "serverUrl" ? "syncServerUrl" : "syncAllConversations"));
+    const choice = name => { const v = this.querySelector(`[data-setting='${name}']`)?.value; return v ? v : null; };
+    if (syncSettings.allConversations?.editable !== false) { const v = choice("syncAllConversations"); patch.sync.allConversations = v === null ? null : v === "on"; }
+    patch.sync.code = choice("syncCode");
+    const snapshot = this.snapshotDrafts(Object.keys(patch.sync).map(key => ({ serverUrl: "syncServerUrl", allConversations: "syncAllConversations", code: "syncCode" })[key]));
     try {
       await api.settingsPatch(patch);
       await refreshState();
@@ -608,7 +609,9 @@ class PiSettings extends HTMLElement {
     const syncSettings = store.state.settings?.sync || {};
     const syncServerUrl = syncSettings.serverUrl?.value || "";
     const syncServerEditable = syncSettings.serverUrl?.editable !== false;
-    const syncAll = !!syncSettings.allConversations?.value;
+    const syncAll = syncSettings.allConversations?.value;
+    const syncCode = syncSettings.code?.value || "";
+    const option = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
     const syncAllEditable = syncSettings.allConversations?.editable !== false;
     const syncLabel = syncState.configured ? "Connected" : "Local only";
     return `<section class="settings-section">
@@ -618,11 +621,15 @@ class PiSettings extends HTMLElement {
             <input class="settings-inline-input" data-setting="syncServerUrl" value="${esc(syncServerUrl)}" placeholder="https://pi-sync.example">
           </div>` : ""}
           <div class="settings-row settings-path-row">
-            <div class="sr-main"><div class="sr-title">Synchronize all conversations</div><div class="sr-sub">${syncAllEditable ? "Enroll every conversation automatically. Otherwise use <span class=\"settings-mono\">/sync</span> in a conversation." : "Set by the deployment. Use <span class=\"settings-mono\">/sync</span> to enroll a conversation."}</div></div>
-            <label class="sync-toggle"><input type="checkbox" data-setting="syncAllConversations" ${syncAll ? "checked" : ""} ${syncAllEditable ? "" : "disabled"}><span>${syncAll ? "On" : "Off"}</span></label>
+            <div class="sr-main"><div class="sr-title">Synchronize all conversations</div><div class="sr-sub">${syncAllEditable ? "Default follows <span class=\"settings-mono\">allSessions</span> in your dotfiles' <span class=\"settings-mono\">pi-sync.json</span>. Otherwise use <span class=\"settings-mono\">/sync</span> in a conversation." : "Set by the deployment. Use <span class=\"settings-mono\">/sync</span> to enroll a conversation."}</div></div>
+            <select class="settings-inline-input" data-setting="syncAllConversations" ${syncAllEditable ? "" : "disabled"}>${option("", "Follow dotfiles", syncAll === null || syncAll === undefined ? "" : null)}${option("on", "On", syncAll === true ? "on" : null)}${option("off", "Off", syncAll === false ? "off" : null)}</select>
+          </div>
+          <div class="settings-row settings-path-row">
+            <div class="sr-main"><div class="sr-title">Share uncommitted code</div><div class="sr-sub">Default follows <span class="settings-mono">code</span> in your dotfiles' <span class="settings-mono">pi-sync.json</span>.</div></div>
+            <select class="settings-inline-input" data-setting="syncCode">${option("", "Follow dotfiles", syncCode)}${option("ask", "Ask per repository", syncCode)}${option("auto", "Always", syncCode)}${option("off", "Never", syncCode)}</select>
           </div>
           <div class="settings-row"><div class="sr-main"><div class="sr-title">${esc(syncLabel)}</div><div class="sr-sub">${syncState.configured ? esc(syncState.serverUrl || syncServerUrl) : "No sync server configured; conversations stay on this host."}</div></div><span class="status-dot ${syncState.configured ? "" : "off"}"></span></div>
-          ${syncServerEditable || syncAllEditable ? `<div class="settings-row settings-actions-row"><span></span><button class="settings-save" data-act="save-sync-settings">Save</button></div>` : ""}
+          ${`<div class="settings-row settings-actions-row"><span></span><button class="settings-save" data-act="save-sync-settings">Save</button></div>`}
         </div>
       </section>`;
   }

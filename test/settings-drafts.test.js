@@ -170,7 +170,7 @@ test("textarea, select, checkbox, and newly disabled fields restore correctly", 
   showCategory("sync");
   typeInto(settings.querySelector("[data-setting='syncServerUrl']"), "https://draft.test");
   const syncAll = settings.querySelector("[data-setting='syncAllConversations']");
-  syncAll.checked = true;
+  syncAll.value = "on";
   syncAll.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
 
   store.set({
@@ -191,7 +191,7 @@ test("textarea, select, checkbox, and newly disabled fields restore correctly", 
   });
 
   assert.equal(settings.querySelector("[data-setting='syncServerUrl']").value, "https://draft.test");
-  assert.equal(settings.querySelector("[data-setting='syncAllConversations']").checked, true);
+  assert.equal(settings.querySelector("[data-setting='syncAllConversations']").value, "on");
   showCategory("repositories");
   assert.equal(settings.querySelector("[data-setting='defaultRepositorySource']").value, "github");
   assert.equal(settings.querySelector("[data-setting='githubOwner']").value, "new-owner");

@@ -25,7 +25,9 @@ const DEFAULTS = {
   defaultThinkingLevel: "medium",
   sync: {
     serverUrl: null,
-    allConversations: false,
+    // null follows the pi-sync settings file (dotfiles); a value overrides it.
+    allConversations: null,
+    code: null,
   },
   pi: {
     profile: null, // local profile dir/settings.json or HTTPS settings URL
@@ -107,8 +109,11 @@ export function normalizeSyncConfig(value, { strict = false } = {}) {
   if (value.serverUrl !== undefined && value.serverUrl !== null && typeof value.serverUrl !== "string") {
     return invalid("Sync server URL must be a string or null.");
   }
-  if (value.allConversations !== undefined && typeof value.allConversations !== "boolean") {
-    return invalid("Sync allConversations must be a boolean.");
+  if (value.allConversations != null && typeof value.allConversations !== "boolean") {
+    return invalid("Sync allConversations must be a boolean or null.");
+  }
+  if (value.code != null && !["ask", "auto", "off"].includes(value.code)) {
+    return invalid("Sync code must be ask, auto, off, or null.");
   }
   const serverUrl = typeof value.serverUrl === "string" ? value.serverUrl.trim() : null;
   if (serverUrl) {
@@ -122,13 +127,14 @@ export function normalizeSyncConfig(value, { strict = false } = {}) {
   }
   return {
     serverUrl: serverUrl || null,
-    allConversations: value.allConversations === true,
+    allConversations: typeof value.allConversations === "boolean" ? value.allConversations : null,
+    code: value.code ?? null,
   };
 }
 
 function envBoolean(name, fallback) {
   const value = process.env[name];
-  if (value === undefined) return fallback;
+  if (value === undefined || value === "") return fallback;
   if (typeof value === "boolean") return value;
   const normalized = String(value).trim().toLowerCase();
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
@@ -143,7 +149,7 @@ export function syncEnvironmentOverrides() {
   const url = process.env.PI_SYNC_SERVER_URL;
   return {
     serverUrl: url !== undefined && url !== exportedSyncServerUrl,
-    allConversations: process.env.PI_WEB_SYNC_ALL_CONVERSATIONS !== undefined,
+    allConversations: !!process.env.PI_WEB_SYNC_ALL_CONVERSATIONS,
   };
 }
 
@@ -158,13 +164,18 @@ export function syncConfig(cfg = loadConfig()) {
   return {
     serverUrl,
     allConversations: envBoolean("PI_WEB_SYNC_ALL_CONVERSATIONS", configured.allConversations),
+    code: configured.code,
   };
 }
 
 // Writes the effective sync settings where the pi-sync extension reads them. Called before sessions load it.
 export function exportSyncEnvironment(cfg = loadConfig()) {
   const effective = syncConfig(cfg);
-  process.env.PI_SYNC_ALL_SESSIONS = effective.allConversations ? "on" : "off";
+  // Unset settings are left to pi-sync, which reads the dotfiles' pi-sync.json.
+  if (effective.allConversations === null) delete process.env.PI_SYNC_ALL_SESSIONS;
+  else process.env.PI_SYNC_ALL_SESSIONS = effective.allConversations ? "on" : "off";
+  if (effective.code === null) delete process.env.PI_SYNC_CODE;
+  else process.env.PI_SYNC_CODE = effective.code;
   if (syncEnvironmentOverrides().serverUrl) return;
   exportedSyncServerUrl = effective.serverUrl;
   if (effective.serverUrl) process.env.PI_SYNC_SERVER_URL = effective.serverUrl;
@@ -181,9 +192,10 @@ export function syncSettingsState(cfg = loadConfig()) {
     },
     allConversations: {
       value: effective.allConversations,
-      source: syncEnvironmentOverrides().allConversations ? "PI_WEB_SYNC_ALL_CONVERSATIONS" : cfg.sync?.allConversations ? "config" : "default",
+      source: syncEnvironmentOverrides().allConversations ? "PI_WEB_SYNC_ALL_CONVERSATIONS" : typeof cfg.sync?.allConversations === "boolean" ? "config" : "default",
       editable: !syncEnvironmentOverrides().allConversations,
     },
+    code: { value: effective.code, source: cfg.sync?.code ? "config" : "default", editable: true },
   };
 }
 

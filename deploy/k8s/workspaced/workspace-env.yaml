@@ -13,7 +13,6 @@ data:
   DOTFILES_REPOSITORY: https://github.com/bry-guy/dotfiles.git
   PI_WEB_PRESTART_TIMEOUT_MS: "120000"
   PI_SYNC_SERVER_URL: http://pi-syncd.pi-sync.svc:8080
-  PI_WEB_SYNC_ALL_CONVERSATIONS: "false"
   PI_WEB_PRESTART_COMMAND: |
     set -eu
     : "${DOTFILES_REPOSITORY:?DOTFILES_REPOSITORY is required}"
