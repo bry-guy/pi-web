@@ -116,6 +116,7 @@ export function setupServerFixture() {
     });
     await Promise.allSettled(openStreams.map(stream => stream.done));
     streams.clear();
+    supervisor?.stopAll?.();
     fs.rmSync(tmp, { recursive: true, force: true });
     server = undefined;
     supervisor = undefined;

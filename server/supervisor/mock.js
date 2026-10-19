@@ -272,6 +272,12 @@ export class MockSupervisor {
     this._startTurn(id, text, false, clientMessageId);
   }
 
+  // Cancels every pending stream timer, so nothing writes to a home that is being removed.
+  stopAll() {
+    for (const st of this.live.values()) for (const t of [...st.timers, ...(st.agentTimers || [])]) clearTimeout(t);
+    this.live.clear();
+  }
+
   async stop(id) {
     const st = this.live.get(id);
     if (!st || !st.streaming) return;
