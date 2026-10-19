@@ -188,7 +188,7 @@ export async function newProjectSession(projectId) {
     completeOperation(operation, result);
     if (!findNode(project.sessions, result.id)) {
       const now = new Date().toISOString();
-      project.sessions.unshift({ id: result.id, title: "New session", contextId: result.contextId || null, branch: result.branch || branch, workspacePath: result.workspacePath || null, model: store.state.effectiveDefaultModel, when: "now", updatedAt: now, activityAt: now, streaming: false, children: [] });
+      project.sessions.unshift({ id: result.id, title: "New session", draft: true, contextId: result.contextId || null, branch: result.branch || branch, workspacePath: result.workspacePath || null, model: store.state.effectiveDefaultModel, when: "now", updatedAt: now, activityAt: now, streaming: false, children: [] });
     }
     store.state.openTree[projectId] = true;
     selectSession(projectId, result.id);
@@ -342,10 +342,12 @@ class PiSidebar extends HTMLElement {
     } else if (act === "chat-row") selectChat(t.dataset.id);
   }
 
-  count(nodes) { return nodes.reduce((n, x) => n + 1 + this.count(x.children), 0); }
+  count(nodes) { return nodes.reduce((n, x) => n + (x.draft ? 0 : 1) + this.count(x.children), 0); }
 
   sessionRows(p, nodes, depth, q, out, forceAll = false) {
     for (const n of nodes) {
+      // A session with nothing sent yet is not listed; it appears with its first prompt.
+      if (n.draft) continue;
       const direct = !q || fuzzyMatch(n.title, q);
       const descendant = q && (n.children || []).some(child => nodeMatches(child, q));
       if (q && !forceAll && !direct && !descendant) continue;

@@ -39,7 +39,7 @@ Each finished turn has one copy button, under its last reply, and your own messa
 
 Untitled chats are named by their first prompt. A chat or project session that was never prompted or named, and is not open, is left out of the sidebar; its file is kept.
 
-The `+` on a project's sidebar row (shown on hover; always on a phone), or `/new` in a project session, opens a new session right away on the project's main checkout, with no dialog. Main is then fetched and fast-forwarded in the background; that is skipped, and logged in History, when main is dirty, has diverged, another Git operation is running, or a session on main is mid-reply. Use **Switch…** in the session panel to move the session to another branch.
+The `+` on a project's sidebar row (shown on hover; always on a phone), or `/new` in a project session, opens a new session right away on the project's main checkout, with no dialog. It is not listed in the sidebar until you send its first prompt, so an abandoned new session leaves nothing behind. Main is then fetched and fast-forwarded in the background; that is skipped, and logged in History, when main is dirty, has diverged, another Git operation is running, or a session on main is mid-reply. Use **Switch…** in the session panel to move the session to another branch.
 
 **Ending** a session or chat (the sidebar's `×`, or **End** in the session panel) stops a running reply, withdraws it from pi-sync on this server (`/sync detach`; the server copy and other devices keep it), and archives it with its forks. Git is not touched. The detach is recorded in the conversation, so it is not shared again even with *sync all conversations* on.
 
@@ -59,7 +59,7 @@ Tap the chat header to open the session panel; it is a modal with a `×` (full s
 - **Git**: branch, commit, workspace and status, then **Fetch**, **Pull**, **Push** and **Switch…** on the right, and **Delete branch** (caution, asks first) and **Merge to main** (primary, asks first) for a non-primary branch. **Switch…** opens a step listing the branches (the current one is marked) and a field for a new branch; choosing one moves this session onto it.
 - **History**: what ran in this workspace, newest first: setup and other hooks, fetches, pulls, pushes, merges, forks and switches, each with its time, status and output (tap an entry to expand it). An operation still running is listed at the top until it finishes; results are also announced as a toast. A switch or merge is logged both where the session was and where it lands, a fork in both the source and the copy. The log is append-only JSON lines in the app state dir, one file per workspace path, capped at 16 KB of output per entry. Removing the state dir removes the log. It records operations run by the process that serves the request.
 
-Steps show a `<` that returns to the panel's main screen. The panel keeps its frame while its contents update, so it does not flash or re-animate.
+Steps show a `<` that returns to the panel's main screen. `Esc` closes the topmost modal (a step goes back first; a confirmation that is mid-request stays). The panel keeps its frame while its contents update, so it does not flash or re-animate.
 
 ### Project menu
 

@@ -14,7 +14,6 @@ class PiProjectMenu extends HTMLElement {
   connectedCallback() {
     this.unsub = store.subscribe(w => { if (w === "state") this.render(); });
     this.addEventListener("click", e => void this.onClick(e));
-    this.addEventListener("keydown", e => { if (e.key === "Escape" && this.menu()) this.close(); });
     this.render();
   }
 

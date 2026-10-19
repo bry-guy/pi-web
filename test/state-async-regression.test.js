@@ -435,8 +435,10 @@ test("projectState hides unprompted sessions nothing has open", async () => {
     const sessions = [session("empty"), session("open"), session("prompted", { firstMessage: "hi" }), session("named", { name: "Plan" })];
     const sup = { listSessions: async () => sessions, meta: async () => null, isStreaming: () => false, isOpen: id => id === "open" };
     await withProjectEnvironment(repo, async ({ project }) => {
-      const ids = (await projectState(project, sup)).sessions.map(item => item.id).sort();
-      assert.deepEqual(ids, ["named", "open", "prompted"]);
+      const listed = (await projectState(project, sup)).sessions;
+      assert.deepEqual(listed.map(item => item.id).sort(), ["named", "open", "prompted"]);
+      // The open one is kept for its page but marked draft, so the sidebar leaves it out until a prompt.
+      assert.deepEqual(listed.filter(item => item.draft).map(item => item.id), ["open"]);
     });
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

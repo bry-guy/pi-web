@@ -8,6 +8,23 @@ import { installHints } from "./hints.js";
 /* ---------------- app root ---------------- */
 class PiApp extends HTMLElement {
   connectedCallback() {
+    // Esc closes the topmost modal: a confirmation (unless it is mid-request), then the
+    // Project menu, then the session panel (a step goes back to its main screen first).
+    // Logs, the repo picker and extension prompts handle Esc themselves.
+    this.onModalEscape = e => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const s = store.state;
+      if (s.extensionUi) return;
+      if (s.confirm) {
+        if (!this.querySelector("pi-confirm")?.busy) store.set({ confirm: null });
+      } else if (s.projectMenu) store.set({ projectMenu: null });
+      else if (s.sessionPicker) {
+        if ((s.sessionPicker.screen || "main") !== "main") this.querySelector("pi-session-picker")?.showScreen("main");
+        else store.set({ sessionPicker: null, sessionPickerError: null });
+      } else return;
+      e.preventDefault();
+    };
+    document.addEventListener("keydown", this.onModalEscape);
     this.innerHTML = `
       <div class="frame">
         <div class="preview-banner hidden" data-preview-banner role="status" aria-label="Preview environment"></div>
@@ -95,6 +112,7 @@ class PiApp extends HTMLElement {
   }
   disconnectedCallback() {
     this.unsub?.();
+    document.removeEventListener("keydown", this.onModalEscape);
     clearInterval(this.gitRefreshTimer);
     window.removeEventListener("resize", this.onResize);
     document.body?.classList.remove("modal-open");

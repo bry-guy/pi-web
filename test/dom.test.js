@@ -195,7 +195,7 @@ async function boot() {
       if (url === "/api/chats") return json({ id: "c1" });
       if (url.includes("/api/projects/") && url.endsWith("/sessions")) {
         dom.window.__newSessionBody = JSON.parse(options.body || "{}");
-        state.projects[0].sessions.unshift({ id: "s2", title: "Chat Name", branch: "feature/from-picker", contextId: "ctx-feature", workspacePath: "/tmp/demo-feature", model: "mock/fast", when: "now", streaming: false, children: [] });
+        state.projects[0].sessions.unshift({ id: "s2", title: "Chat Name", draft: true, branch: "feature/from-picker", contextId: "ctx-feature", workspacePath: "/tmp/demo-feature", model: "mock/fast", when: "now", streaming: false, children: [] });
         return json({ id: "s2", projectId: "p1", branch: "feature/from-picker", contextId: "ctx-feature", workspacePath: "/tmp/demo-feature", setupNeeded: true, operation: { id: options.headers?.["x-pi-operation-id"] || "test-create", status: "success", httpStatus: 200, events: [{ at: Date.now(), type: "result", message: "Created session s2 on feature/from-picker." }] } });
       }
       if (url === "/api/projects") return json({ id: "p2", sessionId: "s2", setupNeeded: true });
@@ -594,7 +594,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(dom.window.__newSessionBody.branch, "main", "new sessions start on main");
   assert.equal(dom.window.__newSessionBody.pull, "background", "main is updated after the session opens");
   assert.equal(store.state.sessionId, "s2");
-  assert.ok(root.querySelector("[data-id='s2']"));
+  assert.equal(root.querySelector("pi-sidebar [data-id='s2']"), null, "a new session is not listed until its first prompt");
   assert.equal(dom.window.__setupStarted, true, "setup starts after the returned session is selected");
   assert.equal(dom.window.__setupCalls, 1, "automatic setup uses the existing hook endpoint");
   assert.equal(root.querySelector(".send-btn").disabled, false, "composer remains usable during setup");
@@ -1067,7 +1067,19 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.match(root.querySelector("pi-project-menu [data-act='open-past'][data-id='old1']")?.textContent || "", /Old work/);
   root.querySelector("pi-project-menu [data-act='remove-project']").click();
   assert.equal(store.state.confirm?.type, "removeProject");
-  store.set({ confirm: null, projectMenu: null });
+  const escape = () => dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  store.set({ projectMenu: { projectId: "p1" } });
+  escape();
+  assert.equal(store.state.confirm, null, "Esc closes the confirmation first");
+  assert.ok(store.state.projectMenu);
+  escape();
+  assert.equal(store.state.projectMenu, null, "then the Project menu");
+  root.querySelector("pi-header [data-act='session-panel']").click();
+  root.querySelector("pi-session-picker").showScreen("fork");
+  escape();
+  assert.equal(store.state.sessionPicker?.screen, "main", "a session-panel step goes back first");
+  escape();
+  assert.equal(store.state.sessionPicker, null, "then the session panel closes");
   delete store.state.projects[0].ended;
 
   // One copy row per turn, on its last reply; "Copy Turn" only when the turn had several.
