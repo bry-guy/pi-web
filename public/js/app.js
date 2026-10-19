@@ -14,7 +14,6 @@ class PiApp extends HTMLElement {
     this.onModalEscape = e => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       const s = store.state;
-      if (s.extensionUi) return;
       if (s.confirm) {
         if (!this.querySelector("pi-confirm")?.busy) store.set({ confirm: null });
       } else if (s.projectMenu) store.set({ projectMenu: null });
@@ -34,6 +33,7 @@ class PiApp extends HTMLElement {
           <pi-header></pi-header>
           <div class="screen" data-screen="chat">
             <div class="scrollable"><div class="col-pad"><pi-thread></pi-thread></div></div>
+            <pi-extension-ui></pi-extension-ui>
             <pi-composer></pi-composer>
           </div>
           <div class="screen hidden" data-screen="file"><pi-file-view></pi-file-view></div>
@@ -51,7 +51,6 @@ class PiApp extends HTMLElement {
         <pi-project-menu></pi-project-menu>
         <pi-logs></pi-logs>
         <pi-confirm></pi-confirm>
-        <pi-extension-ui></pi-extension-ui>
         <div class="reload-prompt hidden" data-reload-prompt>
           <div class="reload-card"><div class="screen-title">Reload required</div><div class="proj-sub" data-reload-message></div><button class="primary-btn" data-act="reload">Reload</button></div>
         </div>
@@ -192,7 +191,7 @@ class PiApp extends HTMLElement {
 
   sync() {
     const v = store.state.view;
-    const modalOpen = !!(store.state.repoPickerOpen || store.state.sessionPicker || store.state.projectMenu || store.state.logsOpen || store.state.confirm || store.state.extensionUi);
+    const modalOpen = !!(store.state.repoPickerOpen || store.state.sessionPicker || store.state.projectMenu || store.state.logsOpen || store.state.confirm);
     document.body?.classList.toggle("modal-open", modalOpen);
     const previewBanner = this.querySelector("[data-preview-banner]");
     const preview = store.state.uiConfig?.preview === true;

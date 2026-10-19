@@ -71,6 +71,10 @@ Clicking a project's sidebar row opens the Project menu. The row shows only the 
 - **Worker**, for a project with one: the same facts and actions as **Settings → Workers**.
 - **Remove project…**: for a worker-backed project, deletes its worker (its disk is kept unless *Also delete its disk* is ticked); for a local project, ends its sessions and removes it from the list. The checkout is kept either way, and adding the repository again picks it back up.
 
+## Questions from Pi
+
+When Pi or an extension asks something (`ask_user_question`, a confirmation, a value to type), it appears as a card above the composer, not a modal: the rest of the app stays usable. Options are buttons with their descriptions; *Type something.* becomes an inline field; multi-select questions are checkboxes. A question belongs to its conversation: switch away and it waits there. It goes away once answered, dismissed (`×` or `Esc`), timed out, or when the turn that asked ends.
+
 ## Settings
 
 **Settings** lists its categories on the left (on a phone, first): Providers, Pi, Workers, Sync, Repositories, Defaults, Appearance, Diagnostics. Each category has its own address (`#settings/workers`, `#settings/pi`, …), so reloading or using Back returns to it. `<` returns to the chat, and on a phone `<` on a category returns to the list. Settings has one header: while it is open the chat header steps aside, so there is a single `<` and a single title. Providers and Diagnostics explain what each card shows; Diagnostics lists the build, the mode, what Pi loaded and any load errors, then the server logs.

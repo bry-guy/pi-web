@@ -400,7 +400,15 @@ function applyUiEvent(evt) {
     return true;
   }
   if (evt.type === "extension_ui_request") {
-    store.set({ extensionUi: { ...evt, sessionId: evt.sessionId } });
+    store.set({ asks: { ...store.state.asks, [evt.sessionId]: { ...evt, sessionId: evt.sessionId } } });
+    return true;
+  }
+  if (evt.type === "extension_ui_resolved") {
+    if (store.state.asks[evt.sessionId]?.requestId === evt.requestId) {
+      const asks = { ...store.state.asks };
+      delete asks[evt.sessionId];
+      store.set({ asks });
+    }
     return true;
   }
   if (evt.type === "extension_ui_notify") {

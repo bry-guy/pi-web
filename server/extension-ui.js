@@ -100,6 +100,8 @@ export class ExtensionUiHost {
         this.pending.delete(key);
         if (timer) clearTimeout(timer);
         if (options?.signal && onAbort) options.signal.removeEventListener("abort", onAbort);
+        // However it ended (answer, dismissal, timeout, abort), the browser drops the question.
+        this.hub?.emit(sessionId, "extension_ui_resolved", { requestId });
         resolve(value);
       };
       onAbort = () => finish(fallback);
@@ -133,7 +135,9 @@ export class ExtensionUiHost {
       pending.finish(body.confirmed);
       return { ok: true };
     }
-    if (pending.method === "select" && (!pending.options || !pending.options.includes(body.value))) {
+    // `custom` is the user's own typed answer in place of an option (ask_user_question reads it as such).
+    const customSelect = pending.method === "select" && body.custom === true && typeof body.value === "string" && body.value.trim();
+    if (pending.method === "select" && !customSelect && (!pending.options || !pending.options.includes(body.value))) {
       throw hostError("The selected extension UI option is invalid.", "invalid_extension_ui_response", 400);
     }
     if (!["select", "input", "editor"].includes(pending.method) || typeof body.value !== "string") {
