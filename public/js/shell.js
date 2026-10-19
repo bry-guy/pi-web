@@ -18,12 +18,6 @@ function savedActiveSession() {
     return value && typeof value === "object" ? value : null;
   } catch { return null; }
 }
-function cancelExtensionUiFor(nextSessionId) {
-  const request = store.state.extensionUi;
-  if (!request || request.sessionId === nextSessionId) return;
-  void api.extensionUiCancel(request.sessionId, request.requestId).catch(() => {});
-  store.set({ extensionUi: null });
-}
 export const icon = name => {
   const paths = {
     settings: '<path d="M9.7 1.5h.6l.7 1.9 1.5.9 2-.5.4.4.3.5-.9 1.8.1 1.7 1.5 1.4-.2.6-.2.5-2 .1-1.2 1.2-.1 2-.5.2-.6.2-1.4-1.5-1.7-.1-1.8.9-.5-.3-.4-.4.5-2-1-1.5-1.8-.7v-.6-.6l1.8-.7 1-1.5-.5-2 .5-.4.4-.3 1.8.9 1.7-.1 1.4-1.5Z"/><circle cx="10" cy="10" r="2.2"/>',
@@ -73,7 +67,6 @@ function wakeEarly(project) {
 }
 
 export function selectSession(projectId, sessionId, { showOperation = false } = {}) {
-  cancelExtensionUiFor(sessionId);
   const project = store.state.projects.find(p => p.id === projectId);
   const node = findNode(project?.sessions, sessionId);
   wakeEarly(project);
@@ -112,7 +105,6 @@ export function selectSessionById(sessionId, options = {}) {
 }
 
 export function selectChat(chatId) {
-  cancelExtensionUiFor(chatId);
   const chat = store.state.chats.find(c => c.id === chatId);
   store.set({
     view: "chat", chatId, sessionId: null, projectId: null, drawerOpen: false, sessionPicker: null, sessionPickerError: null,

@@ -279,15 +279,20 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.notify("state");
   assert.equal(root.querySelector(".workspace-commit").textContent, "abcdef12");
   assert.equal(root.querySelector(".workspace-commit").title, "Current commit abcdef1234567890");
+  // Questions dock above the composer, nothing is blocked, and each one goes away once answered.
+  const card = () => root.querySelector("pi-extension-ui .ask-card");
   applyEvent({ v: 1, seq: 1, sessionId: "s1", type: "extension_ui_request", requestId: "ui-1", method: "select", title: "Choose a conversation", options: ["one", "two"] });
-  assert.match(root.querySelector(".extension-ui-modal").textContent, /Choose a conversation/);
+  assert.match(card().textContent, /Choose a conversation/);
+  assert.equal(dom.window.document.body.classList.contains("modal-open"), false, "a question is not a modal");
+  assert.ok(card().closest(".screen[data-screen='chat']"), "it sits in the chat, above the composer");
   root.querySelector("[data-extension-ui-option='1']").click();
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(root.querySelector(".extension-ui-modal"), null);
+  assert.equal(card(), null);
+  assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "two" });
   applyEvent({ v: 1, seq: 2, sessionId: "s1", type: "extension_ui_request", requestId: "ui-2", method: "confirm", title: "Continue", message: "Proceed?" });
-  root.querySelector("[data-extension-ui-submit]").click();
+  root.querySelector("[data-extension-ui-confirm='yes']").click();
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(root.querySelector(".extension-ui-modal"), null);
+  assert.equal(card(), null);
   assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { confirmed: true });
   applyEvent({ v: 1, seq: 3, sessionId: "s1", type: "extension_ui_request", requestId: "ui-3", method: "input", title: "Name", placeholder: "Session name" });
   root.querySelector("[data-extension-ui-value]").value = "Web session";
@@ -299,6 +304,35 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   root.querySelector("[data-extension-ui-submit]").click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "after" });
+  // ask_user_question: option rows with descriptions, plus an inline "type your own" field.
+  applyEvent({ v: 1, seq: 5, sessionId: "s1", type: "extension_ui_request", requestId: "ui-5", method: "select", title: "[Approach] Which one?", options: ["1. Fast — quick fix", "2. Thorough — full rewrite", "3. Type something."] });
+  assert.match(root.querySelector(".ask-head").textContent, /Approach/);
+  assert.equal(root.querySelectorAll(".ask-option").length, 2, "the 'Type something.' row becomes a field");
+  assert.match(root.querySelector(".ask-option small").textContent, /quick fix/);
+  root.querySelector("[data-extension-ui-value]").value = "Neither";
+  root.querySelector("[data-extension-ui-submit]").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "3. Type something." }, "a typed answer picks the questionnaire's own row");
+  applyEvent({ v: 1, seq: 51, sessionId: "s1", type: "extension_ui_request", requestId: "ui-5b", method: "input", title: "[Approach] Which one?\n\n1. Fast — quick fix\n2. Thorough — full rewrite\n\nType your answer:", placeholder: "" });
+  assert.equal(card(), null, "its follow-up prompt is answered without showing");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "Neither" });
+  assert.equal(store.state.asks.s1, undefined);
+  // Multi-select: checkboxes, sent as the numbers the questionnaire expects.
+  applyEvent({ v: 1, seq: 6, sessionId: "s1", type: "extension_ui_request", requestId: "ui-6", method: "input", title: "Pick some\n\n1. A — first\n2. B — second\n\nEnter the numbers", placeholder: "1,3; custom answer" });
+  root.querySelector("[data-extension-ui-check='2']").checked = true;
+  root.querySelector("[data-extension-ui-submit]").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "2" });
+  // A question answered or timed out elsewhere disappears; another session's question waits there.
+  applyEvent({ v: 1, seq: 7, sessionId: "s1", type: "extension_ui_request", requestId: "ui-7", method: "confirm", title: "Gone soon" });
+  assert.ok(card());
+  applyEvent({ v: 1, seq: 8, sessionId: "s1", type: "extension_ui_resolved", requestId: "ui-7" });
+  assert.equal(card(), null, "a resolved question goes away");
+  applyEvent({ v: 1, seq: 9, sessionId: "sibling", type: "extension_ui_request", requestId: "ui-8", method: "confirm", title: "Elsewhere" });
+  assert.equal(card(), null, "only the open conversation's question shows");
+  assert.ok(store.state.asks.sibling, "and the other one is kept for its session");
+  delete store.state.asks.sibling;
   const project = store.state.projects[0];
   const session = project.sessions.find(item => item.id === "s1");
   const originalSession = { ...session };

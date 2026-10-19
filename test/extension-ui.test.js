@@ -91,3 +91,25 @@ test("pending extension dialogs are re-sent when the browser reloads the transcr
   adapter.respond("session-r", first.requestId, { value: "one" });
   assert.equal(await selected, "one");
 });
+
+test("a question tells the browser when it is no longer waiting, however it ended", async () => {
+  const hub = new EventHub();
+  const events = frames(hub);
+  const adapter = new ExtensionUiHost({ hub });
+  const ui = adapter.uiContext("session-9");
+
+  const answered = ui.select("Which?", ["one", "two"]);
+  const asked = await waitFor(events, event => event.type === "extension_ui_request");
+  adapter.respond("session-9", asked.requestId, { value: "two" });
+  assert.equal(await answered, "two");
+  await waitFor(events, event => event.type === "extension_ui_resolved" && event.requestId === asked.requestId);
+
+  // Abandoned (the turn was aborted) with nobody answering.
+  const controller = new AbortController();
+  const abandoned = ui.confirm("Still there?", "", { signal: controller.signal });
+  await waitFor(events, event => event.type === "extension_ui_request" && event.title === "Still there?");
+  controller.abort();
+  assert.equal(await abandoned, false);
+  const second = events.filter(event => event.type === "extension_ui_request").at(-1);
+  await waitFor(events, event => event.type === "extension_ui_resolved" && event.requestId === second.requestId);
+});

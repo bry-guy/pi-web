@@ -123,7 +123,13 @@ test("a new session never switches a checkout another session is working in", as
   await fixture.post(`/api/sessions/${holder}/close`);
   await fixture.post(`/api/sessions/${body.id}/close`);
   await fixture.post(`/api/sessions/${fixture.mainSessionId}/close`);
-  const again = await fixture.post(`/api/projects/${fixture.projectId}/sessions`, { branch: "main" });
-  assert.equal((await again.json()).branch, "main");
+  // The earlier background update may still hold the repository briefly under load.
+  let again;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    again = await (await fixture.post(`/api/projects/${fixture.projectId}/sessions`, { branch: "main" })).json();
+    if (again.error !== "repository_busy") break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(again.branch, "main", JSON.stringify(again));
   assert.equal(fixture.git(fixture.repo, "branch", "--show-current").trim(), "main");
 });

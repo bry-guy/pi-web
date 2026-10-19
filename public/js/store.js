@@ -110,7 +110,7 @@ export const store = {
     error: null,             // transient composer/action error
     commandNotice: null,     // last web-adapted Pi slash-command result
     toasts: [],              // short results of async actions, newest last
-    extensionUi: null,
+    asks: {},                  // sessionId -> the question Pi is waiting on there
     extensionStatuses: {},
     fatalError: null,        // unrecoverable wire-contract error
     fileError: null,

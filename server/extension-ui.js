@@ -100,6 +100,8 @@ export class ExtensionUiHost {
         this.pending.delete(key);
         if (timer) clearTimeout(timer);
         if (options?.signal && onAbort) options.signal.removeEventListener("abort", onAbort);
+        // However it ended (answer, dismissal, timeout, abort), the browser drops the question.
+        this.hub?.emit(sessionId, "extension_ui_resolved", { requestId });
         resolve(value);
       };
       onAbort = () => finish(fallback);

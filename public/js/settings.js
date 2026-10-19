@@ -39,7 +39,7 @@ class PiSettings extends HTMLElement {
     this.onDocumentKeydown = e => {
       if (e.key === "Escape" && store.state.view === "settings"
         && !store.state.logsOpen && !store.state.repoPickerOpen && !store.state.sessionPicker && !store.state.projectMenu
-        && !store.state.confirm && !store.state.extensionUi) {
+        && !store.state.confirm) {
         e.preventDefault();
         store.set({ view: "chat", settingsCategory: null });
       }
