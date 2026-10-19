@@ -1035,7 +1035,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.markRead("sibling");
   assert.equal(store.state.unread.sibling, undefined);
 
-  // One copy row per turn, on its last reply; "Copy all" only when the turn had several.
+  // One copy row per turn, on its last reply; "Copy Turn" only when the turn had several.
   store.state.transcripts.s1.streaming = false;
   store.state.transcripts.s1.records = [
     { id: "u1", role: "user", text: "go" },
@@ -1050,7 +1050,9 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(rec("r1").querySelector("[data-copy]"), null);
   assert.ok(rec("r1").classList.contains("reply-mid"));
   assert.ok(rec("r2").querySelector("[data-copy]:not([data-copy-turn])"));
-  assert.match(rec("r2").querySelector("[data-copy-turn]")?.textContent || "", /Copy all 2/);
+  assert.equal(rec("r2").querySelector("[data-copy]:not([data-copy-turn])").dataset.tip, "Copy Response");
+  assert.equal(rec("r2").querySelector("[data-copy-turn]")?.dataset.tip, "Copy Turn");
+  assert.equal(rec("u1").querySelector("[data-copy]").dataset.tip, "Copy Message");
   assert.equal(rec("r3").querySelector("[data-copy-turn]"), null);
   let copied = null;
   Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async text => { copied = text; } } });

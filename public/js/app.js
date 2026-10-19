@@ -2,6 +2,7 @@ import { api, refreshState } from "./api.js";
 import { setHTML, store, toastActions } from "./store.js";
 import { esc, mobile } from "./shell.js";
 import { closeFileView } from "./files.js";
+import { installHints } from "./hints.js";
 
 
 /* ---------------- app root ---------------- */
@@ -208,3 +209,4 @@ class PiApp extends HTMLElement {
 }
 
 customElements.define("pi-app", PiApp);
+installHints();

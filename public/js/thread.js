@@ -4,7 +4,12 @@ import { setHTML, store } from "./store.js";
 import { closeConversation, esc, icon, mobile, newChat, newProjectSession, selectChat, selectSession } from "./shell.js";
 
 let pendingMessageSequence = 0;
-const copyButton = (side, replies = 1) => `<div class="msg-actions ${side}"><button class="msg-action" type="button" data-copy aria-label="Copy message" title="Copy">${icon("copy")}</button>${replies > 1 ? `<button class="msg-action msg-action-text" type="button" data-copy data-copy-turn aria-label="Copy all ${replies} replies in this turn" title="Copy all ${replies} replies in this turn">Copy all ${replies}</button>` : ""}</div>`;
+const copyButton = (side, replies = 1) => {
+  const tip = side === "user" ? "Copy Message" : "Copy Response";
+  const one = `<button class="msg-action" type="button" data-copy data-tip="${tip}" aria-label="${tip}">${icon("copy")}</button>`;
+  const turn = replies > 1 ? `<button class="msg-action" type="button" data-copy data-copy-turn data-tip="Copy Turn" aria-label="Copy Turn (${replies} replies)">${icon("copyTurn")}</button>` : "";
+  return `<div class="msg-actions ${side}">${one}${turn}</div>`;
+};
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const LIVE_AGENT_STATUSES = new Set(["running", "queued"]);
 const HISTORY_PAGE_SIZE = 500;
@@ -602,17 +607,14 @@ class PiThread extends HTMLElement {
       store.setError("Clipboard access is unavailable in this browser.");
       return;
     }
-    const turnCopy = button.hasAttribute("data-copy-turn");
-    const label = turnCopy ? button.textContent : null;
+    const glyph = button.hasAttribute("data-copy-turn") ? "copyTurn" : "copy";
     const aria = button.getAttribute("aria-label");
     button.classList.add("copied");
-    if (turnCopy) button.textContent = "Copied";
-    else setHTML(button, icon("check"));
+    setHTML(button, icon("check"));
     button.setAttribute("aria-label", "Copied");
     setTimeout(() => {
       button.classList.remove("copied");
-      if (turnCopy) button.textContent = label;
-      else setHTML(button, icon("copy"));
+      setHTML(button, icon(glyph));
       button.setAttribute("aria-label", aria);
     }, 1500);
   }

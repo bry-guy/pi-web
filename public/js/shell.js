@@ -28,6 +28,8 @@ export const icon = name => {
     settings: '<path d="M9.7 1.5h.6l.7 1.9 1.5.9 2-.5.4.4.3.5-.9 1.8.1 1.7 1.5 1.4-.2.6-.2.5-2 .1-1.2 1.2-.1 2-.5.2-.6.2-1.4-1.5-1.7-.1-1.8.9-.5-.3-.4-.4.5-2-1-1.5-1.8-.7v-.6-.6l1.8-.7 1-1.5-.5-2 .5-.4.4-.3 1.8.9 1.7-.1 1.4-1.5Z"/><circle cx="10" cy="10" r="2.2"/>',
     chevronLeft: '<path d="m12.5 4-6 6 6 6"/>',
     copy: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/>',
+    // Three stacked sheets: the copy glyph with one more sheet behind it, for "copy the whole turn".
+    copyTurn: '<rect x="8" y="8" width="9" height="9" rx="1.5"/><path d="M14.25 8V6.75a1.5 1.5 0 0 0-1.5-1.5h-6a1.5 1.5 0 0 0-1.5 1.5v6a1.5 1.5 0 0 0 1.5 1.5H8"/><path d="M11.5 5.25V4A1.5 1.5 0 0 0 10 2.5H4A1.5 1.5 0 0 0 2.5 4v6A1.5 1.5 0 0 0 4 11.5h1.25"/>',
     check: '<path d="m4.5 10.5 3.5 3.5 7.5-8"/>',
     // Distinct glyphs: the sidebar is a panel, the files column is a code symbol (</>).
     sidebar: '<rect x="3" y="4" width="14" height="12" rx="2.5"/><path d="M8 4v12"/>',
