@@ -2,7 +2,6 @@ import { api, refreshState } from "./api.js";
 import { beginOperation, completeOperation } from "./operations.js";
 import { setHTML, store, toast } from "./store.js";
 import { closeConversation, esc, icon, selectSession } from "./shell.js";
-import { openProjectMenu } from "./project-menu.js";
 import { gitErrorMessage, runningPickerOperation, pickerError, launchSetup, pickerOperationKinds, featureBranchForName } from "./panel-utils.js";
 
 // A fork's default name: the session's name plus the first free "(fork)", "(fork 2)", … among the project's sessions.
@@ -228,11 +227,6 @@ class PiSessionPicker extends HTMLElement {
     if (act === "end-session") {
       const id = this.picker()?.sourceSessionId;
       if (id && !this.busy) { this.close(); await closeConversation(id, "session"); }
-      return;
-    }
-    if (act === "open-project-menu") {
-      const project = this.project();
-      if (project) openProjectMenu(project.id);
       return;
     }
     if (act === "pull-branch") await this.pull();
@@ -476,7 +470,6 @@ class PiSessionPicker extends HTMLElement {
             ${actionRow("Fork", "Copies this conversation to a new branch and worktree.", `<button class="btn btn-secondary" data-act="open-fork" ${this.busy ? "disabled" : ""}>Fork…</button>`)}
             ${hookRows}
             ${actionRow("End session", "Stops it, withdraws it from sync on this server and archives it. Git is not touched.", `<button class="btn btn-caution" data-act="end-session" ${this.busy ? "disabled" : ""}>End</button>`)}
-            ${actionRow("Project", "New and past sessions, other devices, worker, removal.", `<button class="btn btn-secondary" data-act="open-project-menu">Open…</button>`)}
           </div>
         </section>`;
         body = `${sessionSection}${gitSection}${this.historySection(picker)}`;

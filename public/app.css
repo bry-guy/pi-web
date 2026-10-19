@@ -238,10 +238,6 @@ aside.rail {
 .row.unread:not(.streaming) .live-dot { opacity: 1; animation: none; background: var(--orange); }
 .row .count, .row .when { font-family: var(--mono); font-size: 11px; color: var(--faint); flex: 0 0 auto; }
 .row .when { font-size: 10.5px; }
-.row-ws { border: 0; background: transparent; font-family: var(--mono); font-size: 10.5px; color: var(--faint); padding: 1px 4px; cursor: pointer; flex: 0 0 auto; }
-.row-ws-keep { display: inline-block; width: 5px; height: 5px; margin-left: 4px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
-.row-ws.warn { color: var(--warn, #b7791f); }
-.row-ws.failed { color: var(--danger, #c53030); }
 /* The whole footer row is the settings button; hover is a quiet tint, not an accent. */
 .rail-foot { width: 100%; padding: 10px 12px; display: flex; align-items: center; gap: 9px; border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color var(--duration) var(--ease); }
 .rail-foot:hover, .rail-foot:focus-visible { background: var(--surface-2); outline: 0; }
@@ -1009,15 +1005,15 @@ body.modal-open .scrollable { overflow: hidden; }
 }
 .row:hover .row-close, .row .row-close:focus-visible { opacity: 1; pointer-events: auto; }
 .row .row-close:hover, .row .row-close:focus-visible { color: var(--red); }
-/* The project row's ⋯ opens the Project menu; shown on hover like ×, always on phones. */
-.row .row-menu {
+/* The project row's + starts a new session; shown on hover like ×, always on phones. */
+.row .row-new {
   border: 0; background: transparent; cursor: pointer; flex: 0 0 auto; line-height: 1;
   font-size: 15px; padding: 0 4px; border-radius: var(--radius-sm); color: var(--faint);
   opacity: 0; transition: opacity .12s; pointer-events: none;
 }
-.row:hover .row-menu, .row .row-menu:focus-visible { opacity: 1; pointer-events: auto; }
-.row .row-menu:hover, .row .row-menu:focus-visible { color: var(--text); background: var(--hover); outline: 0; }
-@media (max-width: 760px) { .row .row-menu { opacity: 1; pointer-events: auto; min-width: 44px; min-height: 44px; } }
+.row:hover .row-new, .row .row-new:focus-visible { opacity: 1; pointer-events: auto; }
+.row .row-new:hover, .row .row-new:focus-visible { color: var(--text); background: var(--hover); outline: 0; }
+@media (max-width: 760px) { .row .row-new { opacity: 1; pointer-events: auto; min-width: 44px; min-height: 44px; } }
 
 .workspace-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 

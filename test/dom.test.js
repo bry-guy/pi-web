@@ -584,10 +584,11 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(store.state.chatId, "c1");
 
-  const projectRow = root.querySelector("[data-act='project-row']");
-  assert.ok(projectRow);
+  const projectNew = root.querySelector("[data-act='project-row'] [data-act='project-new-session']");
+  assert.ok(projectNew, "the project row has a + for a new session");
+  assert.equal(root.querySelector("[data-act='project-row'] .row-ws"), null, "no worker state on the project row");
   dom.window.__holdSetup = true;
-  projectRow.click();
+  projectNew.click();
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(root.querySelector(".session-picker"), null, "a new project session opens without a modal");
   assert.equal(dom.window.__newSessionBody.branch, "main", "new sessions start on main");
@@ -1045,22 +1046,23 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.markRead("sibling");
   assert.equal(store.state.unread.sibling, undefined);
 
-  // Project-level actions live in the Project menu, opened from the sidebar row's ⋯; the session menu keeps per-conversation ones.
+  // Project-level actions live in the Project menu, opened by clicking the sidebar's project row; the session menu keeps per-conversation ones.
   store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null, railOpen: true, query: "" });
   root.querySelector("pi-header [data-act='session-panel']").click();
   assert.equal(root.querySelector("pi-session-picker [data-act='end-idle']"), null, "End idle is not a session action");
   assert.equal(root.querySelector("pi-session-picker .worker-card"), null, "the worker is not in the session menu");
   assert.equal(root.querySelector("pi-session-picker [data-act='delete-branch']")?.textContent, "Delete branch");
-  root.querySelector("pi-session-picker [data-act='open-project-menu']").click();
-  assert.equal(store.state.sessionPicker, null, "opening the Project menu closes the session menu");
+  assert.equal(root.querySelector("pi-session-picker [data-act='open-project-menu']"), null, "no Project entry in the session menu");
+  root.querySelector("[data-act='close-session-picker']").click();
+  root.querySelector("pi-sidebar [data-act='project-row'][data-id='p1']").click();
   assert.ok(root.querySelector("pi-project-menu [data-act='end-idle']"));
   assert.ok(root.querySelector("pi-project-menu [data-act='remove-project']"));
   root.querySelector("pi-project-menu [data-act='close-project-menu']").click();
   store.state.projects[0].ended = [{ id: "old1", title: "Old work", when: "2d", updatedAt: 1 }];
   store.notify("state");
   assert.equal(root.querySelector("pi-sidebar [data-act='toggle-ended']"), null, "the sidebar has no Ended list");
-  root.querySelector("pi-sidebar [data-act='project-menu'][data-id='p1']").click();
-  assert.ok(store.state.projectMenu, "the row's ⋯ opens the Project menu");
+  root.querySelector("pi-sidebar [data-act='project-row'][data-id='p1']").click();
+  assert.ok(store.state.projectMenu, "clicking the project row opens the Project menu");
   assert.equal(store.state.sessionId, "s1", "and does not start a new session");
   assert.match(root.querySelector("pi-project-menu [data-act='open-past'][data-id='old1']")?.textContent || "", /Old work/);
   root.querySelector("pi-project-menu [data-act='remove-project']").click();

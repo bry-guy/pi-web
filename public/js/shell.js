@@ -305,9 +305,9 @@ class PiSidebar extends HTMLElement {
     const t = e.target.closest("[data-act]");
     if (!t) return;
     const act = t.dataset.act;
-    if (act === "project-menu") {
+    if (act === "project-new-session") {
       e.stopPropagation();
-      openProjectMenu(t.dataset.id);
+      newProjectSession(t.dataset.id);
       return;
     }
     if (act === "close-row") {
@@ -336,36 +336,13 @@ class PiSidebar extends HTMLElement {
       store.state.openTree[id] = !store.state.openTree[id];
       if (store.state.openTree[id]) wakeEarly(store.state.projects.find(p => p.id === id));
       store.notify("state");
-    } else if (act === "restart-ws") {
-      e.stopPropagation();
-      api.restartWorkspace(t.dataset.ws)
-        .then(() => refreshState())
-        .catch(err => store.setError(`Restart failed: ${err.error || err.message || err}`));
-    } else if (act === "toggle-pin") {
-      e.stopPropagation();
-      api.pinWorkspace(t.dataset.ws, t.dataset.pinned !== "1")
-        .then(() => refreshState())
-        .catch(err => store.setError(`Keep-awake failed: ${err.error || err.message || err}`));
-    } else if (act === "project-row") newProjectSession(t.dataset.id);
+    } else if (act === "project-row") openProjectMenu(t.dataset.id);
     else if (act === "session-row") {
       selectSession(t.dataset.pid, t.dataset.id, { showOperation: true });
     } else if (act === "chat-row") selectChat(t.dataset.id);
   }
 
   count(nodes) { return nodes.reduce((n, x) => n + 1 + this.count(x.children), 0); }
-
-  // Project workers sleep when idle and wake on use; pinning keeps one awake
-  // (e.g. a dev server you want left running).
-  workspaceToggle(p) {
-    const problem = p.workspaceProblem;
-    if (problem?.fatal || p.workspaceState === "failed") {
-      const why = problem?.message || "The worker is not running.";
-      return `<button class="row-ws failed" data-act="restart-ws" data-ws="${esc(p.workspace)}" title="${esc(`${why} Click to restart it.`)}" aria-label="${esc(`${p.name}: failed. ${why} Restart`)}">restart</button>`;
-    }
-    const label = workerStateLabel(p.workspaceState);
-    const title = `${problem ? `${problem.message} ` : ""}Grant: ${p.workspaceGrant || "default"}. ${p.workspacePinned ? "Kept awake. Click to let it sleep when idle." : "Sleeps when idle and wakes on use. Click to keep awake."}`;
-    return `<button class="row-ws ${label}${problem ? " warn" : ""}" data-act="toggle-pin" data-ws="${esc(p.workspace)}" data-pinned="${p.workspacePinned ? 1 : 0}" title="${esc(title)}" aria-label="${esc(`${p.name}: ${label}${p.workspacePinned ? ", kept awake" : ""}. ${title}`)}">${label}${p.workspacePinned ? `<i class="row-ws-keep" aria-hidden="true"></i>` : ""}</button>`;
-  }
 
   sessionRows(p, nodes, depth, q, out, forceAll = false) {
     for (const n of nodes) {
@@ -450,8 +427,8 @@ class PiSidebar extends HTMLElement {
         <div class="row mono ${active && !open ? "active" : ""}" role="button" tabindex="0" aria-expanded="${open}" data-act="project-row" data-id="${esc(p.id)}">
           <span class="caret" data-act="toggle-tree" data-tree-id="${esc(p.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(p.name)}">${open ? "▾" : "▸"}</span>
           <span class="lbl">${esc(p.name)}</span>
-          ${p.workspace ? this.workspaceToggle(p) : ""}<span class="count">${this.count(p.sessions)}</span>
-          <button class="row-menu" data-act="project-menu" data-id="${esc(p.id)}" data-tip="Project" aria-label="Project menu for ${esc(p.name)}">⋯</button>
+          <span class="count">${this.count(p.sessions)}</span>
+          <button class="row-new" data-act="project-new-session" data-id="${esc(p.id)}" data-tip="New session" aria-label="New session in ${esc(p.name)}">+</button>
         </div></div>`);
       if (open) this.sessionRows(p, p.sessions, 0, nameMatch ? "" : q, projRows, !!q && nameMatch);
     }
