@@ -35,7 +35,7 @@ While a turn runs, the chat shows a small dot spinner (a 2×3 grid of dots, ever
 
 While a reply streams, the chat follows it only if you are at the bottom. Scroll up and it stops following, so you can read earlier messages while the reply grows off screen; scroll back to the bottom (or send a message) to follow again.
 
-Every finished reply has a copy button under it, and so does your own message: with a mouse it appears on hover, on a phone it is always shown under replies and appears when you tap your own message. It copies the message's text (markdown for replies) and shows a check for a moment.
+Each finished turn has one copy button, under its last reply, and your own messages have one too: with a mouse it appears on hover, on a phone it is always shown under replies and appears when you tap your own message. It copies that message's text (markdown for replies) and shows a check for a moment. Earlier replies in the same turn (notes between tool calls) have no copy button and sit closer together; when there are several, **Copy all N** next to the button copies every reply in the turn, separated by blank lines.
 
 Untitled chats are named by their first prompt. A chat or project session that was never prompted or named, and is not open, is left out of the sidebar; its file is kept.
 

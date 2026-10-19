@@ -1511,9 +1511,13 @@ aside.files { background: var(--rail-bg); box-shadow: inset 1px 0 0 var(--hairli
 .msg-action:hover { background: var(--surface-2); color: var(--text); }
 .msg-action.copied { color: var(--text); }
 .msg-action .icon { width: 16px; height: 16px; }
+.msg-action-text { width: auto; padding: 0 var(--space-2); font: inherit; font-size: var(--text-xs); }
+/* Earlier replies in a turn have no copy row, so they read as one answer with the last. */
+.msg.reply-mid { margin-bottom: var(--space-2); }
 @media (hover: none) {
   .msg-actions.assistant { opacity: 1; }
   .msg-actions.user { display: none; }
   .msg.show-actions .msg-actions.user { display: flex; }
   .msg-action { width: 40px; height: 40px; }
+  .msg-action-text { width: auto; }
 }

@@ -1035,6 +1035,33 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.markRead("sibling");
   assert.equal(store.state.unread.sibling, undefined);
 
+  // One copy row per turn, on its last reply; "Copy all" only when the turn had several.
+  store.state.transcripts.s1.streaming = false;
+  store.state.transcripts.s1.records = [
+    { id: "u1", role: "user", text: "go" },
+    { id: "r1", role: "assistant", text: "First note." },
+    { id: "t1", role: "tool", name: "bash", args: {} },
+    { id: "r2", role: "assistant", text: "Second note." },
+    { id: "u2", role: "user", text: "again" },
+    { id: "r3", role: "assistant", text: "Only reply." },
+  ];
+  store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null });
+  const rec = id => root.querySelector(`[data-rec="${id}"]`);
+  assert.equal(rec("r1").querySelector("[data-copy]"), null);
+  assert.ok(rec("r1").classList.contains("reply-mid"));
+  assert.ok(rec("r2").querySelector("[data-copy]:not([data-copy-turn])"));
+  assert.match(rec("r2").querySelector("[data-copy-turn]")?.textContent || "", /Copy all 2/);
+  assert.equal(rec("r3").querySelector("[data-copy-turn]"), null);
+  let copied = null;
+  Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async text => { copied = text; } } });
+  rec("r2").querySelector("[data-copy-turn]").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(copied, "First note.\n\nSecond note.");
+  rec("r2").querySelector("[data-copy]:not([data-copy-turn])").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(copied, "Second note.");
+  delete globalThis.navigator.clipboard;
+
   store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null });
   store.state.transcripts.s1.records = [{
     id: "activity:agent:solo", role: "activity", kind: "agent", key: "agent:solo", status: "running",
