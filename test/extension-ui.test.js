@@ -98,11 +98,10 @@ test("a question tells the browser when it is no longer waiting, however it ende
   const adapter = new ExtensionUiHost({ hub });
   const ui = adapter.uiContext("session-9");
 
-  // Typed answer in place of an option (ask_user_question's "Type something.").
-  const custom = ui.select("Which?", ["1. A — a", "2. Type something."]);
+  const answered = ui.select("Which?", ["one", "two"]);
   const asked = await waitFor(events, event => event.type === "extension_ui_request");
-  assert.deepEqual(adapter.respond("session-9", asked.requestId, { value: "my own", custom: true }), { ok: true });
-  assert.equal(await custom, "my own");
+  adapter.respond("session-9", asked.requestId, { value: "two" });
+  assert.equal(await answered, "two");
   await waitFor(events, event => event.type === "extension_ui_resolved" && event.requestId === asked.requestId);
 
   // Abandoned (the turn was aborted) with nobody answering.

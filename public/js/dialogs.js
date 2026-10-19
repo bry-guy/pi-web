@@ -257,7 +257,8 @@ class PiConfirm extends HTMLElement {
  *
  * ask_user_question reaches the browser as one select (or, for multi-select, one input) per
  * question with numbered "N. label — description" lines and a trailing "Type something." row;
- * that shape is parsed into option rows, checkboxes and an inline answer field.
+ * that shape is parsed into option rows, checkboxes and an inline answer field. A typed answer
+ * picks "Type something." and then fills in the text prompt the questionnaire asks next.
  */
 const OPTION_LINE = /^(\d+)\.\s+(.+?)(?:\s+—\s+(.*))?$/s;
 
@@ -284,7 +285,8 @@ export function parseQuestion(request) {
     // Multi-select arrives as an input whose title lists the numbered options, then instructions.
     const [question, list, ...rest] = parsed.question.split("\n\n");
     const lines = (list || "").split("\n");
-    if (rest.length && lines.every((line, index) => OPTION_LINE.exec(line)?.[1] === String(index + 1))) {
+    // (The text prompt after "Type something." repeats the list too, but has no placeholder.)
+    if (request.placeholder && rest.length && lines.every((line, index) => OPTION_LINE.exec(line)?.[1] === String(index + 1))) {
       parsed.question = question;
       parsed.options = lines.map(line => { const match = OPTION_LINE.exec(line); return { label: match[2], description: match[3] || "" }; });
       parsed.multi = true;
@@ -349,8 +351,9 @@ class PiExtensionUI extends HTMLElement {
       return this.send(request, { value: text.trim() ? `${picked.join(",")}; ${text.trim()}` : picked.join(",") });
     }
     if (request.method === "select") {
-      if (!text.trim()) return;
-      return this.send(request, { value: text.trim(), custom: true });
+      if (!text.trim() || question.otherIndex < 0) return;
+      this.followUp = { sessionId: request.sessionId, question: question.question, text: text.trim(), until: Date.now() + 15_000 };
+      return this.send(request, { value: request.options[question.otherIndex] });
     }
     return this.send(request, { value: text });
   }
@@ -388,6 +391,15 @@ class PiExtensionUI extends HTMLElement {
     const request = this.request();
     if (!request) { this.draftKey = null; setHTML(this, ""); return; }
     const key = `${request.sessionId}:${request.requestId}`;
+    const follow = this.followUp;
+    if (follow && request.method === "input" && !request.placeholder && follow.sessionId === request.sessionId
+      && Date.now() < follow.until && parseQuestion(request).question.startsWith(follow.question)) {
+      // The questionnaire's "type your answer" prompt: answer it with what was already typed.
+      this.followUp = null;
+      this.autoKey = key;
+      void this.send(request, { value: follow.text });
+    }
+    if (this.autoKey === key) { setHTML(this, ""); return; }
     const fresh = this.draftKey !== key;
     // Keep what was typed (and checked) across re-renders of the same question.
     const oldField = this.querySelector("[data-extension-ui-value]");

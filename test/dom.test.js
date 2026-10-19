@@ -312,7 +312,12 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   root.querySelector("[data-extension-ui-value]").value = "Neither";
   root.querySelector("[data-extension-ui-submit]").click();
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "Neither", custom: true });
+  assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "3. Type something." }, "a typed answer picks the questionnaire's own row");
+  applyEvent({ v: 1, seq: 51, sessionId: "s1", type: "extension_ui_request", requestId: "ui-5b", method: "input", title: "[Approach] Which one?\n\n1. Fast — quick fix\n2. Thorough — full rewrite\n\nType your answer:", placeholder: "" });
+  assert.equal(card(), null, "its follow-up prompt is answered without showing");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "Neither" });
+  assert.equal(store.state.asks.s1, undefined);
   // Multi-select: checkboxes, sent as the numbers the questionnaire expects.
   applyEvent({ v: 1, seq: 6, sessionId: "s1", type: "extension_ui_request", requestId: "ui-6", method: "input", title: "Pick some\n\n1. A — first\n2. B — second\n\nEnter the numbers", placeholder: "1,3; custom answer" });
   root.querySelector("[data-extension-ui-check='2']").checked = true;
