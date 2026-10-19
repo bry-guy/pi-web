@@ -37,7 +37,13 @@ While a reply streams, the chat follows it only if you are at the bottom. Scroll
 
 Every finished reply has a copy button under it, and so does your own message: with a mouse it appears on hover, on a phone it is always shown under replies and appears when you tap your own message. It copies the message's text (markdown for replies) and shows a check for a moment.
 
-Untitled chats are named by their first prompt. A chat that was never prompted or named, and is not open, is left out of the sidebar; its file is kept.
+Untitled chats are named by their first prompt. A chat or project session that was never prompted or named, and is not open, is left out of the sidebar; its file is kept.
+
+Clicking a project (or `+`/`/new` in a project session) opens a new session right away on the project's main checkout, with no dialog. Main is then fetched and fast-forwarded in the background; that is skipped, and logged in History, when main is dirty, has diverged, another Git operation is running, or a session on main is mid-reply. Use **Switch…** in the session panel to move the session to another branch.
+
+**Ending** a session or chat (the sidebar's `×`, or **End** in the session panel) stops a running reply, withdraws it from pi-sync on this server (`/sync detach`; the server copy and other devices keep it), and archives it with its forks. Git is not touched. The detach is recorded in the conversation, so it is not shared again even with *sync all conversations* on.
+
+A project row's `×` closes the project: its sessions end and it leaves the sidebar. Without workers the checkout stays on disk; with workers its worker is deleted and its disk is kept unless you tick **Also delete its disk**. Adding the same repository again picks a kept checkout back up.
 
 ## Files
 
@@ -53,16 +59,18 @@ Tap the chat header to open the session panel; it is a modal with a `×` (full s
 - **Git**: branch, commit, workspace and status, then **Fetch**, **Pull**, **Push** and **Switch…** on the right, and **Delete** (caution, asks first) and **Merge to main** (primary, asks first) for a non-primary branch. **Switch…** opens a step listing the branches (the current one is marked) and a field for a new branch; choosing one moves this session onto it.
 - **History**: what ran in this workspace, newest first: setup and other hooks, fetches, pulls, pushes, merges, forks and switches, each with its time, status and output (tap an entry to expand it). An operation still running is listed at the top until it finishes; results are also announced as a toast. A switch or merge is logged both where the session was and where it lands, a fork in both the source and the copy. The log is append-only JSON lines in the app state dir, one file per workspace path, capped at 16 KB of output per entry. Removing the state dir removes the log. It records operations run by the process that serves the request.
 
+The **Session** section also has **End** (see above) and, for a project with a worker, that worker's card: the same facts and actions as **Settings → Workers**.
+
 Steps show a `<` that returns to the panel's main screen. The panel keeps its frame while its contents update, so it does not flash or re-animate.
 
-Starting a new session uses the same panel with name and branch fields instead of the Session and History sections, and lists earlier sessions under **Sessions**.
+Conversations shared from other devices for this repository are listed under **From other devices**; **Open** adds one as a new session.
 
 ## Settings
 
 **Settings** lists its categories on the left (on a phone, first): Providers, Pi, Workers, Sync, Repositories, Defaults, Appearance, Diagnostics. Each category has its own address (`#settings/workers`, `#settings/pi`, …), so reloading or using Back returns to it. `<` returns to the chat, and on a phone `<` on a category returns to the list. Settings has one header: while it is open the chat header steps aside, so there is a single `<` and a single title. Providers and Diagnostics explain what each card shows; Diagnostics lists the build, the mode, what Pi loaded and any load errors, then the server logs.
 
 - **Pi**: the dotfiles profile, extra packages to load, and local extension paths (advanced), with what Pi loaded and any problems. **Save & reload** fetches the profile, installs missing packages, and reloads idle sessions. It is refused while a session is running; stop it first.
-- **Workers** (needs workspaced; otherwise the page says workers are not enabled): each worker's state (asleep, starting, awake, busy), keep-awake, last use, resource requests and limits, live usage (`n/a` when workspaced reports none), and its grant: name, service account, namespace, egress, runtime class, and environment variable names (never values). **Reload** re-reads one worker's profile and extensions; **Reload all awake workers** does every awake worker and lists each result. **Restart** starts a fresh pod and reruns startup; the disk is kept. **Reset** wipes the worker's disk and needs its name typed; add the project again afterwards. A busy or asleep worker refuses restart and reset, and the page says why. The page refreshes every 5 seconds while it is visible.
+- **Workers** (needs workspaced; otherwise the page says workers are not enabled): each worker's state (asleep, starting, awake, busy), keep-awake, last use, resource requests and limits, live usage (`n/a` when workspaced reports none), and its grant: name, service account, namespace, egress, runtime class, and environment variable names (never values). **Reload** re-reads one worker's profile and extensions; **Reload all awake workers** does every awake worker and lists each result. **Restart** starts a fresh pod and reruns startup; the disk is kept. **Stop** puts it to sleep now (disk kept, it wakes on use). **Reset** wipes the worker's disk and needs its name typed; add the project again afterwards. **Delete** closes its project (see above). A busy or asleep worker refuses restart and reset, and the page says why. The page refreshes every 5 seconds while it is visible.
 - The sidebar shows each project's worker state; a small dot marks a worker kept awake. A worker that crashed shows an amber state; one that cannot run (crash loop, out of memory, unschedulable, stuck starting) shows **restart** in red, and tapping it restarts the worker. The reason is in its tooltip, and [Worker](worker.md#when-a-worker-breaks) explains recovery.
 
 `mise run dev` (mock mode) shows three fixed sample workers, so the Workers page can be tried without a cluster.

@@ -1,8 +1,23 @@
 import { syncConfig } from "../config.js";
 import { remoteConversationsForRepository } from "../pi-sync.js";
+import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
 
 export function register(api, deps) {
-  const { path, loadConfig, newId, sessionWorkspace, normalizeHooks, repositorySource, reposRoot, resolvePath, saveConfig, hub, ws, cloneRepository, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, projectContext, projectContextAsync, bindSessionToContext, branchContextAsync, ensureBranchContext, sessionBelongsToProject, github, sup } = deps;
+  const { path, loadConfig, newId, sessionWorkspace, normalizeHooks, repositorySource, reposRoot, resolvePath, saveConfig, hub, ws, cloneRepository, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, projectContext, projectContextAsync, bindSessionToContext, branchContextAsync, ensureBranchContext, sessionBelongsToProject, github, sup, projectState, closeSession, sessionsUsingWorkspaceAsync } = deps;
+
+  // A new session on main opens at once; main is fetched and fast-forwarded afterwards.
+  // Skipped (and logged to History) when main is dirty, diverged, busy or a turn is running.
+  const pullMainLater = (project, mainBranch, context, sessionId) => setTimeout(() => {
+    const reporter = createOperationReporter({ sessionId, kind: "pull", title: `Update ${mainBranch}` });
+    reporter.bind(context.path);
+    runRepositoryAdmission(project.repoPath, async () => {
+      const sessions = await sessionsUsingWorkspaceAsync(project, context.path, sup);
+      if (sessions.some(session => sup.isStreaming(session.id))) return reporter.finish({ status: "error", message: `Skipped: a session on ${mainBranch} is running.` });
+      const result = await ws.prepareMainAsync(project.repoPath, { fetch: true, primaryBranch: mainBranch, report: reporter.log });
+      reporter.finish({ message: result.fastForwarded ? `${mainBranch} is up to date with ${result.upstream}.` : `${mainBranch} was already up to date.` });
+      if (result.fastForwarded) hub.emit(sessionId, "session_meta", {});
+    }).catch(error => reporter.finish({ status: "error", message: `Skipped: ${error.detail || error.message || error.code}` }));
+  }, 0);
 
 
   api.post("/projects", async c => {
@@ -38,8 +53,12 @@ export function register(api, deps) {
           clone_in_progress: 409,
           clone_failed: 502,
         };
-        if (statuses[e.code]) return err(c, statuses[e.code], e.code, e.code === "clone_failed" ? { message: e.message } : {});
-        throw e;
+        // A closed project's clone is kept on disk; adding it again reuses it.
+        if (e.code === "repository_exists" && e.repoPath && !cfg.projects.some(p => p.repoPath === e.repoPath)) {
+          ({ repoPath, source: sourceInfo } = e);
+          cloned = false;
+        } else if (statuses[e.code]) return err(c, statuses[e.code], e.code, e.code === "clone_failed" ? { message: e.message } : {});
+        else throw e;
       }
     }
     if (cfg.projects.some(p => p.repoPath === repoPath)) return err(c, 409, "project_exists");
@@ -84,6 +103,20 @@ export function register(api, deps) {
         throw e;
       }
     }, reporter);
+  });
+
+  // Close a project: end its sessions and drop it from the list. The checkout on disk is kept,
+  // so adding the repository again picks it back up.
+  api.delete("/projects/:id", async c => {
+    const cfg = loadConfig();
+    const project = cfg.projects.find(p => p.id === c.req.param("id"));
+    if (!project) return err(c, 404, "no_such_project");
+    const { sessions } = await projectState(project, sup);
+    for (const session of sessions) await closeSession(sup, hub, session.id);
+    const latest = loadConfig();
+    latest.projects = latest.projects.filter(p => p.id !== project.id);
+    saveConfig(latest);
+    return c.json({ ok: true, id: project.id, endedSessions: sessions.length });
   });
 
   api.get("/projects/:id/synced-sessions", async c => {
@@ -163,6 +196,7 @@ export function register(api, deps) {
       reporter.log({ type: "phase", phase: "create-session", message: `Creating the Pi session in ${context.path}.` });
       const { id: sessionId } = await sup.createSession({ cwd: context.path, name });
       bindSessionToContext(sessionId, project, context);
+      if (body.pull === "background" && context.branch === mainBranch && context.kind === "checkout") pullMainLater(project, mainBranch, context, sessionId);
       hub.emit(sessionId, "session_created", { session: { id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch } });
       const operation = reporter.finish({ httpStatus: 200, message: `Created session ${sessionId} on ${context.branch}.` });
       return c.json({ id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch, workspacePath: context.path, setup: null, setupNeeded, operation });

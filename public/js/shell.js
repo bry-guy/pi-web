@@ -1,6 +1,7 @@
 import { api, openTranscript, refreshState, transcriptLoading } from "./api.js";
 import { activeOperations, beginOperation, completeOperation, operationForScope, operationHint } from "./operations.js";
 import { setHTML, store } from "./store.js";
+import { launchSetup } from "./panel-utils.js";
 
 export const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 export const mobile = () => matchMedia("(max-width: 760px)").matches;
@@ -36,7 +37,7 @@ export const icon = name => {
   return `<svg class="icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">${paths[name] || ""}</svg>`;
 };
 
-export function openSessionPicker(projectId, { mode = "new", sourceSessionId = null, branch = null, name = null } = {}) {
+export function openSessionPicker(projectId, { mode = "switch", sourceSessionId = null, branch = null, name = null } = {}) {
   const project = store.state.projects.find(p => p.id === projectId);
   if (!project) return;
   const source = sourceSessionId || (mode !== "new" ? store.state.sessionId : null);
@@ -161,30 +162,76 @@ export async function newChat() {
   await refreshState();
 }
 
+// A new project session opens at once on the main checkout; the server updates main in the background.
+const creatingSession = new Set();
 export async function newProjectSession(projectId) {
-  openSessionPicker(projectId, { mode: "new" });
+  const project = store.state.projects.find(p => p.id === projectId);
+  if (!project || creatingSession.has(projectId)) return;
+  creatingSession.add(projectId);
+  wakeEarly(project);
+  const branch = project.defaultBranch || project.primaryBranch || "main";
+  const operation = beginOperation("create-session", "New session", "", "Request started.", null, { projectId, action: "create-session" });
+  try {
+    let result;
+    // A sleeping worker answers "starting" until it is up (about a minute at most).
+    for (let attempt = 0; ; attempt++) {
+      try { result = await api.newProjectSession(projectId, { branch, pull: "background", operationId: operation.id }); break; }
+      catch (error) {
+        if (error?.error !== "workspace_starting" || attempt >= 20) throw error;
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+    operation.sessionId = result.id;
+    completeOperation(operation, result);
+    if (!findNode(project.sessions, result.id)) {
+      const now = new Date().toISOString();
+      project.sessions.unshift({ id: result.id, title: "New session", contextId: result.contextId || null, branch: result.branch || branch, workspacePath: result.workspacePath || null, model: store.state.effectiveDefaultModel, when: "now", updatedAt: now, activityAt: now, streaming: false, children: [] });
+    }
+    store.state.openTree[projectId] = true;
+    selectSession(projectId, result.id);
+    launchSetup(result.id, result);
+    void refreshState().catch(() => {});
+  } catch (error) {
+    completeOperation(operation, {}, error);
+    store.setError(`Could not start a session: ${error.detail || error.message || error.error || error}`);
+  } finally {
+    creatingSession.delete(projectId);
+  }
 }
 
-let closeOperationInFlight = false;
+// Per conversation: one slow close (e.g. waking a worker) must not swallow clicks on other rows.
+const closesInFlight = new Set();
 const closeErrorMessage = error => ({
-  session_streaming: "Stop the current response before closing this conversation.",
-}[error?.error] || error?.detail || error?.message || error?.error || "Could not close this conversation.");
+  session_streaming: "Stop the current response before ending this conversation.",
+  workspace_starting: "This project's worker is starting. Try again in a few seconds.",
+}[error?.error] || error?.detail || error?.message || error?.error || "Could not end this conversation.");
 
+function removeNode(nodes, id) {
+  const index = (nodes || []).findIndex(node => node.id === id);
+  if (index >= 0) return !!nodes.splice(index, 1);
+  return (nodes || []).some(node => removeNode(node.children, id));
+}
+
+// Ends a session or chat: stops its turn, withdraws it from sync, archives it.
 export async function closeConversation(id, kind = "session") {
-  if (!id || closeOperationInFlight) return;
-  closeOperationInFlight = true;
-  const label = kind === "chat" ? "Close chat" : "Close session";
+  if (!id || closesInFlight.has(id)) return;
+  closesInFlight.add(id);
+  const label = kind === "chat" ? "End chat" : "End session";
   const operation = beginOperation("close", label, "", "Request started.", id, { action: "close" });
   let result = null;
   try {
     result = await api.close(id, operation.id, kind);
     completeOperation(operation, result);
+    // Drop the row now; a slow /api/state must not show it again until the next refresh agrees.
+    const s = store.state;
+    if (s.projects.some(project => removeNode(project.sessions, id)) || s.chats.some((chat, i) => chat.id === id && s.chats.splice(i, 1))) store.notify("state");
     void refreshState().catch(err => store.setError(`Could not refresh state after close: ${err.message || err}`));
   } catch (error) {
     const displayError = Object.assign(new Error(closeErrorMessage(error)), error);
     completeOperation(operation, result || {}, displayError);
+    store.setError(displayError.message);
   } finally {
-    closeOperationInFlight = false;
+    closesInFlight.delete(id);
   }
 }
 
@@ -243,6 +290,12 @@ class PiSidebar extends HTMLElement {
     if (act === "close-row") {
       e.stopPropagation();
       void closeConversation(t.dataset.id, t.dataset.kind);
+      return;
+    }
+    if (act === "close-project") {
+      e.stopPropagation();
+      const p = store.state.projects.find(item => item.id === t.dataset.id);
+      if (p) store.set({ confirm: { type: "closeProject", id: p.workspace || p.id, projectId: p.id, workspace: p.workspace || null, name: p.name, purge: false, error: null } });
       return;
     }
     if (act === "collapse") {
@@ -313,7 +366,7 @@ class PiSidebar extends HTMLElement {
           <span class="lbl">${esc(n.title)}</span>
           <span class="live-dot" aria-label="${unread ? "Unread reply" : "Streaming"}"></span>
           <button class="row-close" data-act="close-row" data-kind="session" data-pid="${esc(p.id)}" data-id="${esc(n.id)}"
-            data-label="${esc(n.title)}" data-branch="${esc(n.branch || "")}" title="Close session">×</button>
+            data-label="${esc(n.title)}" data-branch="${esc(n.branch || "")}" title="End session" aria-label="End session ${esc(n.title)}">×</button>
         </div></div>`);
       if (kids && (open || q || forceAll)) this.sessionRows(p, n.children, depth + 1, forceAll ? "" : q, out, forceAll);
     }
@@ -327,18 +380,18 @@ class PiSidebar extends HTMLElement {
     if (this.dataset.layout !== layout) {
       this.dataset.layout = layout;
       if (layout === "mini") {
-        this.innerHTML = `<aside class="mini">
+        setHTML(this, `<aside class="mini">
           <button class="mini-logo" data-act="collapse" title="Expand sidebar">π</button>
           <div class="mini-gap"></div>
           <button class="mini-btn cta-plus" data-act="new-chat" title="New chat">+</button>
           <button class="mini-btn quiet" data-act="search" title="Search sessions" aria-label="Search sessions">⌕</button>
           <div class="mini-flex"></div>
           <button class="mini-btn quiet" data-act="settings" title="Settings">${icon("settings")}</button>
-        </aside>`;
+        </aside>`);
         return;
       }
-      if (layout === "empty") { this.innerHTML = ""; return; }
-      this.innerHTML = `<aside class="rail">
+      if (layout === "empty") { setHTML(this, ""); return; }
+      setHTML(this, `<aside class="rail">
         <div class="rail-head">
           <button class="rail-logo" data-act="collapse" title="Collapse sidebar">π</button><div class="rail-word">pi</div>
         </div>
@@ -357,7 +410,7 @@ class PiSidebar extends HTMLElement {
           <span class="avatar" aria-hidden="true">π</span><span class="rail-user">pi-web</span>
           <span class="rail-foot-icon" aria-hidden="true">${icon("settings")}</span>
         </button>
-      </aside>`;
+      </aside>`);
     }
     if (layout === "rail") {
       const inp = this.querySelector(".rail-search");
@@ -381,6 +434,7 @@ class PiSidebar extends HTMLElement {
           <span class="caret" data-act="toggle-tree" data-tree-id="${esc(p.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(p.name)}">${open ? "▾" : "▸"}</span>
           <span class="lbl">${esc(p.name)}</span>
           ${p.workspace ? this.workspaceToggle(p) : ""}<span class="count">${this.count(p.sessions)}</span>
+          <button class="row-close" data-act="close-project" data-id="${esc(p.id)}" title="Close project" aria-label="Close project ${esc(p.name)}">×</button>
         </div></div>`);
       if (open) this.sessionRows(p, p.sessions, 0, nameMatch ? "" : q, projRows, !!q && nameMatch);
     }
@@ -392,7 +446,7 @@ class PiSidebar extends HTMLElement {
         return `<div class="row ${s.chatId === cRow.id ? "active " : ""}${streaming ? "streaming " : ""}${unread ? "unread " : ""}" role="button" tabindex="0" data-act="chat-row" data-id="${esc(cRow.id)}">
         <span class="lbl">${esc(cRow.title)}</span><span class="live-dot" aria-label="${unread ? "Unread reply" : "Streaming"}"></span><span class="when">${esc(cRow.when)}</span>
         <button class="row-close" data-act="close-row" data-kind="chat" data-id="${esc(cRow.id)}"
-          data-label="${esc(cRow.title)}" data-branch="" title="Close chat">×</button>
+          data-label="${esc(cRow.title)}" data-branch="" title="End chat" aria-label="End chat ${esc(cRow.title)}">×</button>
       </div>`;
       }).join("");
     setHTML(this.querySelector(".projects-list"), projRows.join(""));

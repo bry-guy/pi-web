@@ -119,7 +119,9 @@ export async function projectState(project, sup) {
   const worktrees = Object.fromEntries(contexts.filter(context => context.branch).map(context => [context.branch, context.path]));
 
   const closed = loadClosed();
-  const discovered = await discoverProjectSessions(contexts, bindings, closed, sup, project.id);
+  const discovered = (await discoverProjectSessions(contexts, bindings, closed, sup, project.id))
+    // Like chats: an unprompted, unnamed session nothing has open is hidden, not deleted.
+    .map(s => s.closed || hasPrompt(s) || promptText(s.name) || sup.isStreaming(s.id) || sup.isOpen?.(s.id) ? s : { ...s, closed: true });
   const all = discovered.filter(s => !s.closed);
 
   // Session tree from fork lineage. Walk through closed ancestors so visible

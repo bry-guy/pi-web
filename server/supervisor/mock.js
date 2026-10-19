@@ -564,4 +564,17 @@ export function registerMockWorkers(api) {
     Object.assign(w, { state: "running", lastUsed: Date.now() });
     return c.json({ ok: true });
   });
+  api.post("/remote-workspaces/:name/sleep", c => {
+    const w = find(c);
+    if (!w) return c.json({ error: "not_found" }, 404);
+    if (w.busy && c.req.query("force") !== "1") return refusal(c, w, false);
+    w.state = "sleeping";
+    return c.json({ ok: true });
+  });
+  api.delete("/remote-workspaces/:name", c => {
+    const i = workers.findIndex(w => w.name === c.req.param("name"));
+    if (i < 0) return c.json({ error: "not_found" }, 404);
+    workers.splice(i, 1);
+    return c.json({ ok: true });
+  });
 }

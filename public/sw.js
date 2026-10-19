@@ -18,6 +18,7 @@ const SHELL = [
   "./js/shell.js",
   "./js/store.js",
   "./js/thread.js",
+  "./js/workers.js",
   "./vendor/marked.umd.js",
   "./vendor/dompurify.min.js",
   "./icons/icon.svg",

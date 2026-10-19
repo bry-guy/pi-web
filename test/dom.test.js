@@ -194,6 +194,7 @@ async function boot() {
       if (url === "/api/sessions/s1/model") return json({ ok: true });
       if (url === "/api/chats") return json({ id: "c1" });
       if (url.includes("/api/projects/") && url.endsWith("/sessions")) {
+        dom.window.__newSessionBody = JSON.parse(options.body || "{}");
         state.projects[0].sessions.unshift({ id: "s2", title: "Chat Name", branch: "feature/from-picker", contextId: "ctx-feature", workspacePath: "/tmp/demo-feature", model: "mock/fast", when: "now", streaming: false, children: [] });
         return json({ id: "s2", projectId: "p1", branch: "feature/from-picker", contextId: "ctx-feature", workspacePath: "/tmp/demo-feature", setupNeeded: true, operation: { id: options.headers?.["x-pi-operation-id"] || "test-create", status: "success", httpStatus: 200, events: [{ at: Date.now(), type: "result", message: "Created session s2 on feature/from-picker." }] } });
       }
@@ -546,10 +547,6 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
 
   store.state.openTree.p1 = false;
   store.notify("state");
-  root.querySelector("[data-act='project-row']").click();
-  assert.ok(root.querySelector(".session-picker"), "clicking a project opens the new-session modal");
-  assert.equal(store.state.openTree.p1, false);
-  store.set({ sessionPicker: null });
   root.querySelector("[data-act='toggle-tree'][data-tree-id='p1']").click();
   assert.equal(store.state.openTree.p1, true);
   root.querySelector("[data-act='session-row'][data-id='sibling']").click();
@@ -579,29 +576,12 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
 
   const projectRow = root.querySelector("[data-act='project-row']");
   assert.ok(projectRow);
-  projectRow.click();
-  await new Promise(resolve => setTimeout(resolve, 10));
-  assert.ok(root.querySelector(".session-picker"));
-  assert.equal(root.querySelectorAll(".session-history-row").length, 2);
-  assert.match(root.querySelector(".session-history").textContent, /Sessions/);
-  assert.match(root.querySelector(".branch-picker-trigger").textContent, /main/);
-  const newSessionName = root.querySelector("[data-session-name]");
-  newSessionName.value = "Chat Name";
-  newSessionName.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  assert.match(root.querySelector(".branch-picker-trigger").textContent, /main/, "naming a session keeps the visible branch selection");
-  root.querySelector("[data-act='toggle-branch-menu']").click();
-  root.querySelector("[data-act='select-session-branch'][data-branch='__new__']").click();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  const newBranchInput = root.querySelector("[data-session-new-branch]");
-  assert.equal(dom.window.document.activeElement, newBranchInput);
-  assert.equal(newBranchInput.value, "feature/chat-name");
-  newBranchInput.value = "feature/from-picker";
-  newBranchInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  assert.equal(dom.window.document.activeElement, newBranchInput);
-  assert.equal(root.querySelector("[data-act='create-session-context']").disabled, false);
   dom.window.__holdSetup = true;
-  root.querySelector("[data-act='create-session-context']").click();
+  projectRow.click();
   await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(root.querySelector(".session-picker"), null, "a new project session opens without a modal");
+  assert.equal(dom.window.__newSessionBody.branch, "main", "new sessions start on main");
+  assert.equal(dom.window.__newSessionBody.pull, "background", "main is updated after the session opens");
   assert.equal(store.state.sessionId, "s2");
   assert.ok(root.querySelector("[data-id='s2']"));
   assert.equal(dom.window.__setupStarted, true, "setup starts after the returned session is selected");

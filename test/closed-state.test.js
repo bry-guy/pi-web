@@ -62,3 +62,24 @@ test("closed session IDs roundtrip", () => {
   saveClosed(ids);
   assert.deepEqual(loadClosed(), ids);
 });
+
+test("ending a session stops its turn, detaches open sessions from pi-sync, then archives", async () => {
+  const calls = [];
+  const sup = {
+    allSessions: () => [{ id: "child", parentSessionId: "root" }],
+    isStreaming: id => id === "root",
+    isOpen: id => id === "child",
+    stop: async id => { calls.push(["stop", id]); },
+    command: async (id, text) => { calls.push(["command", id, text]); },
+  };
+  const previous = process.env.PI_SYNC_SERVER_URL;
+  process.env.PI_SYNC_SERVER_URL = "http://sync.test";
+  try {
+    await closeSession(sup, { emit: () => {} }, "root");
+  } finally {
+    if (previous === undefined) delete process.env.PI_SYNC_SERVER_URL;
+    else process.env.PI_SYNC_SERVER_URL = previous;
+  }
+  assert.deepEqual(calls, [["stop", "root"], ["command", "child", "/sync detach"]]);
+  assert.deepEqual([...loadClosed()].sort(), ["child", "root"]);
+});

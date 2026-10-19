@@ -2,7 +2,7 @@
 // Closing archives the conversation only; worktrees and branches remain
 // available to agents, terminals, and other sessions.
 import path from "node:path";
-import { loadBindings, loadClosed, loadConfig, saveBindings, saveClosed } from "./config.js";
+import { loadBindings, loadClosed, loadConfig, saveBindings, saveClosed, syncConfig } from "./config.js";
 import { sessionWorkspace, sessionsUsingWorkspaceAsync } from "./domain.js";
 import * as ws from "./workspaces.js";
 
@@ -58,12 +58,25 @@ function descendantsOf(sup, sessionId) {
   });
 }
 
-// Close a session and its descendants. This is archival only and is allowed during a turn;
-// stopping a turn remains an explicit user action.
+// End a session and its descendants: stop a running turn, withdraw it from
+// pi-sync on this device (the server copy stays), then archive it.
 export async function closeSession(sup, hub, sessionId, { report = null } = {}) {
   const sessionIds = [sessionId, ...(await descendantsOf(sup, sessionId))];
   report?.({ type: "phase", phase: "archive-read", message: "Reading the archived-session marker." });
+  // Read first: a corrupt archive fails before anything is stopped or detached.
   const closed = loadClosed();
+  for (const id of sessionIds) {
+    if (sup.isStreaming?.(id)) {
+      report?.({ type: "phase", phase: "stop", message: `Stopping the running turn in ${id}.` });
+      await sup.stop(id).catch(() => undefined);
+    }
+    // The pi-sync extension only runs in open sessions; on an unsynchronized one detach is a no-op.
+    if (syncConfig().serverUrl && sup.isOpen?.(id)) {
+      report?.({ type: "phase", phase: "sync-detach", message: `Withdrawing ${id} from synchronization.` });
+      // A failed detach must not keep the session open; the warning is in the operation log.
+      await sup.command(id, "/sync detach").catch(error => report?.({ type: "warning", phase: "sync-detach", message: `Could not withdraw from sync: ${error.message || error}` }));
+    }
+  }
   for (const id of sessionIds) closed.add(id);
   report?.({ type: "phase", phase: "archive-write", message: "Writing the archived-session marker." });
   saveClosed(closed);

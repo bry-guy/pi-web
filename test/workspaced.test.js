@@ -811,3 +811,35 @@ test("wakes run one at a time; a worker that cannot start answers 503 workspace_
     assert.equal(body.error, "workspace_failed"); assert.equal(body.problem.reason, "Unschedulable");
   } finally { worker.close(); }
 });
+
+test("ending a forked session routes to its worker and drops it from the cached snapshot; delete forgets the worker", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "remote-close-"));
+  const cachePath = path.join(dir, "remote-projects.json");
+  const fork = { id: "child", title: "Fork", children: [] };
+  writeFileSync(cachePath, JSON.stringify({ app: [{ id: "p1", name: "app", sessions: [{ id: "root", title: "Root", children: [fork] }] }] }));
+  const calls = [];
+  // The worker is asleep: state comes only from the snapshot, actions are forwarded.
+  const fetchImpl = async (url, init = {}) => {
+    calls.push(`${init.method || "GET"} ${url}`);
+    if (url === "http://w/v1/workspaces") return Response.json({ workspaces: [{ name: "app", state: "sleeping" }] });
+    if (url.endsWith("/sessions/child/close")) return Response.json({ ok: true });
+    if (init.method === "DELETE") return Response.json({ ok: true });
+    return new Response("{}", { status: 404 });
+  };
+  const remote = createRemoteWorkspaces({ url: "http://w", token: TOKEN, hub: new EventHub(), fetchImpl, cachePath, modelAuthSyncMs: 0 });
+  const api = new Hono();
+  registerRemoteRoutes(api, remote);
+  api.post("/sessions/:id/close", c => c.json({ error: "reached web's own route" }, 500));
+  try {
+    assert.equal(await remote.owner("session", "child"), "app", "nested forks are owned by their worker");
+    const closed = await api.request("/sessions/child/close", { method: "POST", body: "{}" });
+    assert.equal(closed.status, 200);
+    const sessions = (await remote.projects())[0].sessions;
+    assert.deepEqual(sessions[0].children, [], "the ended fork is gone from the snapshot");
+
+    const removed = await api.request("/remote-workspaces/app?purge=1", { method: "DELETE" });
+    assert.equal(removed.status, 200);
+    assert.ok(calls.includes("DELETE http://w/v1/workspaces/app?purge=1"));
+    assert.equal(JSON.parse(readFileSync(cachePath, "utf8")).app, undefined, "its snapshot is dropped");
+  } finally { remote.stop(); }
+});
