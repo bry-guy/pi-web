@@ -315,6 +315,7 @@ header.bar {
 .screen { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .scrollable { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 .col-pad { width: 80%; max-width: none; margin: 0 auto; padding: 28px 0 8px; }
+.ask-dock { width: 80%; margin: 0 auto; }
 .screen-title { font-size: 20px; font-weight: 500; letter-spacing: -0.015em; }
 
 /* ---------- transcript ---------- */
@@ -939,7 +940,7 @@ main.col.settings-open > pi-header { display: none; }
   aside.rail {
     position: absolute; inset: var(--header-height, 54px) auto 0 0; width: 290px; z-index: 10; box-shadow: var(--elevation-2);
   }
-  .col-pad, .composer-pad { width: auto; max-width: none; margin-inline: 0; padding-inline: 16px; }
+  .col-pad, .composer-pad, .ask-dock { width: auto; max-width: none; margin-inline: 0; padding-inline: 16px; }
   .col-pad { padding-top: 18px; padding-bottom: 8px; }
   .composer-pad { padding-top: 10px; padding-bottom: max(14px, env(safe-area-inset-bottom)); }
   header.bar {
@@ -1199,7 +1200,7 @@ header.bar { background: color-mix(in oklch, var(--bg) 82%, transparent); backdr
 .hamburger:hover { background: var(--surface-2); }
 
 /* transcript: centered reading column */
-.col-pad, .composer-pad { width: 100%; max-width: 800px; padding-inline: 24px; }
+.col-pad, .composer-pad, .ask-dock { width: 100%; max-width: 800px; padding-inline: 24px; }
 .col-pad { padding-top: 32px; }
 .msg { margin-bottom: 26px; }
 @keyframes piRise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -1284,7 +1285,7 @@ header.bar { background: color-mix(in oklch, var(--bg) 82%, transparent); backdr
 aside.files { background: var(--rail-bg); box-shadow: inset 1px 0 0 var(--hairline); }
 
 @media (max-width: 760px) {
-  .col-pad, .composer-pad { padding-inline: 14px; }
+  .col-pad, .composer-pad, .ask-dock { padding-inline: 14px; }
   aside.rail { box-shadow: var(--elevation-2); }
   .empty-pi { padding-top: 16vh; }
   .bubble { max-width: 100%; }
@@ -1530,8 +1531,8 @@ aside.files { background: var(--rail-bg); box-shadow: inset 1px 0 0 var(--hairli
 /* ================= questions from Pi =================
    A card docked above the composer, like the Todos panel: nothing else is blocked. */
 pi-extension-ui { display: block; flex: 0 0 auto; background: var(--bg); }
-.ask-dock { width: 80%; margin: 0 auto; padding-top: 8px; }
-@media (max-width: 760px) { .ask-dock { width: auto; margin: 0 12px; } }
+/* Same column as the composer (see .composer-pad), so the card lines up with it at every width. */
+.ask-dock { padding-top: 8px; padding-bottom: 0; }
 .ask-card { border-radius: var(--radius-md); background: var(--surface); box-shadow: var(--elevation-1), inset 0 0 0 1px color-mix(in oklch, var(--accent) 35%, transparent); overflow: hidden; }
 .ask-card[aria-busy="true"] { opacity: .7; }
 .ask-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px 0 14px; color: var(--accent); font: 11px var(--mono); }
