@@ -2,7 +2,7 @@
 // Closing archives the conversation only; worktrees and branches remain
 // available to agents, terminals, and other sessions.
 import path from "node:path";
-import { loadBindings, loadClosed, loadConfig, saveBindings, saveClosed } from "./config.js";
+import { loadBindings, loadClosed, loadConfig, saveBindings, saveClosed, syncConfig } from "./config.js";
 import { sessionWorkspace, sessionsUsingWorkspaceAsync } from "./domain.js";
 import * as ws from "./workspaces.js";
 
@@ -58,18 +58,58 @@ function descendantsOf(sup, sessionId) {
   });
 }
 
-// Close a session and its descendants. This is archival only and is allowed during a turn;
-// stopping a turn remains an explicit user action.
+// End a session and its descendants: stop a running turn, withdraw it from
+// pi-sync on this device (the server copy stays), then archive it.
 export async function closeSession(sup, hub, sessionId, { report = null } = {}) {
   const sessionIds = [sessionId, ...(await descendantsOf(sup, sessionId))];
   report?.({ type: "phase", phase: "archive-read", message: "Reading the archived-session marker." });
+  // Read first: a corrupt archive fails before anything is stopped or detached.
   const closed = loadClosed();
+  for (const id of sessionIds) {
+    if (sup.isStreaming?.(id)) {
+      report?.({ type: "phase", phase: "stop", message: `Stopping the running turn in ${id}.` });
+      await sup.stop(id).catch(() => undefined);
+    }
+    // The pi-sync extension only runs in open sessions; on an unsynchronized one detach is a no-op.
+    if (syncConfig().serverUrl && sup.isOpen?.(id)) {
+      report?.({ type: "phase", phase: "sync-detach", message: `Withdrawing ${id} from synchronization.` });
+      // A failed detach must not keep the session open; the warning is in the operation log.
+      await sup.command(id, "/sync detach").catch(error => report?.({ type: "warning", phase: "sync-detach", message: `Could not withdraw from sync: ${error.message || error}` }));
+    }
+  }
   for (const id of sessionIds) closed.add(id);
   report?.({ type: "phase", phase: "archive-write", message: "Writing the archived-session marker." });
   saveClosed(closed);
   report?.({ type: "phase", phase: "session-event", message: "Emitting the session-closed event." });
   for (const id of sessionIds) hub.emit(id, "session_closed", { sessionId: id });
   return { closed: true, archived: true };
+}
+
+// After an end: a worktree that no session uses any more, is clean and is merged into
+// main can be deleted. Returns what the client needs to offer that, or null.
+export async function cleanupCandidate(sup, workspacePath) {
+  if (!workspacePath) return null;
+  const found = await findProjectByWorkspaceAsync(workspacePath);
+  if (!found || path.resolve(workspacePath) === path.resolve(found.project.repoPath)) return null;
+  const context = found.contexts.find(item => path.resolve(item.path) === path.resolve(workspacePath));
+  const primaryBranch = await ws.defaultBranchAsync(found.project.repoPath);
+  if (!context?.branch || context.branch === primaryBranch) return null;
+  if ((await sessionsUsingWorkspaceAsync(found.project, workspacePath, sup)).length) return null;
+  const status = await ws.contextStatusAsync({ repoPath: found.project.repoPath, workspacePath, primaryBranch });
+  if (status.dirty !== false) return null;
+  if (!await ws.branchMergedAsync(found.project.repoPath, context.branch, primaryBranch)) return null;
+  return { projectId: found.project.id, branch: context.branch, primaryBranch };
+}
+
+// Undo an end: unarchive the session and its forks. A pi-sync detach stays in the
+// conversation, so a restored session is not shared again until attached.
+export async function restoreSession(sup, hub, sessionId) {
+  const closed = loadClosed();
+  if (!closed.has(sessionId)) return { restored: false };
+  for (const id of [sessionId, ...(await descendantsOf(sup, sessionId))]) closed.delete(id);
+  saveClosed(closed);
+  hub.emit(sessionId, "session_meta", {});
+  return { restored: true };
 }
 
 function failure(code, extra = {}) {

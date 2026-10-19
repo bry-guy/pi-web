@@ -40,6 +40,8 @@ export const api = {
   workspaceInventory: () => fetch("/api/remote-workspaces").then(j),
   reloadWorkspace: name => fetch(`/api/remote-workspaces/${encodeURIComponent(name)}/reload`, { method: "POST", headers: JH, body: "{}" }).then(j),
   reloadWorkspaces: () => fetch("/api/remote-workspaces/reload", { method: "POST", headers: JH, body: "{}" }).then(j),
+  sleepWorkspace: name => fetch(`/api/remote-workspaces/${encodeURIComponent(name)}/sleep`, { method: "POST", headers: JH, body: "{}" }).then(j),
+  deleteWorkspace: (name, purge = false) => fetch(`/api/remote-workspaces/${encodeURIComponent(name)}${purge ? "?purge=1" : ""}`, { method: "DELETE" }).then(j),
   resetWorkspace: (name, confirm) => fetch(`/api/remote-workspaces/${encodeURIComponent(name)}/reset`, { method: "POST", headers: JH, body: JSON.stringify({ confirm }) }).then(j),
   health: () => fetch(`/api/health?probe=${Date.now()}`, { cache: "no-store" }).then(j),
   logs: (limit = 500) => fetch(`/api/logs?limit=${encodeURIComponent(limit)}`, { cache: "no-store" }).then(j),
@@ -117,6 +119,8 @@ export const api = {
     const operationId = patch?.operationId;
     return fetch("/api/settings", { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify(patch || {}) }).then(j);
   },
+  restore: id => fetch(`/api/sessions/${encodeURIComponent(id)}/restore`, { method: "POST", headers: JH, body: "{}" }).then(j),
+  endIdle: projectId => fetch(`/api/projects/${encodeURIComponent(projectId)}/end-idle`, { method: "POST", headers: JH, body: "{}" }).then(j),
   close: (id, operationId = null, kind = "session") => fetch(`/api/sessions/${id}/close`, { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify({ ...(operationId ? { operationId } : {}), kind }) }).then(j),
 };
 

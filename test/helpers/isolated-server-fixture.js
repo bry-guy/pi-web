@@ -32,6 +32,7 @@ export async function createIsolatedServerFixture({ createProject: createInitial
   const reposRoot = path.join(tmp, "local-repositories");
   const repo = path.join(reposRoot, "repo");
   let server;
+  let supervisor;
   const initialProjectId = "p-isolated";
   let projectId = createInitialProject ? initialProjectId : null;
   let mainSessionId = null;
@@ -40,6 +41,7 @@ export async function createIsolatedServerFixture({ createProject: createInitial
   const cleanup = async () => {
     if (closed) return;
     closed = true;
+    supervisor?.stopAll?.();
     server?.closeAllConnections?.();
     await new Promise(resolve => {
       if (!server?.listening) return resolve();
@@ -75,7 +77,6 @@ export async function createIsolatedServerFixture({ createProject: createInitial
     const { loadBindings, loadClosed, loadConfig, newId, normalizeHooks, saveBindings, saveConfig } = await import("../../server/config.js");
     const { projectHooks } = await import("../../server/hooks.js");
     const ws = await import("../../server/workspaces.js");
-    let supervisor;
     ({ server, sup: supervisor } = startServer(0));
     if (createInitialProject) {
       mainSessionId = (await supervisor.createSession({ cwd: repo })).id;

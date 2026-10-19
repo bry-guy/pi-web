@@ -1,8 +1,25 @@
 import { syncConfig } from "../config.js";
 import { remoteConversationsForRepository } from "../pi-sync.js";
+import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
+
+const IDLE_MS = 24 * 60 * 60 * 1000;
 
 export function register(api, deps) {
-  const { path, loadConfig, newId, sessionWorkspace, normalizeHooks, repositorySource, reposRoot, resolvePath, saveConfig, hub, ws, cloneRepository, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, projectContext, projectContextAsync, bindSessionToContext, branchContextAsync, ensureBranchContext, sessionBelongsToProject, github, sup } = deps;
+  const { path, loadConfig, newId, sessionWorkspace, normalizeHooks, repositorySource, reposRoot, resolvePath, saveConfig, hub, ws, cloneRepository, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, projectContext, projectContextAsync, bindSessionToContext, branchContextAsync, ensureBranchContext, sessionBelongsToProject, github, sup, projectState, closeSession, sessionsUsingWorkspaceAsync } = deps;
+
+  // A new session on main opens at once; main is fetched and fast-forwarded afterwards.
+  // Skipped (and logged to History) when main is dirty, diverged, busy or a turn is running.
+  const pullMainLater = (project, mainBranch, context, sessionId) => setTimeout(() => {
+    const reporter = createOperationReporter({ sessionId, kind: "pull", title: `Update ${mainBranch}` });
+    reporter.bind(context.path);
+    runRepositoryAdmission(project.repoPath, async () => {
+      const sessions = await sessionsUsingWorkspaceAsync(project, context.path, sup);
+      if (sessions.some(session => sup.isStreaming(session.id))) return reporter.finish({ status: "error", message: `Skipped: a session on ${mainBranch} is running.` });
+      const result = await ws.prepareMainAsync(project.repoPath, { fetch: true, primaryBranch: mainBranch, report: reporter.log });
+      reporter.finish({ message: result.fastForwarded ? `${mainBranch} is up to date with ${result.upstream}.` : `${mainBranch} was already up to date.` });
+      if (result.fastForwarded) hub.emit(sessionId, "session_meta", {});
+    }).catch(error => reporter.finish({ status: "error", message: `Skipped: ${error.detail || error.message || error.code}` }));
+  }, 0);
 
 
   api.post("/projects", async c => {
@@ -86,6 +103,17 @@ export function register(api, deps) {
     }, reporter);
   });
 
+  // End every session tree with no activity for a day and nothing running in it.
+  api.post("/projects/:id/end-idle", async c => {
+    const project = loadConfig().projects.find(p => p.id === c.req.param("id"));
+    if (!project) return err(c, 404, "no_such_project");
+    const cutoff = Date.now() - IDLE_MS;
+    const busy = node => node.streaming || (node.children || []).some(busy);
+    const idle = (await projectState(project, sup)).sessions.filter(node => !busy(node) && Date.parse(node.activityAt || 0) < cutoff);
+    for (const node of idle) await closeSession(sup, hub, node.id);
+    return c.json({ ok: true, ended: idle.map(node => node.id) });
+  });
+
   api.get("/projects/:id/synced-sessions", async c => {
     const project = loadConfig().projects.find(p => p.id === c.req.param("id"));
     if (!project) return err(c, 404, "no_such_project");
@@ -163,6 +191,7 @@ export function register(api, deps) {
       reporter.log({ type: "phase", phase: "create-session", message: `Creating the Pi session in ${context.path}.` });
       const { id: sessionId } = await sup.createSession({ cwd: context.path, name });
       bindSessionToContext(sessionId, project, context);
+      if (body.pull === "background" && context.branch === mainBranch && context.kind === "checkout") pullMainLater(project, mainBranch, context, sessionId);
       hub.emit(sessionId, "session_created", { session: { id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch } });
       const operation = reporter.finish({ httpStatus: 200, message: `Created session ${sessionId} on ${context.branch}.` });
       return c.json({ id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch, workspacePath: context.path, setup: null, setupNeeded, operation });

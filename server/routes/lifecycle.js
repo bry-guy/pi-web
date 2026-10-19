@@ -1,18 +1,20 @@
 export function register(api, deps) {
-  const { closeSession, hub, createOperationReporter, operationRequestId, err, sup } = deps;
+  const { closeSession, restoreSession, cleanupCandidate, sessionWorkspace, hub, createOperationReporter, operationRequestId, err, sup } = deps;
 
 
-  // Close archives the conversation only. Git contexts remain user-owned and
-  // are never removed as a side effect of session lifecycle.
+  // Close ends the conversation (stop, withdraw from sync, archive). Git contexts
+  // remain user-owned and are never removed as a side effect of session lifecycle.
   api.post("/sessions/:id/close", async c => {
     const id = c.req.param("id");
     const body = await c.req.json().catch(() => ({}));
     const reporter = createOperationReporter({ id: operationRequestId(c, body), sessionId: id, kind: "close", title: body.kind === "chat" ? "Close chat" : "Close session" });
     reporter.log({ type: "request", phase: "request", message: `POST /api/sessions/${id}/close` });
     try {
+      const workspacePath = await sessionWorkspace(id, sup).catch(() => null);
       const result = await closeSession(sup, hub, id, { report: reporter.log });
-      const operation = reporter.finish({ httpStatus: 200, message: `${body.kind === "chat" ? "Chat" : "Session"} archived. No Git branch or worktree was changed.` });
-      return c.json({ ok: true, ...result, operation });
+      const cleanup = await cleanupCandidate(sup, workspacePath).catch(() => null);
+      const operation = reporter.finish({ httpStatus: 200, message: `${body.kind === "chat" ? "Chat" : "Session"} ended. No Git branch or worktree was changed.` });
+      return c.json({ ok: true, ...result, cleanup, operation });
     } catch (e) {
       const statuses = { session_streaming: 409, main_worktree_external: 409 };
       const status = statuses[e.code] || 500;
@@ -22,4 +24,6 @@ export function register(api, deps) {
       throw e;
     }
   });
+
+  api.post("/sessions/:id/restore", async c => c.json({ ok: true, ...await restoreSession(sup, hub, c.req.param("id")) }));
 }

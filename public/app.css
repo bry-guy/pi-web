@@ -737,6 +737,10 @@ main.col.settings-open > pi-header { display: none; }
 .app-toasts { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 120; display: grid; gap: var(--space-2); width: min(380px, calc(100vw - 32px)); pointer-events: none; }
 .app-toast { padding: 10px 14px; border-radius: var(--radius-md); background: var(--surface-2); color: var(--text); box-shadow: var(--elevation-2); font-size: var(--text-sm); animation: piPop var(--duration) var(--ease) both; }
 .app-toast.error { color: var(--red); }
+.ended-toggle, .ended-row { color: var(--muted); }
+.row-restore { margin-left: auto; border: 0; background: none; color: var(--accent); font: inherit; font-size: var(--text-xs); cursor: pointer; padding: 0 4px; }
+.app-toast:has(.app-toast-action) { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); pointer-events: auto; }
+.app-toast-action { border: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; padding: 0; }
 .settings-intro { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm); line-height: 1.5; }
 .file-screen-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px 10px 8px; border-bottom: 1px solid var(--code-rule); }
 .file-title-wrap { flex: 1; min-width: 0; }
@@ -880,7 +884,6 @@ main.col.settings-open > pi-header { display: none; }
 .session-picker-actions-heading { margin: 0 0 7px; }
 .session-picker-actions .workspace-actions { margin-top: 0; }
 .session-picker-session-buttons { flex-wrap: nowrap; }
-.session-picker .session-operation-feed { margin-top: 10px; }
 
 .extension-ui-scrim {
   position: fixed; inset: 0; z-index: 120; display: flex; align-items: center; justify-content: center;
@@ -1027,8 +1030,7 @@ body.modal-open .scrollable { overflow: hidden; }
 .operation-state-dot { background: currentColor; }
 .settings-close { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; font-size: 19px; }
 
-.operation-feed, .session-operation-feed { min-width: 0; overflow: auto; }
-.session-operation-feed { display: grid; gap: 5px; max-height: 260px; font: 11px/1.45 var(--mono); }
+.operation-feed { min-width: 0; overflow: auto; }
 
 /* central server and client diagnostics */
 .logs-scrim {
@@ -1509,6 +1511,9 @@ aside.files { background: var(--rail-bg); box-shadow: inset 1px 0 0 var(--hairli
 .msg-action:hover { background: var(--surface-2); color: var(--text); }
 .msg-action.copied { color: var(--text); }
 .msg-action .icon { width: 16px; height: 16px; }
+.hint { position: fixed; z-index: 200; padding: 4px 8px; border-radius: var(--radius-sm); background: var(--text); color: var(--bg); font-size: var(--text-xs); white-space: nowrap; pointer-events: none; animation: piPop var(--duration) var(--ease) both; }
+/* Earlier replies in a turn have no copy row, so they read as one answer with the last. */
+.msg.reply-mid { margin-bottom: var(--space-2); }
 @media (hover: none) {
   .msg-actions.assistant { opacity: 1; }
   .msg-actions.user { display: none; }

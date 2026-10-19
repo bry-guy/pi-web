@@ -194,6 +194,7 @@ async function boot() {
       if (url === "/api/sessions/s1/model") return json({ ok: true });
       if (url === "/api/chats") return json({ id: "c1" });
       if (url.includes("/api/projects/") && url.endsWith("/sessions")) {
+        dom.window.__newSessionBody = JSON.parse(options.body || "{}");
         state.projects[0].sessions.unshift({ id: "s2", title: "Chat Name", branch: "feature/from-picker", contextId: "ctx-feature", workspacePath: "/tmp/demo-feature", model: "mock/fast", when: "now", streaming: false, children: [] });
         return json({ id: "s2", projectId: "p1", branch: "feature/from-picker", contextId: "ctx-feature", workspacePath: "/tmp/demo-feature", setupNeeded: true, operation: { id: options.headers?.["x-pi-operation-id"] || "test-create", status: "success", httpStatus: 200, events: [{ at: Date.now(), type: "result", message: "Created session s2 on feature/from-picker." }] } });
       }
@@ -323,14 +324,25 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   composerTextarea.value = "A long message that wraps in the composer.";
   composerTextarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   const composerExpand = root.querySelector(".composer-expand-btn");
-  assert.equal(composerExpand.classList.contains("hidden"), false, "long drafts show the editor expansion control");
+  assert.equal(Number.parseInt(composerTextarea.style.height, 10), 180, "the editor grows with its draft, no button needed");
+  assert.equal(composerExpand.classList.contains("hidden"), true, "desktop has no expand control");
+  Object.defineProperty(composerTextarea, "scrollHeight", { configurable: true, get: () => composerTextarea.value.length > 20 ? 2000 : 50 });
+  composerTextarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  const capped = Number.parseInt(composerTextarea.style.height, 10);
+  assert.ok(capped < 2000 && capped >= 180, "growth stops at the cap, then the editor scrolls");
+  assert.equal(composerTextarea.style.overflowY, "auto");
+  dom.setNarrowViewport(true);
+  composerTextarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  assert.equal(composerExpand.classList.contains("hidden"), false, "phones offer the full editor past the cap");
   composerExpand.click();
   assert.equal(composerExpand.getAttribute("aria-expanded"), "true");
-  assert.ok(Number.parseInt(composerTextarea.style.height, 10) > 50, "expanded editor is taller than its two-line default");
+  assert.ok(Number.parseInt(composerTextarea.style.height, 10) >= capped, "the full editor is at least as tall as the capped one");
   composerTextarea.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   assert.equal(composerExpand.getAttribute("aria-expanded"), "false", "Escape collapses the expanded editor");
+  dom.setNarrowViewport(false);
   composerTextarea.value = "";
   composerTextarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  assert.ok(Number.parseInt(composerTextarea.style.height, 10) < 180, "an empty draft shrinks back");
   assert.doesNotMatch(root.querySelector(".composer textarea").placeholder, /Another session/);
   assert.equal(root.querySelector("[data-id='sibling']").classList.contains("streaming"), true);
   assert.equal(root.querySelector("pi-header [data-act='settings']"), null);
@@ -546,10 +558,6 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
 
   store.state.openTree.p1 = false;
   store.notify("state");
-  root.querySelector("[data-act='project-row']").click();
-  assert.ok(root.querySelector(".session-picker"), "clicking a project opens the new-session modal");
-  assert.equal(store.state.openTree.p1, false);
-  store.set({ sessionPicker: null });
   root.querySelector("[data-act='toggle-tree'][data-tree-id='p1']").click();
   assert.equal(store.state.openTree.p1, true);
   root.querySelector("[data-act='session-row'][data-id='sibling']").click();
@@ -579,29 +587,12 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
 
   const projectRow = root.querySelector("[data-act='project-row']");
   assert.ok(projectRow);
-  projectRow.click();
-  await new Promise(resolve => setTimeout(resolve, 10));
-  assert.ok(root.querySelector(".session-picker"));
-  assert.equal(root.querySelectorAll(".session-history-row").length, 2);
-  assert.match(root.querySelector(".session-history").textContent, /Sessions/);
-  assert.match(root.querySelector(".branch-picker-trigger").textContent, /main/);
-  const newSessionName = root.querySelector("[data-session-name]");
-  newSessionName.value = "Chat Name";
-  newSessionName.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  assert.match(root.querySelector(".branch-picker-trigger").textContent, /main/, "naming a session keeps the visible branch selection");
-  root.querySelector("[data-act='toggle-branch-menu']").click();
-  root.querySelector("[data-act='select-session-branch'][data-branch='__new__']").click();
-  await new Promise(resolve => setTimeout(resolve, 0));
-  const newBranchInput = root.querySelector("[data-session-new-branch]");
-  assert.equal(dom.window.document.activeElement, newBranchInput);
-  assert.equal(newBranchInput.value, "feature/chat-name");
-  newBranchInput.value = "feature/from-picker";
-  newBranchInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  assert.equal(dom.window.document.activeElement, newBranchInput);
-  assert.equal(root.querySelector("[data-act='create-session-context']").disabled, false);
   dom.window.__holdSetup = true;
-  root.querySelector("[data-act='create-session-context']").click();
+  projectRow.click();
   await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(root.querySelector(".session-picker"), null, "a new project session opens without a modal");
+  assert.equal(dom.window.__newSessionBody.branch, "main", "new sessions start on main");
+  assert.equal(dom.window.__newSessionBody.pull, "background", "main is updated after the session opens");
   assert.equal(store.state.sessionId, "s2");
   assert.ok(root.querySelector("[data-id='s2']"));
   assert.equal(dom.window.__setupStarted, true, "setup starts after the returned session is selected");
@@ -1054,6 +1045,35 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.set({ view: "chat", projectId: "p1", sessionId: "sibling", chatId: null });
   store.markRead("sibling");
   assert.equal(store.state.unread.sibling, undefined);
+
+  // One copy row per turn, on its last reply; "Copy Turn" only when the turn had several.
+  store.state.transcripts.s1.streaming = false;
+  store.state.transcripts.s1.records = [
+    { id: "u1", role: "user", text: "go" },
+    { id: "r1", role: "assistant", text: "First note." },
+    { id: "t1", role: "tool", name: "bash", args: {} },
+    { id: "r2", role: "assistant", text: "Second note." },
+    { id: "u2", role: "user", text: "again" },
+    { id: "r3", role: "assistant", text: "Only reply." },
+  ];
+  store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null });
+  const rec = id => root.querySelector(`[data-rec="${id}"]`);
+  assert.equal(rec("r1").querySelector("[data-copy]"), null);
+  assert.ok(rec("r1").classList.contains("reply-mid"));
+  assert.ok(rec("r2").querySelector("[data-copy]:not([data-copy-turn])"));
+  assert.equal(rec("r2").querySelector("[data-copy]:not([data-copy-turn])").dataset.tip, "Copy Response");
+  assert.equal(rec("r2").querySelector("[data-copy-turn]")?.dataset.tip, "Copy Turn");
+  assert.equal(rec("u1").querySelector("[data-copy]").dataset.tip, "Copy Message");
+  assert.equal(rec("r3").querySelector("[data-copy-turn]"), null);
+  let copied = null;
+  Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async text => { copied = text; } } });
+  rec("r2").querySelector("[data-copy-turn]").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(copied, "First note.\n\nSecond note.");
+  rec("r2").querySelector("[data-copy]:not([data-copy-turn])").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(copied, "Second note.");
+  delete globalThis.navigator.clipboard;
 
   store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null });
   store.state.transcripts.s1.records = [{

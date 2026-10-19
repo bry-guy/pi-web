@@ -1,8 +1,9 @@
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { beginOperation, completeOperation } from "./operations.js";
 import { SHOW_HIDDEN_FILES_KEY, setHTML, store } from "./store.js";
-import { esc, icon, workerStateLabel } from "./shell.js";
+import { esc, icon } from "./shell.js";
 import { operationFeedback, workerErrorMessage } from "./panel-utils.js";
+import { workerAction as runWorkerAction, workerCard } from "./workers.js";
 
 
 /* ---------------- settings ---------------- */
@@ -26,7 +27,6 @@ export function settingsRoute(hash) {
   return match ? { view: "settings", settingsCategory: CATEGORY_IDS.has(match[1]) ? match[1] : null } : null;
 }
 const settingsHash = (open, category) => !open ? "" : category ? `#settings/${category}` : "#settings";
-const amounts = values => Object.entries(values || {}).filter(([, value]) => value).map(([key, value]) => `${key} ${value}`).join(" · ") || "not set";
 
 class PiSettings extends HTMLElement {
   connectedCallback() {
@@ -199,7 +199,7 @@ class PiSettings extends HTMLElement {
     if (e.target.closest("[data-github-logout]")) return this.logoutGithub();
     if (e.target.closest("[data-act='reload-all-workers']")) return this.reloadAllWorkers();
     const workerAction = e.target.closest("[data-act$='-worker']");
-    if (workerAction) return this.workerAction(workerAction.dataset.act, workerAction.dataset.name, workerAction.dataset.pinned === "1");
+    if (workerAction) return runWorkerAction(workerAction.dataset.act, workerAction.dataset.name, workerAction.dataset.pinned === "1", (message, kind) => this.setFeedback(message, kind));
     const login = e.target.closest("[data-auth-login]");
     if (login) return this.startAuth(login.dataset.authLogin, login.dataset.authType);
     const logout = e.target.closest("[data-auth-logout]");
@@ -311,21 +311,6 @@ class PiSettings extends HTMLElement {
         : `Pi configuration failed: ${err.error || err.message || err}`;
       this.setFeedback(message, "error");
     }
-  }
-  // Restart and reset open the shared confirmation dialog (dialogs.js); reload and keep-awake act directly.
-  async workerAction(action, name, pinned) {
-    if (action === "restart-worker" || action === "reset-worker") {
-      store.set({ confirm: { type: action === "reset-worker" ? "resetWorker" : "restartWorker", id: name, name } });
-      return;
-    }
-    try {
-      if (action === "keep-awake-worker") await api.pinWorkspace(name, !pinned);
-      else await api.reloadWorkspace(name);
-      this.setFeedback(action === "keep-awake-worker" ? `Keep awake ${pinned ? "off" : "on"} for ${name}.` : `${name} reloaded.`);
-    } catch (err) {
-      this.setFeedback(`${name}: ${workerErrorMessage(err)}`, "error");
-    }
-    await refreshWorkers();
   }
   async reloadAllWorkers() {
     try {
@@ -555,7 +540,7 @@ class PiSettings extends HTMLElement {
       ? `<div class="worker-results" role="status">${this.workerResults.map(result => `<div class="${result.ok ? "" : "error"}">${esc(result.name)}: ${result.ok ? "reloaded" : esc(workerErrorMessage({ error: result.error }))}</div>`).join("")}</div>`
       : "";
     const list = inventory
-      ? workers.length ? workers.map(worker => this.workerCard(worker, inventory.usageAvailable)).join("") : `<div class="modal-empty">No workers yet. Adding a project starts one.</div>`
+      ? workers.length ? workers.map(worker => workerCard(worker, inventory.usageAvailable)).join("") : `<div class="modal-empty">No workers yet. Adding a project starts one.</div>`
       : store.state.workersError ? "" : `<div class="modal-empty">Loading workers…</div>`;
     return `<section class="settings-section">
         <div class="settings-card settings-card-spaced"><div class="settings-row">
@@ -565,44 +550,6 @@ class PiSettings extends HTMLElement {
         ${store.state.workersError ? `<div class="provider-error">${esc(store.state.workersError)}</div>` : ""}
         ${list}
       </section>`;
-  }
-  workerCard(worker, usageAvailable) {
-    const name = esc(worker.name);
-    const state = workerStateLabel(worker.state);
-    const asleep = worker.state === "sleeping";
-    const usage = usageAvailable && worker.usage
-      ? `${worker.usage.cpuMillicores}m CPU · ${Math.round(worker.usage.memoryBytes / 1048576)} MiB memory`
-      : "n/a";
-    const grant = worker.grant;
-    const grantFacts = grant ? `
-        <div class="worker-fact"><dt>Grant</dt><dd>${esc(grant.name)}${grant.description ? `<small>${esc(grant.description)}</small>` : ""}</dd></div>
-        <div class="worker-fact"><dt>Service account</dt><dd>${esc(grant.serviceAccount || "default")} in ${esc(grant.namespace || "default")}</dd></div>
-        <div class="worker-fact"><dt>Egress · runtime</dt><dd>${esc(grant.egress || "default")} · ${esc(grant.runtimeClass || "default")}</dd></div>
-        <div class="worker-fact"><dt>Env variables</dt><dd>${grant.env?.length ? grant.env.map(esc).join(", ") : "none"}<small>Names only. Values are not shown.</small></dd></div>`
-      : `<div class="worker-fact"><dt>Grant</dt><dd>default</dd></div>`;
-    return `<div class="settings-card settings-card-spaced worker-card" data-worker="${name}">
-        <div class="settings-row">
-          <div class="sr-main"><div class="sr-title">${name}<span class="worker-state ${state}">${esc(state)}</span>${worker.busy ? `<span class="worker-state busy">busy</span>` : ""}</div><div class="sr-sub">${esc(worker.repository || "")}</div></div>
-        </div>
-        <div class="settings-row">
-          <div class="sr-main"><div class="sr-title">Keep awake</div><div class="sr-sub">Never put to sleep automatically.</div></div>
-          <button class="settings-action${worker.keepAwake ? " active" : ""}" data-act="keep-awake-worker" data-name="${name}" data-pinned="${worker.keepAwake ? 1 : 0}" aria-pressed="${!!worker.keepAwake}">${worker.keepAwake ? "On" : "Off"}</button>
-        </div>
-        <dl class="worker-facts">
-          <div class="worker-fact"><dt>Last used</dt><dd>${worker.lastUsed ? esc(new Date(worker.lastUsed).toLocaleString()) : "never"}</dd></div>
-          <div class="worker-fact"><dt>Requests</dt><dd>${esc(amounts(worker.resources?.requests))}</dd></div>
-          <div class="worker-fact"><dt>Limits</dt><dd>${esc(amounts(worker.resources?.limits))}</dd></div>
-          <div class="worker-fact"><dt>Usage now</dt><dd>${esc(usage)}</dd></div>
-          ${grantFacts}
-        </dl>
-        <div class="settings-row settings-actions-row"><span class="settings-mono">${asleep ? "Asleep. Opening one of its projects wakes it." : ""}</span>
-          <div class="settings-actions">
-            <button class="settings-action" data-act="reload-worker" data-name="${name}" ${asleep ? "disabled" : ""}>Reload</button>
-            <button class="settings-action" data-act="restart-worker" data-name="${name}">Restart</button>
-            <button class="settings-action danger" data-act="reset-worker" data-name="${name}">Reset</button>
-          </div>
-        </div>
-      </div>`;
   }
   syncPage() {
     const syncState = store.state.sync || {};

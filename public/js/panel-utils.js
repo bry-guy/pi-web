@@ -69,29 +69,6 @@ export function launchSetup(sessionId, initial) {
     });
 }
 
-export function pickerOperationFeed(picker) {
-  const sourceId = picker?.sourceSessionId || null;
-  const operations = (store.state.operations || []).filter(operation => pickerOperationKinds.has(operation.kind)
-    && (sourceId ? operation.sessionId === sourceId : !operation.sessionId));
-  const events = operations.flatMap((operation, operationIndex) => {
-    const values = operation.events?.length ? [...operation.events] : [];
-    const current = operationHint(operation);
-    const last = values.at(-1);
-    const lastValue = last?.message || last?.output || "";
-    if (current && (!last || ["Request started.", "Result received."].includes(lastValue) && current !== lastValue)) {
-      values.push({ at: operation.lastUpdatedAt || operation.finishedAt || operation.startedAt, message: current, type: "current" });
-    }
-    return (values.length ? values : [{ at: operation.lastUpdatedAt || operation.startedAt, message: current }])
-      .map((event, eventIndex) => ({ operation, event, order: operationIndex * 1000 + eventIndex }));
-  }).sort((a, b) => (Number(a.event.at || 0) - Number(b.event.at || 0)) || (a.order - b.order)).slice(-12);
-  if (!events.length) return "";
-  const rows = events.map(({ operation, event }) => {
-    const message = event.message || event.output || event.type || operationHint(operation);
-    return `<div class="session-operation-event ${event.type === "error" ? "error" : ""}" data-operation-kind="${esc(operation.kind)}" data-operation-hint="${esc(operation.kind)}">${esc(message)}</div>`;
-  }).join("");
-  return `<div class="session-operation-feed" role="log" aria-live="polite">${rows}</div>`;
-}
-
 export function featureBranchForName(value) {
   const slug = String(value || "")
     .normalize("NFKD")

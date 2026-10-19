@@ -57,10 +57,21 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   }
 
   function remember(name, projects) {
+    // Forks are nested; an unknown child id would fall through to web's own routes.
+    const walk = nodes => { for (const s of nodes || []) { owners.session.set(s.id, name); walk(s.children); } };
     for (const p of projects) {
       owners.project.set(p.id, name);
-      for (const s of p.sessions || []) owners.session.set(s.id, name);
+      walk(p.sessions);
+      walk(p.ended);
     }
+  }
+
+  // An ended session must not come back from the cached snapshot of a slow or sleeping worker.
+  function forgetSession(name, id) {
+    const prune = nodes => (nodes || []).filter(s => s.id !== id).map(s => ({ ...s, children: prune(s.children) }));
+    if (!snapshots[name]) return;
+    snapshots[name] = snapshots[name].map(p => ({ ...p, sessions: prune(p.sessions) }));
+    saveSnapshots();
   }
 
   function unsubscribe(name) {
@@ -134,6 +145,18 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     }));
   }
 
+  // Deletes a worker. Its volume (clone, sessions, unpushed work) is kept unless purged,
+  // so adding the repository again picks it back up.
+  async function remove(name, { purge = false } = {}) {
+    const res = await call(`/workspaces/${encodeURIComponent(name)}${purge ? "?purge=1" : ""}`, { method: "DELETE" });
+    if (!res.ok) return { status: res.status, body: await res.json().catch(() => ({ error: "workspaced_unavailable" })) };
+    unsubscribe(name);
+    delete snapshots[name];
+    saveSnapshots();
+    for (const map of Object.values(owners)) for (const [id, owner] of map) if (owner === name) map.delete(id);
+    return { status: 200, body: { ok: true, name, purged: purge } };
+  }
+
   // Fire and forget: workspaced holds the request until the worker is ready.
   function wake(name) {
     call(`/workspaces/${encodeURIComponent(name)}/wake`, { method: "POST" }).catch(() => {});
@@ -187,6 +210,8 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     }
     const out = new Headers(res.headers);
     for (const h of DROP_HEADERS) out.delete(h);
+    const closed = c.req.method === "POST" && rest.match(/^\/sessions\/([^/]+)\/close$/);
+    if (res.ok && closed) forgetSession(name, decodeURIComponent(closed[1]));
     if (res.ok && c.req.method === "GET" && /^\/sessions\/[^/]+\/transcript$/.test(rest)) {
       const snap = await res.json();
       snap.seq = webSeq(name, Number(snap.seq));
@@ -285,20 +310,33 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     await waitReady(created.name);
     subscribe(created.name);
     const forwarded = await call(workerPath(created.name, "/projects"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const result = await forwarded.json().catch(() => ({}));
+    let result = await forwarded.json().catch(() => ({}));
+    // A kept volume already holds this project (closed earlier without deleting data): reuse it.
+    if (forwarded.status === 409 && ["repository_exists", "project_exists"].includes(result.error)) {
+      const existing = (await workerState(created.name).catch(() => null))?.projects?.[0];
+      if (existing) {
+        remember(created.name, [existing]);
+        return c.json({ id: existing.id, sessionId: null, workspace: created.name, reused: true }, 200);
+      }
+    }
     if (forwarded.ok) { owners.project.set(result.id, created.name); if (result.sessionId) owners.session.set(result.sessionId, created.name); }
     return c.json({ ...result, workspace: created.name }, forwarded.status);
   }
 
   return {
     wake,
-    projects, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake,
+    projects, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };
 }
 
 // Mount before the in-process routes so remote ids never reach them.
 export function registerRemoteRoutes(api, remote) {
+  // Closing a worker project deletes its worker.
+  api.delete("/remote-workspaces/:name", async c => {
+    const { status, body } = await remote.remove(c.req.param("name"), { purge: c.req.query("purge") === "1" });
+    return c.json(body, status);
+  });
   for (const [kind, pattern] of [["project", "/projects/:id/*"], ["session", "/sessions/:id/*"]]) {
     api.use(pattern, async (c, next) => {
       const name = await remote.owner(kind, c.req.param("id"));
@@ -313,7 +351,7 @@ export function registerRemoteRoutes(api, remote) {
   api.post("/remote-workspaces/:name/wake", c => { remote.wake(c.req.param("name")); return c.json({ ok: true }, 202); });
   api.get("/remote-workspaces", async c => c.json(await remote.inventory()));
   api.post("/remote-workspaces/reload", async c => c.json({ results: await remote.reloadAwake() }));
-  for (const action of ["restart", "reset", "reload"]) {
+  for (const action of ["restart", "reset", "reload", "sleep"]) {
     api.post(`/remote-workspaces/:name/${action}`, async c => {
       const body = await c.req.json().catch(() => ({}));
       const { status, body: out } = await remote.workspaceAction(c.req.param("name"), action, { force: c.req.query("force") === "1", body });

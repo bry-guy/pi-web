@@ -1,6 +1,7 @@
 import { api, openTranscript, refreshState, transcriptLoading } from "./api.js";
 import { activeOperations, beginOperation, completeOperation, operationForScope, operationHint } from "./operations.js";
-import { setHTML, store } from "./store.js";
+import { setHTML, store, toast } from "./store.js";
+import { launchSetup } from "./panel-utils.js";
 
 export const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 export const mobile = () => matchMedia("(max-width: 760px)").matches;
@@ -27,6 +28,8 @@ export const icon = name => {
     settings: '<path d="M9.7 1.5h.6l.7 1.9 1.5.9 2-.5.4.4.3.5-.9 1.8.1 1.7 1.5 1.4-.2.6-.2.5-2 .1-1.2 1.2-.1 2-.5.2-.6.2-1.4-1.5-1.7-.1-1.8.9-.5-.3-.4-.4.5-2-1-1.5-1.8-.7v-.6-.6l1.8-.7 1-1.5-.5-2 .5-.4.4-.3 1.8.9 1.7-.1 1.4-1.5Z"/><circle cx="10" cy="10" r="2.2"/>',
     chevronLeft: '<path d="m12.5 4-6 6 6 6"/>',
     copy: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/>',
+    // Three stacked sheets: the copy glyph with one more sheet behind it, for "copy the whole turn".
+    copyTurn: '<rect x="8" y="8" width="9" height="9" rx="1.5"/><path d="M14.25 8V6.75a1.5 1.5 0 0 0-1.5-1.5h-6a1.5 1.5 0 0 0-1.5 1.5v6a1.5 1.5 0 0 0 1.5 1.5H8"/><path d="M11.5 5.25V4A1.5 1.5 0 0 0 10 2.5H4A1.5 1.5 0 0 0 2.5 4v6A1.5 1.5 0 0 0 4 11.5h1.25"/>',
     check: '<path d="m4.5 10.5 3.5 3.5 7.5-8"/>',
     // Distinct glyphs: the sidebar is a panel, the files column is a code symbol (</>).
     sidebar: '<rect x="3" y="4" width="14" height="12" rx="2.5"/><path d="M8 4v12"/>',
@@ -36,7 +39,7 @@ export const icon = name => {
   return `<svg class="icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">${paths[name] || ""}</svg>`;
 };
 
-export function openSessionPicker(projectId, { mode = "new", sourceSessionId = null, branch = null, name = null } = {}) {
+export function openSessionPicker(projectId, { mode = "switch", sourceSessionId = null, branch = null, name = null } = {}) {
   const project = store.state.projects.find(p => p.id === projectId);
   if (!project) return;
   const source = sourceSessionId || (mode !== "new" ? store.state.sessionId : null);
@@ -161,30 +164,91 @@ export async function newChat() {
   await refreshState();
 }
 
+// A new project session opens at once on the main checkout; the server updates main in the background.
+const creatingSession = new Set();
 export async function newProjectSession(projectId) {
-  openSessionPicker(projectId, { mode: "new" });
+  const project = store.state.projects.find(p => p.id === projectId);
+  if (!project || creatingSession.has(projectId)) return;
+  creatingSession.add(projectId);
+  wakeEarly(project);
+  const branch = project.defaultBranch || project.primaryBranch || "main";
+  const operation = beginOperation("create-session", "New session", "", "Request started.", null, { projectId, action: "create-session" });
+  try {
+    let result;
+    // A sleeping worker answers "starting" until it is up (about a minute at most).
+    for (let attempt = 0; ; attempt++) {
+      try { result = await api.newProjectSession(projectId, { branch, pull: "background", operationId: operation.id }); break; }
+      catch (error) {
+        if (error?.error !== "workspace_starting" || attempt >= 20) throw error;
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+    operation.sessionId = result.id;
+    completeOperation(operation, result);
+    if (!findNode(project.sessions, result.id)) {
+      const now = new Date().toISOString();
+      project.sessions.unshift({ id: result.id, title: "New session", contextId: result.contextId || null, branch: result.branch || branch, workspacePath: result.workspacePath || null, model: store.state.effectiveDefaultModel, when: "now", updatedAt: now, activityAt: now, streaming: false, children: [] });
+    }
+    store.state.openTree[projectId] = true;
+    selectSession(projectId, result.id);
+    launchSetup(result.id, result);
+    void refreshState().catch(() => {});
+  } catch (error) {
+    completeOperation(operation, {}, error);
+    store.setError(`Could not start a session: ${error.detail || error.message || error.error || error}`);
+  } finally {
+    creatingSession.delete(projectId);
+  }
 }
 
-let closeOperationInFlight = false;
+// Per conversation: one slow close (e.g. waking a worker) must not swallow clicks on other rows.
+const closesInFlight = new Set();
 const closeErrorMessage = error => ({
-  session_streaming: "Stop the current response before closing this conversation.",
-}[error?.error] || error?.detail || error?.message || error?.error || "Could not close this conversation.");
+  session_streaming: "Stop the current response before ending this conversation.",
+  workspace_starting: "This project's worker is starting. Try again in a few seconds.",
+}[error?.error] || error?.detail || error?.message || error?.error || "Could not end this conversation.");
 
+function removeNode(nodes, id) {
+  const index = (nodes || []).findIndex(node => node.id === id);
+  if (index >= 0) return !!nodes.splice(index, 1);
+  return (nodes || []).some(node => removeNode(node.children, id));
+}
+
+// Ends a session or chat: stops its turn, withdraws it from sync, archives it.
 export async function closeConversation(id, kind = "session") {
-  if (!id || closeOperationInFlight) return;
-  closeOperationInFlight = true;
-  const label = kind === "chat" ? "Close chat" : "Close session";
+  if (!id || closesInFlight.has(id)) return;
+  closesInFlight.add(id);
+  const label = kind === "chat" ? "End chat" : "End session";
+  const title = (kind === "chat" ? store.state.chats.find(chat => chat.id === id) : store.state.projects.map(p => findNode(p.sessions, id)).find(Boolean))?.title || (kind === "chat" ? "Chat" : "Session");
   const operation = beginOperation("close", label, "", "Request started.", id, { action: "close" });
   let result = null;
   try {
     result = await api.close(id, operation.id, kind);
     completeOperation(operation, result);
+    // Drop the row now; a slow /api/state must not show it again until the next refresh agrees.
+    const s = store.state;
+    if (s.projects.some(project => removeNode(project.sessions, id)) || s.chats.some((chat, i) => chat.id === id && s.chats.splice(i, 1))) store.notify("state");
+    toast(`Ended “${title}”.`, "info", { label: "Undo", run: () => restoreConversation(id) });
+    // Its worktree is now unused, clean and merged: offer the usual Delete branch confirmation.
+    const cleanup = result?.cleanup;
+    if (cleanup) toast(`${cleanup.branch} is merged and no session uses it.`, "info", { label: "Delete branch…", run: () => store.set({ confirm: { type: "deleteBranch", projectId: cleanup.projectId, id: null, branch: cleanup.branch, primaryBranch: cleanup.primaryBranch, label: cleanup.branch, sessions: [], closeSessions: false, force: false, dirty: false, status: "clean", error: null } }) });
     void refreshState().catch(err => store.setError(`Could not refresh state after close: ${err.message || err}`));
   } catch (error) {
     const displayError = Object.assign(new Error(closeErrorMessage(error)), error);
     completeOperation(operation, result || {}, displayError);
+    store.setError(displayError.message);
   } finally {
-    closeOperationInFlight = false;
+    closesInFlight.delete(id);
+  }
+}
+
+// Undoes an end. A pi-sync detach is not undone: the conversation is no longer shared.
+export async function restoreConversation(id) {
+  try {
+    await api.restore(id);
+    await refreshState();
+  } catch (error) {
+    store.setError(`Could not restore: ${error.detail || error.message || error.error || error}`);
   }
 }
 
@@ -240,6 +304,17 @@ class PiSidebar extends HTMLElement {
     const t = e.target.closest("[data-act]");
     if (!t) return;
     const act = t.dataset.act;
+    if (act === "restore-session") {
+      e.stopPropagation();
+      void restoreConversation(t.dataset.id);
+      return;
+    }
+    if (act === "toggle-ended") {
+      e.stopPropagation();
+      store.state.openEnded = { ...store.state.openEnded, [t.dataset.id]: !store.state.openEnded?.[t.dataset.id] };
+      store.notify("state");
+      return;
+    }
     if (act === "close-row") {
       e.stopPropagation();
       void closeConversation(t.dataset.id, t.dataset.kind);
@@ -313,9 +388,26 @@ class PiSidebar extends HTMLElement {
           <span class="lbl">${esc(n.title)}</span>
           <span class="live-dot" aria-label="${unread ? "Unread reply" : "Streaming"}"></span>
           <button class="row-close" data-act="close-row" data-kind="session" data-pid="${esc(p.id)}" data-id="${esc(n.id)}"
-            data-label="${esc(n.title)}" data-branch="${esc(n.branch || "")}" title="Close session">×</button>
+            data-label="${esc(n.title)}" data-branch="${esc(n.branch || "")}" title="End session" aria-label="End session ${esc(n.title)}">×</button>
         </div></div>`);
       if (kids && (open || q || forceAll)) this.sessionRows(p, n.children, depth + 1, forceAll ? "" : q, out, forceAll);
+    }
+  }
+
+  // Ended sessions, collapsed under the project's live ones, each with Restore.
+  endedRows(p, out) {
+    const open = !!store.state.openEnded?.[p.id];
+    out.push(`<div class="row-wrap nested" style="margin-left:20px">
+      <div class="row ended-toggle" role="button" tabindex="0" aria-expanded="${open}" data-act="toggle-ended" data-id="${esc(p.id)}">
+        <span class="caret">${open ? "▾" : "▸"}</span><span class="lbl">Ended</span><span class="count">${p.ended.length}</span>
+      </div></div>`);
+    if (!open) return;
+    for (const n of p.ended) {
+      out.push(`<div class="row-wrap nested" style="margin-left:34px">
+        <div class="row ended-row" title="Ended ${esc(n.when)}">
+          <span class="caret">·</span><span class="lbl">${esc(n.title)}</span>
+          <button class="row-restore" data-act="restore-session" data-id="${esc(n.id)}" aria-label="Restore ${esc(n.title)}">Restore</button>
+        </div></div>`);
     }
   }
 
@@ -327,18 +419,18 @@ class PiSidebar extends HTMLElement {
     if (this.dataset.layout !== layout) {
       this.dataset.layout = layout;
       if (layout === "mini") {
-        this.innerHTML = `<aside class="mini">
+        setHTML(this, `<aside class="mini">
           <button class="mini-logo" data-act="collapse" title="Expand sidebar">π</button>
           <div class="mini-gap"></div>
           <button class="mini-btn cta-plus" data-act="new-chat" title="New chat">+</button>
           <button class="mini-btn quiet" data-act="search" title="Search sessions" aria-label="Search sessions">⌕</button>
           <div class="mini-flex"></div>
           <button class="mini-btn quiet" data-act="settings" title="Settings">${icon("settings")}</button>
-        </aside>`;
+        </aside>`);
         return;
       }
-      if (layout === "empty") { this.innerHTML = ""; return; }
-      this.innerHTML = `<aside class="rail">
+      if (layout === "empty") { setHTML(this, ""); return; }
+      setHTML(this, `<aside class="rail">
         <div class="rail-head">
           <button class="rail-logo" data-act="collapse" title="Collapse sidebar">π</button><div class="rail-word">pi</div>
         </div>
@@ -357,7 +449,7 @@ class PiSidebar extends HTMLElement {
           <span class="avatar" aria-hidden="true">π</span><span class="rail-user">pi-web</span>
           <span class="rail-foot-icon" aria-hidden="true">${icon("settings")}</span>
         </button>
-      </aside>`;
+      </aside>`);
     }
     if (layout === "rail") {
       const inp = this.querySelector(".rail-search");
@@ -383,6 +475,7 @@ class PiSidebar extends HTMLElement {
           ${p.workspace ? this.workspaceToggle(p) : ""}<span class="count">${this.count(p.sessions)}</span>
         </div></div>`);
       if (open) this.sessionRows(p, p.sessions, 0, nameMatch ? "" : q, projRows, !!q && nameMatch);
+      if (open && !q && p.ended?.length) this.endedRows(p, projRows);
     }
     const chatRows = s.chats
       .filter(cRow => !q || fuzzyMatch(cRow.title, q))
@@ -392,7 +485,7 @@ class PiSidebar extends HTMLElement {
         return `<div class="row ${s.chatId === cRow.id ? "active " : ""}${streaming ? "streaming " : ""}${unread ? "unread " : ""}" role="button" tabindex="0" data-act="chat-row" data-id="${esc(cRow.id)}">
         <span class="lbl">${esc(cRow.title)}</span><span class="live-dot" aria-label="${unread ? "Unread reply" : "Streaming"}"></span><span class="when">${esc(cRow.when)}</span>
         <button class="row-close" data-act="close-row" data-kind="chat" data-id="${esc(cRow.id)}"
-          data-label="${esc(cRow.title)}" data-branch="" title="Close chat">×</button>
+          data-label="${esc(cRow.title)}" data-branch="" title="End chat" aria-label="End chat ${esc(cRow.title)}">×</button>
       </div>`;
       }).join("");
     setHTML(this.querySelector(".projects-list"), projRows.join(""));

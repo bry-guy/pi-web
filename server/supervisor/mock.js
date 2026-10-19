@@ -272,6 +272,12 @@ export class MockSupervisor {
     this._startTurn(id, text, false, clientMessageId);
   }
 
+  // Cancels every pending stream timer, so nothing writes to a home that is being removed.
+  stopAll() {
+    for (const st of this.live.values()) for (const t of [...st.timers, ...(st.agentTimers || [])]) clearTimeout(t);
+    this.live.clear();
+  }
+
   async stop(id) {
     const st = this.live.get(id);
     if (!st || !st.streaming) return;
@@ -330,8 +336,9 @@ export class MockSupervisor {
         if (!st.streaming || st.msgId !== msgId) return;
         i += 3;
         const chunk = full.slice(0, i);
+        // The file can be gone before a timer fires (a test removed its home); then the turn just stops.
         const cur = this._load(id);
-        const rec = cur.records.find(r => r.id === msgId);
+        const rec = cur?.records.find(r => r.id === msgId);
         if (!rec) return;
         const delta = chunk.slice(rec.text.length);
         rec.text = chunk;
@@ -351,7 +358,7 @@ export class MockSupervisor {
       if (!st.streaming || st.msgId !== msgId) return;
       const piece = thought.slice(i, i + 4);
       const cur = this._load(id);
-      const rec = cur.records.find(r => r.id === msgId);
+      const rec = cur?.records.find(r => r.id === msgId);
       if (!rec) return;
       rec.thinking = (rec.thinking || "") + piece;
       this._save(cur);
@@ -465,7 +472,7 @@ export class MockSupervisor {
   _finishTool(id, toolId, { withDiff, summary, done }) {
     const toolOut = "src/commands/sessions.ts:42  export async function sessionsList(\nsrc/cli.ts:130  .command(\"sessions list\")";
     const s = this._load(id);
-    const toolRec = s.records.find(r => r.id === toolId);
+    const toolRec = s?.records.find(r => r.id === toolId);
     if (!toolRec) return;
     Object.assign(toolRec, { meta: "3 matches · 0.2s", out: toolOut });
     delete toolRec.running;
@@ -505,7 +512,7 @@ export class MockSupervisor {
     st.timers = [];
     if (suffix) {
       const s = this._load(id);
-      const rec = s.records.find(r => r.id === st.msgId);
+      const rec = s?.records.find(r => r.id === st.msgId);
       if (rec) { rec.text += suffix; delete rec.streaming; this._save(s); }
     } else {
       const s = this._load(id);
@@ -562,6 +569,19 @@ export function registerMockWorkers(api) {
     const no = refusal(c, w, c.req.query("force") === "1");
     if (no) return no;
     Object.assign(w, { state: "running", lastUsed: Date.now() });
+    return c.json({ ok: true });
+  });
+  api.post("/remote-workspaces/:name/sleep", c => {
+    const w = find(c);
+    if (!w) return c.json({ error: "not_found" }, 404);
+    if (w.busy && c.req.query("force") !== "1") return refusal(c, w, false);
+    w.state = "sleeping";
+    return c.json({ ok: true });
+  });
+  api.delete("/remote-workspaces/:name", c => {
+    const i = workers.findIndex(w => w.name === c.req.param("name"));
+    if (i < 0) return c.json({ error: "not_found" }, 404);
+    workers.splice(i, 1);
     return c.json({ ok: true });
   });
 }

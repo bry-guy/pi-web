@@ -119,7 +119,9 @@ export async function projectState(project, sup) {
   const worktrees = Object.fromEntries(contexts.filter(context => context.branch).map(context => [context.branch, context.path]));
 
   const closed = loadClosed();
-  const discovered = await discoverProjectSessions(contexts, bindings, closed, sup, project.id);
+  const discovered = (await discoverProjectSessions(contexts, bindings, closed, sup, project.id))
+    // Like chats: an unprompted, unnamed session nothing has open is hidden, not deleted.
+    .map(s => s.closed || hasPrompt(s) || promptText(s.name) || sup.isStreaming(s.id) || sup.isOpen?.(s.id) ? s : { ...s, closed: true });
   const all = discovered.filter(s => !s.closed);
 
   // Session tree from fork lineage. Walk through closed ancestors so visible
@@ -155,6 +157,12 @@ export async function projectState(project, sup) {
     };
   };
 
+  // Ended (archived) sessions for the sidebar's Ended list: tree roots only, newest first.
+  const ended = discovered
+    .filter(s => closed.has(s.id) && !closed.has(s.parentSessionId) && (hasPrompt(s) || promptText(s.name)))
+    .sort(byRecency)
+    .slice(0, 20)
+    .map(s => ({ id: s.id, title: titleOf(s), when: rel(s.modified), updatedAt: isoTime(s.modified) }));
   const sessions = roots.sort((a, b) => compareTimestamp(treeActivity(b), treeActivity(a))).map(toNode);
   const updatedAt = all.reduce((latest, session) => newerTimestamp(latest, isoTime(session.modified)), null);
 
@@ -186,6 +194,7 @@ export async function projectState(project, sup) {
     worktrees,
     workspaceStatus,
     sessions,
+    ended,
     updated: updatedAt ? rel(updatedAt) : "—",
     updatedAt,
     hooks: publicHooks(cfg, project),

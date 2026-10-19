@@ -127,7 +127,7 @@ test("projectState snapshots Git facts once and matches synchronous helpers", as
       await withGitTrace(async tracePath => {
         const state = await projectState(project, sup);
         const expectedContextSnapshot = expectedContexts.map(context => ({ ...context, sessions: [] }));
-        assert.deepEqual(Object.keys(state).sort(), ["branch", "branches", "contexts", "defaultBranch", "hooks", "id", "name", "remoteBranches", "repoPath", "sessions", "source", "updated", "updatedAt", "worktrees", "workspaceStatus"].sort());
+        assert.deepEqual(Object.keys(state).sort(), ["branch", "branches", "contexts", "defaultBranch", "ended", "hooks", "id", "name", "remoteBranches", "repoPath", "sessions", "source", "updated", "updatedAt", "worktrees", "workspaceStatus"].sort());
         assert.equal(state.branch, expectedCurrent);
         assert.equal(state.defaultBranch, "default");
         assert.deepEqual(state.branches, expectedBranches);
@@ -423,4 +423,22 @@ exec "$PI_TEST_GIT_REAL" "$@"
   assert.equal(stateRequest?.status, "fulfilled", `state request failed\n${output()}`);
   assert.equal(stateRequest.value.status, 200, `state request failed\n${output()}`);
   assert.equal(stateRequest.value.body.projects[0]?.error, undefined, `state discovery failed\n${output()}`);
+});
+
+test("projectState hides unprompted sessions nothing has open", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-empty-"));
+  const repo = path.join(tmp, "repo");
+  fs.mkdirSync(repo);
+  execFileSync("git", ["init", "-b", "main"], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    const session = (id, extra = {}) => ({ id, cwd: repo, modified: new Date(), firstMessage: "", ...extra });
+    const sessions = [session("empty"), session("open"), session("prompted", { firstMessage: "hi" }), session("named", { name: "Plan" })];
+    const sup = { listSessions: async () => sessions, meta: async () => null, isStreaming: () => false, isOpen: id => id === "open" };
+    await withProjectEnvironment(repo, async ({ project }) => {
+      const ids = (await projectState(project, sup)).sessions.map(item => item.id).sort();
+      assert.deepEqual(ids, ["named", "open", "prompted"]);
+    });
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

@@ -4,7 +4,12 @@ import { setHTML, store } from "./store.js";
 import { closeConversation, esc, icon, mobile, newChat, newProjectSession, selectChat, selectSession } from "./shell.js";
 
 let pendingMessageSequence = 0;
-const copyButton = side => `<div class="msg-actions ${side}"><button class="msg-action" type="button" data-copy aria-label="Copy message" title="Copy">${icon("copy")}</button></div>`;
+const copyButton = (side, replies = 1) => {
+  const tip = side === "user" ? "Copy Message" : "Copy Response";
+  const one = `<button class="msg-action" type="button" data-copy data-tip="${tip}" aria-label="${tip}">${icon("copy")}</button>`;
+  const turn = replies > 1 ? `<button class="msg-action" type="button" data-copy data-copy-turn data-tip="Copy Turn" aria-label="Copy Turn (${replies} replies)">${icon("copyTurn")}</button>` : "";
+  return `<div class="msg-actions ${side}">${one}${turn}</div>`;
+};
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const LIVE_AGENT_STATUSES = new Set(["running", "queued"]);
 const HISTORY_PAGE_SIZE = 500;
@@ -83,6 +88,17 @@ function turnsOf(records) {
     else turns.at(-1)?.records.push(record);
   }
   return turns;
+}
+// Per turn, only its last reply text gets the copy row; earlier replies sit closer together.
+// Map: reply id -> { final, replies }. The running turn has no final reply yet.
+function replyLayout(turns, streaming) {
+  const layout = new Map();
+  turns.forEach((turn, index) => {
+    const replies = turn.records.filter(record => record.role === "assistant" && record.text);
+    const running = streaming && index === turns.length - 1;
+    replies.forEach((record, i) => layout.set(record.id, { final: !running && i === replies.length - 1, replies: replies.length }));
+  });
+  return layout;
 }
 const turnKey = turn => turn.user.id ?? turn.user.pendingId ?? "";
 function turnStats(turn) {
@@ -341,9 +357,11 @@ class PiThread extends HTMLElement {
       setHTML(this, EMPTY_STATE);
       return;
     }
-    const doneRows = this.doneRows(turnsOf(visibleRecords), t.streaming);
+    const turns = turnsOf(visibleRecords);
+    const doneRows = this.doneRows(turns, t.streaming);
+    const replies = replyLayout(turns, t.streaming);
     const records = history.records.map(m => {
-      const html = this.renderRecordCached(m);
+      const html = this.renderRecordCached(m, replies.get(m.id));
       const row = m.id ? doneRows.get(m.id) || "" : "";
       return (m.id && html.startsWith("<div ") ? `<div data-rec="${esc(m.id)}" ${html.slice(5)}` : html) + row;
     }).join("");
@@ -577,34 +595,44 @@ class PiThread extends HTMLElement {
   /** Copies the message's source text (markdown for replies), then shows a check for a moment. */
   async copyMessage(button) {
     const id = button.closest("[data-rec]")?.dataset.rec;
-    const record = store.transcript().records.find(r => r.id === id);
-    const text = record?.text ?? "";
+    const records = store.transcript().records;
+    const record = records.find(r => r.id === id);
+    const turn = button.hasAttribute("data-copy-turn") && turnsOf(records).find(item => item.records.includes(record));
+    const text = turn
+      ? turn.records.filter(r => r.role === "assistant" && r.text).map(r => r.text).join("\n\n")
+      : record?.text ?? "";
     try {
       await navigator.clipboard.writeText(text);
     } catch {
       store.setError("Clipboard access is unavailable in this browser.");
       return;
     }
+    const glyph = button.hasAttribute("data-copy-turn") ? "copyTurn" : "copy";
+    const aria = button.getAttribute("aria-label");
     button.classList.add("copied");
-    button.innerHTML = icon("check");
+    setHTML(button, icon("check"));
     button.setAttribute("aria-label", "Copied");
-    setTimeout(() => { button.classList.remove("copied"); button.innerHTML = icon("copy"); button.setAttribute("aria-label", "Copy message"); }, 1500);
+    setTimeout(() => {
+      button.classList.remove("copied");
+      setHTML(button, icon(glyph));
+      button.setAttribute("aria-label", aria);
+    }, 1500);
   }
 
-  renderRecordCached(m) {
+  renderRecordCached(m, reply = null) {
     const open = m.role === "tool" || m.role === "diff"
       ? this.isOpen(m.id)
       : m.role === "activity" ? (store.state.openActivity[m.key] ?? false) : false;
     const cached = this.renderCache.get(m);
-    const signature = [m.role, m.id, m.key, m.status, m.title, m.summary, m.text, m.streaming, m.pending, m.deliveryError, m.meta, m.file, m.add, m.del, m.cmd, open, open ? m.out : null];
+    const signature = [m.role, m.id, m.key, m.status, m.title, m.summary, m.text, m.streaming, m.pending, m.deliveryError, m.meta, m.file, m.add, m.del, m.cmd, open, open ? m.out : null, reply?.final, reply?.replies];
     if (cached?.signature.length === signature.length
       && cached.signature.every((value, index) => value === signature[index])) return cached.html;
-    const html = this.renderRecord(m);
+    const html = this.renderRecord(m, reply);
     this.renderCache.set(m, { signature, html });
     return html;
   }
 
-  renderRecord(m) {
+  renderRecord(m, reply = null) {
     if (m.role === "activity" && m.key === "compaction") {
       const status = m.status || "completed";
       return `<div class="msg activity-inline"><div class="activity-status ${esc(status)}" role="status" aria-live="polite">
@@ -634,7 +662,8 @@ class PiThread extends HTMLElement {
     if (m.role === "assistant") {
       // Thinking-only and tool-only messages have no chat text; the busy line and steps cover them.
       if (!m.text) return "";
-      return `<div class="msg"><div class="assist" ${m.streaming ? "data-live-text" : ""}><div class="markdown-content">${renderMarkdown(m.text)}</div>${m.streaming ? `<span class="caret-bar"></span>` : ""}</div>${m.streaming ? "" : copyButton("assistant")}</div>`;
+      const final = !m.streaming && (reply?.final ?? true);
+      return `<div class="msg${final ? "" : " reply-mid"}"><div class="assist" ${m.streaming ? "data-live-text" : ""}><div class="markdown-content">${renderMarkdown(m.text)}</div>${m.streaming ? `<span class="caret-bar"></span>` : ""}</div>${final ? copyButton("assistant", reply?.replies) : ""}</div>`;
     }
     // Tool calls, diffs, and summaries belong to the turn's steps view, not the chat.
     if (m.role === "tool" || m.role === "diff" || m.role === "summary") return "";
@@ -1129,8 +1158,12 @@ class PiComposer extends HTMLElement {
     const fixedHeight = Math.max(52, composerHeight > editorHeight ? composerHeight - editorHeight : 52);
     const minChatHeight = Math.ceil(this.lineHeight() * 2 + 24);
     const available = this.viewportHeight() - headerHeight - minChatHeight - fixedHeight;
-    const doubled = collapsed * 2.35;
-    return Math.max(collapsed, Math.min(doubled, available > 0 ? available : collapsed));
+    return Math.max(collapsed, available);
+  }
+
+  /** Typing grows the editor up to 40% of the visible viewport (above the keyboard on phones), then it scrolls. */
+  autoEditorHeight(collapsed, maxHeight) {
+    return Math.max(collapsed, Math.min(maxHeight, this.viewportHeight() * 0.4));
   }
 
   resizeEditor() {
@@ -1138,15 +1171,22 @@ class PiComposer extends HTMLElement {
     const collapsed = this.collapsedEditorHeight();
     const lineHeight = this.lineHeight();
     const composer = this.querySelector(".composer");
+    const scroller = this.closest("pi-app")?.querySelector(".scrollable");
+    const pinned = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+    const before = this.ta.style.height;
     this.ta.style.height = "auto";
     const contentHeight = Math.max(this.ta.scrollHeight || 0, collapsed);
-    const overflowing = contentHeight > collapsed + Math.max(4, lineHeight * 0.35);
-    if (!overflowing) this.expanded = false;
     const maxHeight = this.maxEditorHeight(collapsed);
-    const height = this.expanded ? Math.min(contentHeight, maxHeight) : collapsed;
+    const autoHeight = this.autoEditorHeight(collapsed, maxHeight);
+    // Only phones get the full-height editor; on desktop the auto-grown box is enough.
+    const overflowing = mobile() && contentHeight > autoHeight + Math.max(4, lineHeight * 0.35);
+    if (!overflowing) this.expanded = false;
+    const height = this.expanded ? maxHeight : Math.min(contentHeight, autoHeight);
     this.ta.style.height = `${Math.ceil(height)}px`;
     this.ta.style.maxHeight = `${Math.ceil(maxHeight)}px`;
     this.ta.style.overflowY = contentHeight > height ? "auto" : "hidden";
+    // A taller editor shrinks the transcript; keep the latest reply in view if it was.
+    if (pinned && this.ta.style.height !== before) scroller.scrollTop = scroller.scrollHeight;
     composer?.classList.toggle("expanded", this.expanded);
     this.expandBtn.classList.toggle("hidden", !overflowing && !this.expanded);
     this.expandBtn.textContent = this.expanded ? "↓" : "↑";
