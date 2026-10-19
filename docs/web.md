@@ -21,7 +21,7 @@ Everything else (default model, Pi profile and packages, repository source) is i
 
 ## Chat header
 
-The whole header row of a project conversation opens the session panel (below), wherever you tap it; the sidebar and Files buttons and the sync label keep their own taps. The header's left button toggles the sidebar (a panel glyph; a hamburger on a phone) and the right button toggles the file tree (a `</>` code glyph). The sidebar's footer row is the settings button.
+A project conversation's title block (title, then branch, commit, Git state and sync state as plain text) is one target that opens the session panel (below); it gets a quiet background on hover. The sidebar and Files buttons keep their own taps. The header's left button toggles the sidebar (a panel glyph; a hamburger on a phone) and the right button toggles the file tree (a `</>` code glyph). The sidebar's footer row is the settings button.
 
 Async results (fetch, pull, a hook finishing) are announced as a short toast at the bottom of the screen, and disappear after a few seconds.
 
@@ -43,7 +43,7 @@ Clicking a project (or `+`/`/new` in a project session) opens a new session righ
 
 **Ending** a session or chat (the sidebar's `×`, or **End** in the session panel) stops a running reply, withdraws it from pi-sync on this server (`/sync detach`; the server copy and other devices keep it), and archives it with its forks. Git is not touched. The detach is recorded in the conversation, so it is not shared again even with *sync all conversations* on.
 
-After an end, a toast offers **Undo** for a few seconds. Ended project sessions are also listed under **Ended** (collapsed, newest 20) beneath the project's sessions in the sidebar, each with **Restore**. Restoring unarchives the session and its forks; the pi-sync detach stays, so attach it again to share it. If the ended session was the last one on a worktree that is clean and fully merged into main, a second toast offers **Delete branch…**, which opens the usual delete confirmation.
+After an end, a toast offers **Undo** for a few seconds. Ended project sessions are listed under **Past sessions** in the Project menu (newest 20); opening one brings it and its forks back into the project's list. The pi-sync detach stays, so attach it again to share it. If the ended session was the last one on a worktree that is clean and fully merged into main, a second toast offers **Delete branch…**, which opens the usual delete confirmation.
 
 ## Files
 
@@ -55,15 +55,21 @@ The viewer follows the theme: a light code palette in light mode, a dark one in 
 
 Tap the chat header to open the session panel; it is a modal with a `×` (full screen on a phone). It has three sections:
 
-- **Session**: **Fork…** and **Setup**, each with a line saying what it does, plus any other project hooks. **End** ends this session; **End idle** ends every session tree in the project with no activity for a day and nothing running (they go to **Ended**). **Fork…** opens a step asking for a name and a branch; left empty, the name is the session's name plus the first free `(fork)`, `(fork 2)`, … among the project's sessions, and the branch is derived from that name (made unique). The copy gets its own worktree and opens; this session stays where it is. **Setup** runs the project's setup script (for example `npm ci`) in this worktree. Sync facts appear here when the conversation is shared.
-- **Git**: branch, commit, workspace and status, then **Fetch**, **Pull**, **Push** and **Switch…** on the right, and **Delete** (caution, asks first) and **Merge to main** (primary, asks first) for a non-primary branch. **Switch…** opens a step listing the branches (the current one is marked) and a field for a new branch; choosing one moves this session onto it.
+- **Session**: **Fork…** and **Setup**, each with a line saying what it does, plus any other project hooks. **End** ends this session. **Project** opens the Project menu. **Fork…** opens a step asking for a name and a branch; left empty, the name is the session's name plus the first free `(fork)`, `(fork 2)`, … among the project's sessions, and the branch is derived from that name (made unique). The copy gets its own worktree and opens; this session stays where it is. **Setup** runs the project's setup script (for example `npm ci`) in this worktree. Sync facts appear here when the conversation is shared.
+- **Git**: branch, commit, workspace and status, then **Fetch**, **Pull**, **Push** and **Switch…** on the right, and **Delete branch** (caution, asks first) and **Merge to main** (primary, asks first) for a non-primary branch. **Switch…** opens a step listing the branches (the current one is marked) and a field for a new branch; choosing one moves this session onto it.
 - **History**: what ran in this workspace, newest first: setup and other hooks, fetches, pulls, pushes, merges, forks and switches, each with its time, status and output (tap an entry to expand it). An operation still running is listed at the top until it finishes; results are also announced as a toast. A switch or merge is logged both where the session was and where it lands, a fork in both the source and the copy. The log is append-only JSON lines in the app state dir, one file per workspace path, capped at 16 KB of output per entry. Removing the state dir removes the log. It records operations run by the process that serves the request.
-
-The **Session** section also has **End** (see above) and, for a project with a worker, that worker's card: the same facts and actions as **Settings → Workers**.
 
 Steps show a `<` that returns to the panel's main screen. The panel keeps its frame while its contents update, so it does not flash or re-animate.
 
-Conversations shared from other devices for this repository are listed under **From other devices**; **Open** adds one as a new session.
+### Project menu
+
+The `⋯` on a project's sidebar row (shown on hover; always on a phone), or **Project** in the session panel, opens the Project menu:
+
+- **New session** and **End idle sessions** (ends every session tree in the project with no activity for a day and nothing running).
+- **Past sessions**: ended sessions, newest first; **Open** brings one back.
+- **From other devices**: conversations shared for this repository; **Open** adds one as a new session.
+- **Worker**, for a project with one: the same facts and actions as **Settings → Workers**.
+- **Remove project…**: for a worker-backed project, deletes its worker (its disk is kept unless *Also delete its disk* is ticked); for a local project, ends its sessions and removes it from the list. The checkout is kept either way, and adding the repository again picks it back up.
 
 ## Settings
 

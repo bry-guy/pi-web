@@ -118,7 +118,7 @@ class PiConfirm extends HTMLElement {
   async go() {
     const c = store.state.confirm;
     if (!c || this.busy) return;
-    if (c.type === "restartWorker" || c.type === "resetWorker" || c.type === "deleteWorker") return this.goWorker(c);
+    if (c.type === "restartWorker" || c.type === "resetWorker" || c.type === "deleteWorker" || c.type === "removeProject") return this.goWorker(c);
     const project = store.state.projects.find(item => item.id === c.projectId);
     const primary = c.primaryBranch || project?.defaultBranch || project?.primaryBranch || "main";
     this.busy = true;
@@ -168,9 +168,10 @@ class PiConfirm extends HTMLElement {
     try {
       if (c.type === "resetWorker") await api.resetWorkspace(c.name, c.name);
       else if (c.type === "deleteWorker") await api.deleteWorkspace(c.name, !!c.purge);
+      else if (c.type === "removeProject") await (c.workspace ? api.deleteWorkspace(c.workspace, !!c.purge) : api.removeProject(c.projectId));
       else await api.restartWorkspace(c.name);
       store.set({ confirm: null });
-      if (c.type === "deleteWorker") {
+      if (c.type === "deleteWorker" || c.type === "removeProject") {
         if (c.projectId && store.state.projectId === c.projectId) store.set({ projectId: null, sessionId: null, sessionPicker: null });
         await refreshState();
       }
@@ -178,7 +179,7 @@ class PiConfirm extends HTMLElement {
     } catch (err) {
       const active = store.state.confirm;
       if (active?.id === c.id && active.type === c.type) store.set({ confirm: { ...active, error: workerErrorMessage(err) } });
-      else store.setError(`Could not ${{ resetWorker: "reset", deleteWorker: "delete" }[c.type] || "restart"} ${c.name}: ${workerErrorMessage(err)}`);
+      else store.setError(`Could not ${{ resetWorker: "reset", deleteWorker: "delete", removeProject: "remove" }[c.type] || "restart"} ${c.name}: ${workerErrorMessage(err)}`);
     } finally { this.busy = false; this.render(); }
   }
 
@@ -209,6 +210,13 @@ class PiConfirm extends HTMLElement {
       body = "Deletes the worker, so its project and sessions leave the list. Its disk (checkout, sessions, unpushed work) is kept, so adding the repository again picks it back up.";
       options = `<label class="confirm-check"><input type="checkbox" data-confirm-purge ${c.purge ? "checked" : ""}><span>Also delete its disk, including uncommitted and unpushed work</span></label>`;
       action = c.purge ? "Delete worker and disk" : "Delete worker";
+    } else if (c.type === "removeProject") {
+      title = `Remove ${esc(c.name)}?`;
+      body = c.workspace
+        ? "Deletes its worker, so the project and its sessions leave the list. Its disk (checkout, sessions, unpushed work) is kept, so adding the repository again picks it back up."
+        : "Ends its sessions and removes it from the list. The checkout on disk is kept, so adding the repository again picks it back up.";
+      if (c.workspace) options = `<label class="confirm-check"><input type="checkbox" data-confirm-purge ${c.purge ? "checked" : ""}><span>Also delete its disk, including uncommitted and unpushed work</span></label>`;
+      action = c.purge ? "Remove project and disk" : "Remove project";
     } else if (c.type === "close") {
       title = c.kind === "chat" ? "Close chat" : "Close session";
       body = `“${esc(c.label)}” will be archived. Its transcript and Git context remain available.`;

@@ -287,10 +287,9 @@ header.bar {
   font-family: var(--mono); font-size: 11px; color: var(--muted);
 }
 .sync-label {
-  flex: 0 1 auto; min-width: 0; max-width: 45%; padding: 2px 4px; border: 0; border-radius: var(--radius-sm); background: transparent;
-  color: var(--muted); font: inherit; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 0 1 auto; min-width: 0; max-width: 45%;
+  color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.sync-label:hover, .sync-label:focus-visible { background: var(--surface-2); outline: 0; }
 .sync-label.ok { color: var(--green); }
 .sync-label.busy { color: var(--orange); }
 .sync-label.error { color: var(--red); }
@@ -303,10 +302,9 @@ header.bar {
 .bar-operation-hint.success { color: var(--green); }
 .bar-operation-hint.error { color: var(--red); }
 .workspace-trigger {
-  display: flex; align-items: center; flex: 1 1 auto; flex-wrap: nowrap; gap: 4px; min-width: 0; overflow: hidden; margin: -2px -4px; padding: 2px 4px;
-  border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--muted); cursor: pointer; font: inherit; text-align: left;
+  display: flex; align-items: center; flex: 0 1 auto; flex-wrap: nowrap; gap: 4px; min-width: 0; overflow: hidden;
+  color: var(--muted); font: inherit;
 }
-.workspace-trigger:hover, .workspace-trigger:focus-visible { border-color: var(--orange); background: var(--orange-soft); outline: 0; }
 .workspace-divider { color: var(--faint); }
 .workspace-state, .workspace-commit { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-branch { max-width: 32ch; overflow: hidden; color: var(--orange); text-overflow: ellipsis; white-space: nowrap; }
@@ -737,8 +735,6 @@ main.col.settings-open > pi-header { display: none; }
 .app-toasts { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 120; display: grid; gap: var(--space-2); width: min(380px, calc(100vw - 32px)); pointer-events: none; }
 .app-toast { padding: 10px 14px; border-radius: var(--radius-md); background: var(--surface-2); color: var(--text); box-shadow: var(--elevation-2); font-size: var(--text-sm); animation: piPop var(--duration) var(--ease) both; }
 .app-toast.error { color: var(--red); }
-.ended-toggle, .ended-row { color: var(--muted); }
-.row-restore { margin-left: auto; border: 0; background: none; color: var(--accent); font: inherit; font-size: var(--text-xs); cursor: pointer; padding: 0 4px; }
 .app-toast:has(.app-toast-action) { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); pointer-events: auto; }
 .app-toast-action { border: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; padding: 0; }
 .settings-intro { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm); line-height: 1.5; }
@@ -808,7 +804,6 @@ main.col.settings-open > pi-header { display: none; }
 .session-fork .session-picker-help { margin-top: 0; }
 .session-action-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .session-danger-row { padding-top: 12px; border-top: 1px solid var(--hairline); }
-.bar-session { cursor: pointer; }
 /* One button hierarchy: primary (one per view), secondary, caution (destructive), ghost. */
 .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 7px 14px; border: 1px solid transparent; border-radius: var(--radius-md); font: 500 12.5px/1.2 var(--sans); cursor: pointer; transition: background var(--duration) ease, border-color var(--duration) ease, color var(--duration) ease; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -1014,6 +1009,15 @@ body.modal-open .scrollable { overflow: hidden; }
 }
 .row:hover .row-close, .row .row-close:focus-visible { opacity: 1; pointer-events: auto; }
 .row .row-close:hover, .row .row-close:focus-visible { color: var(--red); }
+/* The project row's ⋯ opens the Project menu; shown on hover like ×, always on phones. */
+.row .row-menu {
+  border: 0; background: transparent; cursor: pointer; flex: 0 0 auto; line-height: 1;
+  font-size: 15px; padding: 0 4px; border-radius: var(--radius-sm); color: var(--faint);
+  opacity: 0; transition: opacity .12s; pointer-events: none;
+}
+.row:hover .row-menu, .row .row-menu:focus-visible { opacity: 1; pointer-events: auto; }
+.row .row-menu:hover, .row .row-menu:focus-visible { color: var(--text); background: var(--hover); outline: 0; }
+@media (max-width: 760px) { .row .row-menu { opacity: 1; pointer-events: auto; min-width: 44px; min-height: 44px; } }
 
 .workspace-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 
@@ -1173,9 +1177,6 @@ body.modal-open .scrollable { overflow: hidden; }
 .settings-select, .settings-inline-input, .repos-root-input { font-size: 12px; }
 .connect-btn { font-size: 13.5px; }
 
-@media (max-width: 760px) {
-  .workspace-trigger { flex-basis: 0; }
-}
 
 /* ================= design system polish layer ================= */
 body { background: var(--bg); font-size: 15px; letter-spacing: -0.003em; }
@@ -1220,7 +1221,6 @@ header.bar { background: color-mix(in oklch, var(--bg) 82%, transparent); backdr
 .bar-title { font-size: 15px; font-weight: 550; }
 .hamburger { background: transparent; border-radius: var(--radius-md); }
 .hamburger:hover { background: var(--surface-2); }
-.workspace-trigger:hover, .workspace-trigger:focus-visible { background: var(--surface-2); }
 
 /* transcript: centered reading column */
 .col-pad, .composer-pad { width: 100%; max-width: 800px; padding-inline: 24px; }
@@ -1520,3 +1520,23 @@ aside.files { background: var(--rail-bg); box-shadow: inset 1px 0 0 var(--hairli
   .msg.show-actions .msg-actions.user { display: flex; }
   .msg-action { width: 40px; height: 40px; }
 }
+
+/* ================= hover tone =================
+   One quiet hover background for list rows, the settings footer, the session header and menus. */
+:root { --hover: color-mix(in oklch, var(--surface-2) 55%, transparent); }
+:root[data-theme="light"] { --hover: color-mix(in oklch, var(--surface-3) 35%, transparent); }
+@media (prefers-color-scheme: light) { :root[data-theme="system"] { --hover: color-mix(in oklch, var(--surface-3) 35%, transparent); } }
+.row:not(.active):hover, .row:not(.active):focus-visible, .rail-foot:hover, .rail-foot:focus-visible,
+.mini-btn:hover, .hamburger:hover, .file-row:hover, .repo-row:hover, .settings-nav-item:hover { background: var(--hover); }
+.session-history-row:hover, .session-history-row:focus-visible,
+.branch-option:hover, .branch-option:focus-visible,
+.history-entry-head:hover, .history-entry-head:focus-visible { background: var(--hover); }
+.btn-secondary:not(:disabled):hover, .settings-action:not(:disabled):hover, .settings-action:not(:disabled):focus-visible { background: var(--hover); }
+
+/* The session header's title block is one target: branch, commit and sync are plain text inside it. */
+.bar-session .bar-main {
+  margin: -5px -8px; padding: 5px 8px; border-radius: var(--radius-md); cursor: pointer;
+  transition: background-color var(--duration) var(--ease);
+}
+.bar-session .bar-main:hover, .bar-session .bar-main:focus-visible { background: var(--hover); outline: 0; }
+.bar-session .bar-sub { cursor: inherit; }

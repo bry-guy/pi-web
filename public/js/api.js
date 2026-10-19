@@ -120,6 +120,7 @@ export const api = {
     return fetch("/api/settings", { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify(patch || {}) }).then(j);
   },
   restore: id => fetch(`/api/sessions/${encodeURIComponent(id)}/restore`, { method: "POST", headers: JH, body: "{}" }).then(j),
+  removeProject: projectId => fetch(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" }).then(j),
   endIdle: projectId => fetch(`/api/projects/${encodeURIComponent(projectId)}/end-idle`, { method: "POST", headers: JH, body: "{}" }).then(j),
   close: (id, operationId = null, kind = "session") => fetch(`/api/sessions/${id}/close`, { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify({ ...(operationId ? { operationId } : {}), kind }) }).then(j),
 };

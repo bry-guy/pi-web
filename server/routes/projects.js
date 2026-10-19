@@ -55,8 +55,12 @@ export function register(api, deps) {
           clone_in_progress: 409,
           clone_failed: 502,
         };
-        if (statuses[e.code]) return err(c, statuses[e.code], e.code, e.code === "clone_failed" ? { message: e.message } : {});
-        throw e;
+        // A removed project's clone is kept on disk; adding it again reuses it.
+        if (e.code === "repository_exists" && e.repoPath && !cfg.projects.some(p => p.repoPath === e.repoPath)) {
+          ({ repoPath, source: sourceInfo } = e);
+          cloned = false;
+        } else if (statuses[e.code]) return err(c, statuses[e.code], e.code, e.code === "clone_failed" ? { message: e.message } : {});
+        else throw e;
       }
     }
     if (cfg.projects.some(p => p.repoPath === repoPath)) return err(c, 409, "project_exists");
@@ -104,6 +108,19 @@ export function register(api, deps) {
   });
 
   // End every session tree with no activity for a day and nothing running in it.
+  // Remove a project: end its sessions and drop it from the list. The checkout on disk is kept.
+  api.delete("/projects/:id", async c => {
+    const cfg = loadConfig();
+    const project = cfg.projects.find(p => p.id === c.req.param("id"));
+    if (!project) return err(c, 404, "no_such_project");
+    const { sessions } = await projectState(project, sup);
+    for (const session of sessions) await closeSession(sup, hub, session.id);
+    const latest = loadConfig();
+    latest.projects = latest.projects.filter(p => p.id !== project.id);
+    saveConfig(latest);
+    return c.json({ ok: true, id: project.id, endedSessions: sessions.length });
+  });
+
   api.post("/projects/:id/end-idle", async c => {
     const project = loadConfig().projects.find(p => p.id === c.req.param("id"));
     if (!project) return err(c, 404, "no_such_project");

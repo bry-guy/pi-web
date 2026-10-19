@@ -2,6 +2,7 @@ import { api, openTranscript, refreshState, transcriptLoading } from "./api.js";
 import { activeOperations, beginOperation, completeOperation, operationForScope, operationHint } from "./operations.js";
 import { setHTML, store, toast } from "./store.js";
 import { launchSetup } from "./panel-utils.js";
+import { openProjectMenu } from "./project-menu.js";
 
 export const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 export const mobile = () => matchMedia("(max-width: 760px)").matches;
@@ -304,15 +305,9 @@ class PiSidebar extends HTMLElement {
     const t = e.target.closest("[data-act]");
     if (!t) return;
     const act = t.dataset.act;
-    if (act === "restore-session") {
+    if (act === "project-menu") {
       e.stopPropagation();
-      void restoreConversation(t.dataset.id);
-      return;
-    }
-    if (act === "toggle-ended") {
-      e.stopPropagation();
-      store.state.openEnded = { ...store.state.openEnded, [t.dataset.id]: !store.state.openEnded?.[t.dataset.id] };
-      store.notify("state");
+      openProjectMenu(t.dataset.id);
       return;
     }
     if (act === "close-row") {
@@ -394,23 +389,6 @@ class PiSidebar extends HTMLElement {
     }
   }
 
-  // Ended sessions, collapsed under the project's live ones, each with Restore.
-  endedRows(p, out) {
-    const open = !!store.state.openEnded?.[p.id];
-    out.push(`<div class="row-wrap nested" style="margin-left:20px">
-      <div class="row ended-toggle" role="button" tabindex="0" aria-expanded="${open}" data-act="toggle-ended" data-id="${esc(p.id)}">
-        <span class="caret">${open ? "▾" : "▸"}</span><span class="lbl">Ended</span><span class="count">${p.ended.length}</span>
-      </div></div>`);
-    if (!open) return;
-    for (const n of p.ended) {
-      out.push(`<div class="row-wrap nested" style="margin-left:34px">
-        <div class="row ended-row" title="Ended ${esc(n.when)}">
-          <span class="caret">·</span><span class="lbl">${esc(n.title)}</span>
-          <button class="row-restore" data-act="restore-session" data-id="${esc(n.id)}" aria-label="Restore ${esc(n.title)}">Restore</button>
-        </div></div>`);
-    }
-  }
-
   render() {
     const s = store.state;
     const isMobile = mobile();
@@ -473,9 +451,9 @@ class PiSidebar extends HTMLElement {
           <span class="caret" data-act="toggle-tree" data-tree-id="${esc(p.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(p.name)}">${open ? "▾" : "▸"}</span>
           <span class="lbl">${esc(p.name)}</span>
           ${p.workspace ? this.workspaceToggle(p) : ""}<span class="count">${this.count(p.sessions)}</span>
+          <button class="row-menu" data-act="project-menu" data-id="${esc(p.id)}" data-tip="Project" aria-label="Project menu for ${esc(p.name)}">⋯</button>
         </div></div>`);
       if (open) this.sessionRows(p, p.sessions, 0, nameMatch ? "" : q, projRows, !!q && nameMatch);
-      if (open && !q && p.ended?.length) this.endedRows(p, projRows);
     }
     const chatRows = s.chats
       .filter(cRow => !q || fuzzyMatch(cRow.title, q))
@@ -525,12 +503,10 @@ class PiHeader extends HTMLElement {
         : { railOpen: !store.state.railOpen });
     } else if (act === "settings") {
       store.set({ view: "settings" });
-    } else if (act === "workspace-settings" || act === "session-panel") {
+    } else if (act === "session-panel") {
       const p = store.project();
       if (p) openSessionPicker(p.id, { mode: "switch", sourceSessionId: store.state.sessionId });
       void refreshState().catch(() => {});
-    } else if (act === "sync-detail") {
-      store.set({ commandNotice: { sessionId: store.activeKey(), title: "Sync", message: t.dataset.detail } });
     } else if (act === "files") {
       e.stopPropagation();
       this.dispatchEvent(new CustomEvent("toggle-files", { bubbles: true }));
@@ -567,7 +543,7 @@ class PiHeader extends HTMLElement {
       : chat ? chat.title : node ? node.title : (s.chatId ? "New chat" : (p ? p.name : "Chat"));
     const activeSession = node || chat;
     const syncInfo = syncSummary(activeSession?.id && store.state.extensionStatuses[activeSession.id]?.["pi-sync"]);
-    const syncLine = syncInfo ? `<button class="sync-label ${syncInfo.tone}" data-act="sync-detail" data-detail="${esc(syncInfo.full)}" title="${esc(syncInfo.full)}" aria-label="${esc(syncInfo.full)}">${esc(`${syncInfo.state}: ${syncInfo.message}`)}</button>` : "";
+    const syncLine = syncInfo ? `<span class="sync-label ${syncInfo.tone}" title="${esc(syncInfo.full)}">${esc(`${syncInfo.state}: ${syncInfo.message}`)}</span>` : "";
     const workspace = inProject ? this.sessionContext() : null;
     const branch = workspace ? this.contextLabel(workspace) : null;
     const commit = workspace?.head ? String(workspace.head) : "";
@@ -575,10 +551,10 @@ class PiHeader extends HTMLElement {
       ? `<span class="workspace-divider">·</span><span class="workspace-commit" title="Current commit ${esc(commit)}">${esc(commit.slice(0, 8))}</span>`
       : "";
     const workspaceTrigger = inProject && workspace ? `
-        <button class="workspace-trigger" data-act="workspace-settings" title="Show Git context" aria-label="Show Git context for ${esc(p.name)} ${esc(branch)}">
+        <span class="workspace-trigger">
           <span class="workspace-branch">${esc(branch)}</span>${commitLabel}<span class="workspace-divider">·</span><span class="workspace-state">${esc(gitStatusText(workspace))}</span>
-        </button>` : "";
-    // Git and sync share one line; sync is the only label for sync state.
+        </span>` : "";
+    // Git then sync on one line, both plain text: the whole title block is the one target.
     const subArea = workspaceTrigger || syncLine ? `<div class="bar-sub">${workspaceTrigger}${syncLine}</div>` : "";
     const operationScope = {
       sessionId: s.sessionId || s.chatId, projectId: s.projectId,
@@ -604,11 +580,11 @@ class PiHeader extends HTMLElement {
     const sidebarControl = mobile()
       ? `<svg width="17" height="15" viewBox="0 0 17 15" aria-hidden="true"><rect width="17" height="1.8" y="0" fill="currentColor"/><rect width="17" height="1.8" y="6.6" fill="currentColor"/><rect width="17" height="1.8" y="13.2" fill="currentColor"/></svg>`
       : icon("sidebar");
-    // The whole header of a conversation opens its session panel; its buttons keep their own actions.
-    const panelAct = inProject ? ` data-act="session-panel"` : "";
-    setHTML(this, `<header class="bar${panelAct ? " bar-session" : ""}"${panelAct}>
+    // A conversation's title block is one target that opens its session panel; the header's buttons keep their own actions.
+    const panelAct = inProject ? ` data-act="session-panel" role="button" tabindex="0" aria-label="${esc(`Session menu for ${title}`)}"` : "";
+    setHTML(this, `<header class="bar${panelAct ? " bar-session" : ""}">
       <button class="hamburger" data-act="sidebar-toggle" title="${sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}" aria-expanded="${sidebarOpen}">${sidebarControl}</button>
-      <div class="bar-main"><div class="bar-title">${esc(title)}</div>${subArea}${operationArea}</div>
+      <div class="bar-main"${panelAct}><div class="bar-title">${esc(title)}</div>${subArea}${operationArea}</div>
       ${filesBtn}
     </header>`);
   }

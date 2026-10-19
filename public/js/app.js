@@ -31,6 +31,7 @@ class PiApp extends HTMLElement {
         </div>
         <pi-repo-picker></pi-repo-picker>
         <pi-session-picker></pi-session-picker>
+        <pi-project-menu></pi-project-menu>
         <pi-logs></pi-logs>
         <pi-confirm></pi-confirm>
         <pi-extension-ui></pi-extension-ui>
@@ -173,7 +174,7 @@ class PiApp extends HTMLElement {
 
   sync() {
     const v = store.state.view;
-    const modalOpen = !!(store.state.repoPickerOpen || store.state.sessionPicker || store.state.logsOpen || store.state.confirm || store.state.extensionUi);
+    const modalOpen = !!(store.state.repoPickerOpen || store.state.sessionPicker || store.state.projectMenu || store.state.logsOpen || store.state.confirm || store.state.extensionUi);
     document.body?.classList.toggle("modal-open", modalOpen);
     const previewBanner = this.querySelector("[data-preview-banner]");
     const preview = store.state.uiConfig?.preview === true;

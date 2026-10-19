@@ -355,7 +355,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.set({ view: "chat" });
   assert.equal(root.querySelector("main.col").classList.contains("settings-open"), false);
   store.set({ view: "chat" });
-  root.querySelector("pi-header [data-act='workspace-settings']").click();
+  root.querySelector("pi-header [data-act='session-panel']").click();
   assert.ok(root.querySelector(".session-picker"));
   assert.equal(root.querySelector("[data-act='apply-session-branch'][data-mode='switch']"), null);
   assert.equal(root.querySelector("[data-act='open-fork']").disabled, false, "Fork is an enabled action");
@@ -425,9 +425,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.state.extensionStatuses.s1 = { "pi-sync": "sync: up to date" };
   store.notify("state");
   assert.equal(syncLabel().textContent, "Sync: up to date", "the pi-sync extension status is the label");
-  syncLabel().click();
-  assert.equal(store.state.commandNotice?.title, "Sync", "tap shows the full sync detail");
-  assert.equal(store.state.commandNotice.message, "up to date");
+  assert.equal(syncLabel().closest("button, [data-act='sync-detail']"), null, "the sync state is plain text inside the header target");
+  assert.ok(syncLabel().closest("[data-act='session-panel']"), "the sync state sits in the one session-menu target");
   store.state.extensionStatuses.s1 = { "pi-sync": "sync: in use by Laptop" };
   store.notify("state");
   assert.ok(root.querySelector("pi-header .sync-label.busy"));
@@ -489,7 +488,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(store.draftAttachments("s1").length, 0, "a delivered message clears its attachments");
   store.transcript("s1").records = store.transcript("s1").records.filter(record => !record.pending);
 
-  root.querySelector("pi-header [data-act='workspace-settings']").click();
+  root.querySelector("pi-header [data-act='session-panel']").click();
   assert.equal(root.querySelector("[data-act='run-hook']").textContent, "Check");
   assert.doesNotMatch(root.querySelector(".session-picker").textContent, /Run check/);
   assert.ok(root.querySelector("[data-act='pull-branch']"));
@@ -505,7 +504,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   root.querySelector(".confirm-modal [data-act='go']").click();
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(root.querySelector(".confirm-modal"), null);
-  root.querySelector("pi-header [data-act='workspace-settings']").click();
+  root.querySelector("pi-header [data-act='session-panel']").click();
   root.querySelector("[data-act='run-hook']").click();
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(root.querySelector(".operation-modal"), null, "hook output stays out of a terminal modal");
@@ -531,7 +530,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   await new Promise(resolve => setTimeout(resolve, 10));
 
   // Switch: a step listing branches; choosing one moves the session (the dropdown is gone).
-  root.querySelector("pi-header [data-act='workspace-settings']").click();
+  root.querySelector("pi-header [data-act='session-panel']").click();
   root.querySelector("[data-act='open-switch']").click();
   assert.equal(root.querySelector(".session-picker .modal-title").textContent, "Switch branch");
   assert.deepEqual([...root.querySelectorAll(".branch-list .branch-option")].map(button => button.dataset.branch), [
@@ -601,7 +600,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.ok(root.querySelector(".bar-operation-hint .operation-dot"), "background setup appears in the title hint");
   assert.equal(root.querySelector(".operation-row-hint"), null, "sidebar operation hints are removed");
   assert.equal(root.querySelector(".operation-modal"), null, "session creation stays non-blocking");
-  root.querySelector("pi-header [data-act='workspace-settings']").click();
+  root.querySelector("pi-header [data-act='session-panel']").click();
   assert.equal(root.querySelector(".bar-operation-hint"), null, "opening the picker removes the title hint space");
   assert.match(root.querySelector(".history-entry.running")?.textContent || "", /Setup/, "running setup is listed in History until it finishes");
   assert.equal(root.querySelector(".session-picker .session-operation-feed"), null);
@@ -1046,6 +1045,29 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.markRead("sibling");
   assert.equal(store.state.unread.sibling, undefined);
 
+  // Project-level actions live in the Project menu, opened from the sidebar row's ⋯; the session menu keeps per-conversation ones.
+  store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null, railOpen: true, query: "" });
+  root.querySelector("pi-header [data-act='session-panel']").click();
+  assert.equal(root.querySelector("pi-session-picker [data-act='end-idle']"), null, "End idle is not a session action");
+  assert.equal(root.querySelector("pi-session-picker .worker-card"), null, "the worker is not in the session menu");
+  assert.equal(root.querySelector("pi-session-picker [data-act='delete-branch']")?.textContent, "Delete branch");
+  root.querySelector("pi-session-picker [data-act='open-project-menu']").click();
+  assert.equal(store.state.sessionPicker, null, "opening the Project menu closes the session menu");
+  assert.ok(root.querySelector("pi-project-menu [data-act='end-idle']"));
+  assert.ok(root.querySelector("pi-project-menu [data-act='remove-project']"));
+  root.querySelector("pi-project-menu [data-act='close-project-menu']").click();
+  store.state.projects[0].ended = [{ id: "old1", title: "Old work", when: "2d", updatedAt: 1 }];
+  store.notify("state");
+  assert.equal(root.querySelector("pi-sidebar [data-act='toggle-ended']"), null, "the sidebar has no Ended list");
+  root.querySelector("pi-sidebar [data-act='project-menu'][data-id='p1']").click();
+  assert.ok(store.state.projectMenu, "the row's ⋯ opens the Project menu");
+  assert.equal(store.state.sessionId, "s1", "and does not start a new session");
+  assert.match(root.querySelector("pi-project-menu [data-act='open-past'][data-id='old1']")?.textContent || "", /Old work/);
+  root.querySelector("pi-project-menu [data-act='remove-project']").click();
+  assert.equal(store.state.confirm?.type, "removeProject");
+  store.set({ confirm: null, projectMenu: null });
+  delete store.state.projects[0].ended;
+
   // One copy row per turn, on its last reply; "Copy Turn" only when the turn had several.
   store.state.transcripts.s1.streaming = false;
   store.state.transcripts.s1.records = [
@@ -1198,14 +1220,14 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.notify("transcript");
   assert.equal(scroller.scrollTop, 240, "background transcript reload keeps the user's scroll position");
 
-  root.querySelector("pi-header [data-act='workspace-settings']")?.click();
+  root.querySelector("pi-header [data-act='session-panel']")?.click();
   assert.ok(root.querySelector(".session-picker"));
   assert.equal(root.querySelector("[data-act='apply-session-branch'][data-mode='switch']"), null);
   root.querySelector("[data-act='close-session-picker']")?.click();
 
   dom.window.__holdMerge = true;
   store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null, sessionPicker: null, confirm: null });
-  root.querySelector("pi-header [data-act='workspace-settings']").click();
+  root.querySelector("pi-header [data-act='session-panel']").click();
   root.querySelector("[data-act='merge-branch']").click();
   root.querySelector(".confirm-modal [data-act='go']").click();
   await new Promise(resolve => setTimeout(resolve, 20));

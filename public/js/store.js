@@ -75,7 +75,6 @@ export const store = {
     railOpen: true,
     drawerOpen: false,
     openTree: {},
-    openEnded: {},          // projectId -> Ended list expanded
     openTools: {},
     openActivity: {},
     openDirs: {},
@@ -91,6 +90,7 @@ export const store = {
     showHiddenFiles: showHiddenFilesFromStorage(), // file tree shows names starting with "."
     repoPickerOpen: false,
     repoPickerSource: null,
+    projectMenu: null,         // { projectId } while the Project menu is open
     sessionPicker: null,       // { projectId, mode: "new"|"switch"|"fork", sourceSessionId, branch, name }
     sessionPickerContextId: null,
     sessionPickerError: null,

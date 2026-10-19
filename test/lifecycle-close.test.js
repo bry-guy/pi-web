@@ -93,3 +93,12 @@ test("end idle ends only session trees with no activity for a day", async () => 
   const project = (await fixture.state()).projects.find(item => item.id === fixture.projectId);
   assert.deepEqual(project.ended.map(item => item.id), [old]);
 });
+
+test("removing a project ends its sessions and drops it from the list; the checkout stays", async () => {
+  const { mainSessionId, projectId } = fixture;
+  const response = await fixture.remove(`/api/projects/${projectId}`);
+  assert.equal(response.status, 200);
+  assert.equal(fixture.closedSessions().has(mainSessionId), true);
+  assert.equal((await fixture.state()).projects.some(project => project.id === projectId), false);
+  assert.equal(fs.existsSync(path.join(fixture.repo, ".git")), true);
+});
