@@ -85,6 +85,33 @@ export async function closeSession(sup, hub, sessionId, { report = null } = {}) 
   return { closed: true, archived: true };
 }
 
+// After an end: a worktree that no session uses any more, is clean and is merged into
+// main can be deleted. Returns what the client needs to offer that, or null.
+export async function cleanupCandidate(sup, workspacePath) {
+  if (!workspacePath) return null;
+  const found = await findProjectByWorkspaceAsync(workspacePath);
+  if (!found || path.resolve(workspacePath) === path.resolve(found.project.repoPath)) return null;
+  const context = found.contexts.find(item => path.resolve(item.path) === path.resolve(workspacePath));
+  const primaryBranch = await ws.defaultBranchAsync(found.project.repoPath);
+  if (!context?.branch || context.branch === primaryBranch) return null;
+  if ((await sessionsUsingWorkspaceAsync(found.project, workspacePath, sup)).length) return null;
+  const status = await ws.contextStatusAsync({ repoPath: found.project.repoPath, workspacePath, primaryBranch });
+  if (status.dirty !== false) return null;
+  if (!await ws.branchMergedAsync(found.project.repoPath, context.branch, primaryBranch)) return null;
+  return { projectId: found.project.id, branch: context.branch, primaryBranch };
+}
+
+// Undo an end: unarchive the session and its forks. A pi-sync detach stays in the
+// conversation, so a restored session is not shared again until attached.
+export async function restoreSession(sup, hub, sessionId) {
+  const closed = loadClosed();
+  if (!closed.has(sessionId)) return { restored: false };
+  for (const id of [sessionId, ...(await descendantsOf(sup, sessionId))]) closed.delete(id);
+  saveClosed(closed);
+  hub.emit(sessionId, "session_meta", {});
+  return { restored: true };
+}
+
 function failure(code, extra = {}) {
   return Object.assign(new Error(code), { code, ...extra });
 }

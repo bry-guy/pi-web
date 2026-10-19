@@ -118,7 +118,7 @@ class PiConfirm extends HTMLElement {
   async go() {
     const c = store.state.confirm;
     if (!c || this.busy) return;
-    if (c.type === "restartWorker" || c.type === "resetWorker" || c.type === "closeProject") return this.goWorker(c);
+    if (c.type === "restartWorker" || c.type === "resetWorker" || c.type === "deleteWorker") return this.goWorker(c);
     const project = store.state.projects.find(item => item.id === c.projectId);
     const primary = c.primaryBranch || project?.defaultBranch || project?.primaryBranch || "main";
     this.busy = true;
@@ -167,18 +167,18 @@ class PiConfirm extends HTMLElement {
     this.render();
     try {
       if (c.type === "resetWorker") await api.resetWorkspace(c.name, c.name);
-      else if (c.type === "closeProject") await (c.workspace ? api.deleteWorkspace(c.workspace, !!c.purge) : api.closeProject(c.projectId));
+      else if (c.type === "deleteWorker") await api.deleteWorkspace(c.name, !!c.purge);
       else await api.restartWorkspace(c.name);
       store.set({ confirm: null });
-      if (c.type === "closeProject") {
-        if (store.state.projectId === c.projectId) store.set({ projectId: null, sessionId: null, sessionPicker: null });
+      if (c.type === "deleteWorker") {
+        if (c.projectId && store.state.projectId === c.projectId) store.set({ projectId: null, sessionId: null, sessionPicker: null });
         await refreshState();
       }
       await refreshWorkers();
     } catch (err) {
       const active = store.state.confirm;
       if (active?.id === c.id && active.type === c.type) store.set({ confirm: { ...active, error: workerErrorMessage(err) } });
-      else store.setError(`Could not ${{ resetWorker: "reset", closeProject: "close" }[c.type] || "restart"} ${c.name}: ${workerErrorMessage(err)}`);
+      else store.setError(`Could not ${{ resetWorker: "reset", deleteWorker: "delete" }[c.type] || "restart"} ${c.name}: ${workerErrorMessage(err)}`);
     } finally { this.busy = false; this.render(); }
   }
 
@@ -204,13 +204,11 @@ class PiConfirm extends HTMLElement {
       body = "This wipes the worker's disk, including its project checkout and any uncommitted work. Add the project again afterwards.";
       options = `<label class="confirm-typed"><span>Type <code>${esc(c.name)}</code> to confirm</span><input class="settings-inline-input" data-confirm-typed value="${esc(this.typed || "")}" autocomplete="off" spellcheck="false"></label>`;
       action = "Reset worker";
-    } else if (c.type === "closeProject") {
-      title = `Close ${esc(c.name)}?`;
-      body = c.workspace
-        ? "Ends its sessions and deletes its worker. Its disk (checkout, sessions, unpushed work) is kept, so adding the repository again picks it back up."
-        : "Ends its sessions and removes it from the list. The checkout on disk is kept, so adding the repository again picks it back up.";
-      options = c.workspace ? `<label class="confirm-check"><input type="checkbox" data-confirm-purge ${c.purge ? "checked" : ""}><span>Also delete its disk, including uncommitted and unpushed work</span></label>` : "";
-      action = c.purge ? "Close and delete data" : "Close project";
+    } else if (c.type === "deleteWorker") {
+      title = `Delete ${esc(c.name)}?`;
+      body = "Deletes the worker, so its project and sessions leave the list. Its disk (checkout, sessions, unpushed work) is kept, so adding the repository again picks it back up.";
+      options = `<label class="confirm-check"><input type="checkbox" data-confirm-purge ${c.purge ? "checked" : ""}><span>Also delete its disk, including uncommitted and unpushed work</span></label>`;
+      action = c.purge ? "Delete worker and disk" : "Delete worker";
     } else if (c.type === "close") {
       title = c.kind === "chat" ? "Close chat" : "Close session";
       body = `“${esc(c.label)}” will be archived. Its transcript and Git context remain available.`;

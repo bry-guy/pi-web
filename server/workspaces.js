@@ -345,6 +345,12 @@ export async function prepareMainAsync(repoPath, { fetch = true, primaryBranch =
   } catch (error) { throw gitFailure("main_not_fast_forwardable", error); }
 }
 
+// True when every commit on `branch` is already on `into`.
+export async function branchMergedAsync(repoPath, branch, into) {
+  try { await gitReadAsync(repoPath, "merge-base", "--is-ancestor", `refs/heads/${branch}`, `refs/heads/${into}`); return true; }
+  catch { return false; }
+}
+
 export function isDirty(dir) {
   const status = dirtyState(dir);
   if (status.dirty == null) throw Object.assign(new Error("git_status_unavailable"), { code: "git_status_unavailable", detail: status.error });

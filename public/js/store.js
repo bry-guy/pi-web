@@ -75,6 +75,7 @@ export const store = {
     railOpen: true,
     drawerOpen: false,
     openTree: {},
+    openEnded: {},          // projectId -> Ended list expanded
     openTools: {},
     openActivity: {},
     openDirs: {},
@@ -305,9 +306,17 @@ export const store = {
   },
 };
 
-// Short, non-blocking result of an async action; dismisses itself.
-export function toast(message, tone = "info") {
+// Callbacks for toast buttons, kept out of the store so state stays plain data.
+export const toastActions = new Map();
+
+// Short, non-blocking result of an async action; dismisses itself. An optional
+// `action` ({ label, run }) adds a button and keeps the toast up a little longer.
+export function toast(message, tone = "info", action = null) {
   const id = Math.random().toString(36).slice(2);
-  store.set({ toasts: [...store.state.toasts, { id, message, tone }].slice(-3) });
-  setTimeout(() => store.set({ toasts: store.state.toasts.filter(item => item.id !== id) }), 3500);
+  if (action) toastActions.set(id, action.run);
+  store.set({ toasts: [...store.state.toasts, { id, message, tone, actionLabel: action?.label || null }].slice(-3) });
+  setTimeout(() => {
+    toastActions.delete(id);
+    store.set({ toasts: store.state.toasts.filter(item => item.id !== id) });
+  }, action ? 8000 : 3500);
 }

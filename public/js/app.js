@@ -1,5 +1,5 @@
 import { api, refreshState } from "./api.js";
-import { setHTML, store } from "./store.js";
+import { setHTML, store, toastActions } from "./store.js";
 import { esc, mobile } from "./shell.js";
 import { closeFileView } from "./files.js";
 
@@ -53,6 +53,14 @@ class PiApp extends HTMLElement {
     }, { passive: true });
     this.addEventListener("click", e => {
       if (e.target.closest("[data-act='reload']")) location.reload();
+      const toastButton = e.target.closest("[data-act='toast-action']");
+      if (toastButton) {
+        const id = toastButton.dataset.toastId;
+        const run = toastActions.get(id);
+        toastActions.delete(id);
+        store.set({ toasts: store.state.toasts.filter(item => item.id !== id) });
+        void run?.();
+      }
       if (e.target.closest("[data-act='update']")) {
         e.preventDefault();
         store.set({ updateAvailable: false });
@@ -184,7 +192,7 @@ class PiApp extends HTMLElement {
       el.classList.toggle("covered", screen === "file" && name === "chat");
     }
     this.querySelector(".shell").classList.toggle("file-open", screen === "file");
-    setHTML(this.querySelector("[data-toasts]"), store.state.toasts.map(item => `<div class="app-toast ${esc(item.tone)}" role="status">${esc(item.message)}</div>`).join(""));
+    setHTML(this.querySelector("[data-toasts]"), store.state.toasts.map(item => `<div class="app-toast ${esc(item.tone)}" role="status"><span>${esc(item.message)}</span>${item.actionLabel ? `<button class="app-toast-action" data-act="toast-action" data-toast-id="${esc(item.id)}">${esc(item.actionLabel)}</button>` : ""}</div>`).join(""));
     this.scrim.classList.toggle("hidden", !(mobile() && store.state.drawerOpen));
     const connection = this.querySelector("[data-connection-status]");
     const offline = store.state.offline;

@@ -1,6 +1,6 @@
 import { api, openTranscript, refreshState, transcriptLoading } from "./api.js";
 import { activeOperations, beginOperation, completeOperation, operationForScope, operationHint } from "./operations.js";
-import { setHTML, store } from "./store.js";
+import { setHTML, store, toast } from "./store.js";
 import { launchSetup } from "./panel-utils.js";
 
 export const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -217,6 +217,7 @@ export async function closeConversation(id, kind = "session") {
   if (!id || closesInFlight.has(id)) return;
   closesInFlight.add(id);
   const label = kind === "chat" ? "End chat" : "End session";
+  const title = (kind === "chat" ? store.state.chats.find(chat => chat.id === id) : store.state.projects.map(p => findNode(p.sessions, id)).find(Boolean))?.title || (kind === "chat" ? "Chat" : "Session");
   const operation = beginOperation("close", label, "", "Request started.", id, { action: "close" });
   let result = null;
   try {
@@ -225,6 +226,10 @@ export async function closeConversation(id, kind = "session") {
     // Drop the row now; a slow /api/state must not show it again until the next refresh agrees.
     const s = store.state;
     if (s.projects.some(project => removeNode(project.sessions, id)) || s.chats.some((chat, i) => chat.id === id && s.chats.splice(i, 1))) store.notify("state");
+    toast(`Ended “${title}”.`, "info", { label: "Undo", run: () => restoreConversation(id) });
+    // Its worktree is now unused, clean and merged: offer the usual Delete branch confirmation.
+    const cleanup = result?.cleanup;
+    if (cleanup) toast(`${cleanup.branch} is merged and no session uses it.`, "info", { label: "Delete branch…", run: () => store.set({ confirm: { type: "deleteBranch", projectId: cleanup.projectId, id: null, branch: cleanup.branch, primaryBranch: cleanup.primaryBranch, label: cleanup.branch, sessions: [], closeSessions: false, force: false, dirty: false, status: "clean", error: null } }) });
     void refreshState().catch(err => store.setError(`Could not refresh state after close: ${err.message || err}`));
   } catch (error) {
     const displayError = Object.assign(new Error(closeErrorMessage(error)), error);
@@ -232,6 +237,16 @@ export async function closeConversation(id, kind = "session") {
     store.setError(displayError.message);
   } finally {
     closesInFlight.delete(id);
+  }
+}
+
+// Undoes an end. A pi-sync detach is not undone: the conversation is no longer shared.
+export async function restoreConversation(id) {
+  try {
+    await api.restore(id);
+    await refreshState();
+  } catch (error) {
+    store.setError(`Could not restore: ${error.detail || error.message || error.error || error}`);
   }
 }
 
@@ -287,15 +302,20 @@ class PiSidebar extends HTMLElement {
     const t = e.target.closest("[data-act]");
     if (!t) return;
     const act = t.dataset.act;
+    if (act === "restore-session") {
+      e.stopPropagation();
+      void restoreConversation(t.dataset.id);
+      return;
+    }
+    if (act === "toggle-ended") {
+      e.stopPropagation();
+      store.state.openEnded = { ...store.state.openEnded, [t.dataset.id]: !store.state.openEnded?.[t.dataset.id] };
+      store.notify("state");
+      return;
+    }
     if (act === "close-row") {
       e.stopPropagation();
       void closeConversation(t.dataset.id, t.dataset.kind);
-      return;
-    }
-    if (act === "close-project") {
-      e.stopPropagation();
-      const p = store.state.projects.find(item => item.id === t.dataset.id);
-      if (p) store.set({ confirm: { type: "closeProject", id: p.workspace || p.id, projectId: p.id, workspace: p.workspace || null, name: p.name, purge: false, error: null } });
       return;
     }
     if (act === "collapse") {
@@ -372,6 +392,23 @@ class PiSidebar extends HTMLElement {
     }
   }
 
+  // Ended sessions, collapsed under the project's live ones, each with Restore.
+  endedRows(p, out) {
+    const open = !!store.state.openEnded?.[p.id];
+    out.push(`<div class="row-wrap nested" style="margin-left:20px">
+      <div class="row ended-toggle" role="button" tabindex="0" aria-expanded="${open}" data-act="toggle-ended" data-id="${esc(p.id)}">
+        <span class="caret">${open ? "▾" : "▸"}</span><span class="lbl">Ended</span><span class="count">${p.ended.length}</span>
+      </div></div>`);
+    if (!open) return;
+    for (const n of p.ended) {
+      out.push(`<div class="row-wrap nested" style="margin-left:34px">
+        <div class="row ended-row" title="Ended ${esc(n.when)}">
+          <span class="caret">·</span><span class="lbl">${esc(n.title)}</span>
+          <button class="row-restore" data-act="restore-session" data-id="${esc(n.id)}" aria-label="Restore ${esc(n.title)}">Restore</button>
+        </div></div>`);
+    }
+  }
+
   render() {
     const s = store.state;
     const isMobile = mobile();
@@ -434,9 +471,9 @@ class PiSidebar extends HTMLElement {
           <span class="caret" data-act="toggle-tree" data-tree-id="${esc(p.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(p.name)}">${open ? "▾" : "▸"}</span>
           <span class="lbl">${esc(p.name)}</span>
           ${p.workspace ? this.workspaceToggle(p) : ""}<span class="count">${this.count(p.sessions)}</span>
-          <button class="row-close" data-act="close-project" data-id="${esc(p.id)}" title="Close project" aria-label="Close project ${esc(p.name)}">×</button>
         </div></div>`);
       if (open) this.sessionRows(p, p.sessions, 0, nameMatch ? "" : q, projRows, !!q && nameMatch);
+      if (open && !q && p.ended?.length) this.endedRows(p, projRows);
     }
     const chatRows = s.chats
       .filter(cRow => !q || fuzzyMatch(cRow.title, q))

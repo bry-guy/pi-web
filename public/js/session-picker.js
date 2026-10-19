@@ -235,6 +235,19 @@ class PiSessionPicker extends HTMLElement {
       if (id && !this.busy) { this.close(); await closeConversation(id, "session"); }
       return;
     }
+    if (act === "end-idle") {
+      const project = this.project();
+      if (!project || this.busy) return;
+      this.busy = true; this.render();
+      try {
+        const { ended } = await api.endIdle(project.id);
+        toast(ended.length ? `Ended ${ended.length} idle session${ended.length === 1 ? "" : "s"}. Restore them from Ended in the sidebar.` : "No idle sessions to end.");
+        await refreshState();
+      } catch (error) {
+        toast(`Could not end idle sessions: ${error.detail || error.message || error.error || error}`, "error");
+      } finally { this.busy = false; this.render(); }
+      return;
+    }
     const worker = e.target.closest("[data-act$='-worker']");
     if (worker) {
       // Confirmations sit below this panel; close it so the dialog is visible.
@@ -523,6 +536,7 @@ class PiSessionPicker extends HTMLElement {
             ${actionRow("Fork", "Copies this conversation to a new branch and worktree.", `<button class="btn btn-secondary" data-act="open-fork" ${this.busy ? "disabled" : ""}>Fork…</button>`)}
             ${hookRows}
             ${actionRow("End session", "Stops it, withdraws it from sync on this server and archives it. Git is not touched.", `<button class="btn btn-caution" data-act="end-session" ${this.busy ? "disabled" : ""}>End</button>`)}
+            ${actionRow("End idle sessions", "Ends this project's sessions with no activity for a day. Nothing running is touched.", `<button class="btn btn-secondary" data-act="end-idle" ${this.busy ? "disabled" : ""}>End idle</button>`)}
           </div>
           ${workerSection}
         </section>`;

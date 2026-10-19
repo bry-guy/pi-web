@@ -2,6 +2,8 @@ import { syncConfig } from "../config.js";
 import { remoteConversationsForRepository } from "../pi-sync.js";
 import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
 
+const IDLE_MS = 24 * 60 * 60 * 1000;
+
 export function register(api, deps) {
   const { path, loadConfig, newId, sessionWorkspace, normalizeHooks, repositorySource, reposRoot, resolvePath, saveConfig, hub, ws, cloneRepository, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, projectContext, projectContextAsync, bindSessionToContext, branchContextAsync, ensureBranchContext, sessionBelongsToProject, github, sup, projectState, closeSession, sessionsUsingWorkspaceAsync } = deps;
 
@@ -53,12 +55,8 @@ export function register(api, deps) {
           clone_in_progress: 409,
           clone_failed: 502,
         };
-        // A closed project's clone is kept on disk; adding it again reuses it.
-        if (e.code === "repository_exists" && e.repoPath && !cfg.projects.some(p => p.repoPath === e.repoPath)) {
-          ({ repoPath, source: sourceInfo } = e);
-          cloned = false;
-        } else if (statuses[e.code]) return err(c, statuses[e.code], e.code, e.code === "clone_failed" ? { message: e.message } : {});
-        else throw e;
+        if (statuses[e.code]) return err(c, statuses[e.code], e.code, e.code === "clone_failed" ? { message: e.message } : {});
+        throw e;
       }
     }
     if (cfg.projects.some(p => p.repoPath === repoPath)) return err(c, 409, "project_exists");
@@ -105,18 +103,15 @@ export function register(api, deps) {
     }, reporter);
   });
 
-  // Close a project: end its sessions and drop it from the list. The checkout on disk is kept,
-  // so adding the repository again picks it back up.
-  api.delete("/projects/:id", async c => {
-    const cfg = loadConfig();
-    const project = cfg.projects.find(p => p.id === c.req.param("id"));
+  // End every session tree with no activity for a day and nothing running in it.
+  api.post("/projects/:id/end-idle", async c => {
+    const project = loadConfig().projects.find(p => p.id === c.req.param("id"));
     if (!project) return err(c, 404, "no_such_project");
-    const { sessions } = await projectState(project, sup);
-    for (const session of sessions) await closeSession(sup, hub, session.id);
-    const latest = loadConfig();
-    latest.projects = latest.projects.filter(p => p.id !== project.id);
-    saveConfig(latest);
-    return c.json({ ok: true, id: project.id, endedSessions: sessions.length });
+    const cutoff = Date.now() - IDLE_MS;
+    const busy = node => node.streaming || (node.children || []).some(busy);
+    const idle = (await projectState(project, sup)).sessions.filter(node => !busy(node) && Date.parse(node.activityAt || 0) < cutoff);
+    for (const node of idle) await closeSession(sup, hub, node.id);
+    return c.json({ ok: true, ended: idle.map(node => node.id) });
   });
 
   api.get("/projects/:id/synced-sessions", async c => {

@@ -157,6 +157,12 @@ export async function projectState(project, sup) {
     };
   };
 
+  // Ended (archived) sessions for the sidebar's Ended list: tree roots only, newest first.
+  const ended = discovered
+    .filter(s => closed.has(s.id) && !closed.has(s.parentSessionId) && (hasPrompt(s) || promptText(s.name)))
+    .sort(byRecency)
+    .slice(0, 20)
+    .map(s => ({ id: s.id, title: titleOf(s), when: rel(s.modified), updatedAt: isoTime(s.modified) }));
   const sessions = roots.sort((a, b) => compareTimestamp(treeActivity(b), treeActivity(a))).map(toNode);
   const updatedAt = all.reduce((latest, session) => newerTimestamp(latest, isoTime(session.modified)), null);
 
@@ -188,6 +194,7 @@ export async function projectState(project, sup) {
     worktrees,
     workspaceStatus,
     sessions,
+    ended,
     updated: updatedAt ? rel(updatedAt) : "—",
     updatedAt,
     hooks: publicHooks(cfg, project),

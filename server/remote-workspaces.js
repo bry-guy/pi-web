@@ -62,6 +62,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     for (const p of projects) {
       owners.project.set(p.id, name);
       walk(p.sessions);
+      walk(p.ended);
     }
   }
 

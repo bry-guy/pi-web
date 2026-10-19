@@ -737,6 +737,10 @@ main.col.settings-open > pi-header { display: none; }
 .app-toasts { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 120; display: grid; gap: var(--space-2); width: min(380px, calc(100vw - 32px)); pointer-events: none; }
 .app-toast { padding: 10px 14px; border-radius: var(--radius-md); background: var(--surface-2); color: var(--text); box-shadow: var(--elevation-2); font-size: var(--text-sm); animation: piPop var(--duration) var(--ease) both; }
 .app-toast.error { color: var(--red); }
+.ended-toggle, .ended-row { color: var(--muted); }
+.row-restore { margin-left: auto; border: 0; background: none; color: var(--accent); font: inherit; font-size: var(--text-xs); cursor: pointer; padding: 0 4px; }
+.app-toast:has(.app-toast-action) { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); pointer-events: auto; }
+.app-toast-action { border: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; padding: 0; }
 .settings-intro { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm); line-height: 1.5; }
 .file-screen-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px 10px 8px; border-bottom: 1px solid var(--code-rule); }
 .file-title-wrap { flex: 1; min-width: 0; }

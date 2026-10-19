@@ -101,8 +101,7 @@ export async function cloneRepository({ source, url, fullName, github, root = re
   const { base, destination } = safeDestination(root, name);
   const lockKey = destination;
   if (cloneLocks.has(lockKey)) throw coded("clone_in_progress");
-  // Carries the checkout so a closed project's kept clone can be re-added.
-  if (fs.existsSync(destination)) throw Object.assign(coded("repository_exists"), { repoPath: destination, source: sourceInfo });
+  if (fs.existsSync(destination)) throw coded("repository_exists");
   cloneLocks.add(lockKey);
   let temporary = null;
   try {

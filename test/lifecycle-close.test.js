@@ -59,11 +59,37 @@ test("closing a parent also archives its child sessions", async () => {
   assert.ok(Array.isArray(childTranscript.records));
 });
 
-test("closing a project ends its sessions and drops it from the list; the checkout stays", async () => {
-  const { mainSessionId, projectId } = fixture;
-  const response = await fixture.remove(`/api/projects/${projectId}`);
-  assert.equal(response.status, 200);
-  assert.equal(fixture.closedSessions().has(mainSessionId), true);
-  assert.equal((await fixture.state()).projects.some(project => project.id === projectId), false);
-  assert.equal(fs.existsSync(path.join(fixture.repo, ".git")), true);
+test("restore undoes an end", async () => {
+  const { mainSessionId } = fixture;
+  await fixture.post(`/api/sessions/${mainSessionId}/close`);
+  const response = await fixture.post(`/api/sessions/${mainSessionId}/restore`);
+  assert.deepEqual(await response.json(), { ok: true, restored: true });
+  assert.equal(fixture.closedSessions().has(mainSessionId), false);
+});
+
+test("ending the last session on a clean, merged worktree offers to delete its branch", async () => {
+  const clean = await fixture.createWorktreeSession("feat/done");
+  const cleanup = (await (await fixture.post(`/api/sessions/${clean.sessionId}/close`)).json()).cleanup;
+  assert.deepEqual(cleanup, { projectId: fixture.projectId, branch: "feat/done", primaryBranch: "main" });
+
+  const dirty = await fixture.createWorktreeSession("feat/wip");
+  fs.writeFileSync(path.join(dirty.workspacePath, "wip.txt"), "wip\n");
+  assert.equal((await (await fixture.post(`/api/sessions/${dirty.sessionId}/close`)).json()).cleanup, null);
+});
+
+test("end idle ends only session trees with no activity for a day", async () => {
+  const old = fixture.mainSessionId;
+  const fresh = await fixture.checkoutSession();
+  const file = path.join(process.env.PI_WEB_HOME, "mock-sessions", `${old}.json`);
+  const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+  // Prompted so it is listed; last touched two days ago.
+  stored.records.push({ role: "user", text: "hi" });
+  stored.modified = new Date(Date.now() - 2 * 86_400_000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(stored));
+
+  const { ended } = await (await fixture.post(`/api/projects/${fixture.projectId}/end-idle`)).json();
+  assert.deepEqual(ended, [old]);
+  assert.equal(fixture.closedSessions().has(fresh), false);
+  const project = (await fixture.state()).projects.find(item => item.id === fixture.projectId);
+  assert.deepEqual(project.ended.map(item => item.id), [old]);
 });

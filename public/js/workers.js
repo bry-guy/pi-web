@@ -47,11 +47,6 @@ export function workerCard(worker, usageAvailable) {
     </div>`;
 }
 
-// Opens the shared close-project dialog for a project or its worker.
-export function confirmCloseProject({ projectId = null, workspace = null, name }) {
-  store.set({ confirm: { type: "closeProject", id: workspace || projectId, projectId, workspace, name, purge: false, error: null } });
-}
-
 // Disruptive actions open a confirmation; the rest act directly and report through `notify(message, kind)`.
 export async function workerAction(action, name, pinned, notify) {
   if (action === "restart-worker" || action === "reset-worker") {
@@ -60,7 +55,7 @@ export async function workerAction(action, name, pinned, notify) {
   }
   if (action === "delete-worker") {
     const project = store.state.projects.find(item => item.workspace === name);
-    confirmCloseProject({ projectId: project?.id || null, workspace: name, name: project?.name || name });
+    store.set({ confirm: { type: "deleteWorker", id: name, name, projectId: project?.id || null, purge: false, error: null } });
     return;
   }
   try {
