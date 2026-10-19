@@ -1071,7 +1071,19 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   root.querySelector("pi-sidebar [data-act='project-row'][data-id='p1']").click();
   assert.ok(store.state.projectMenu, "clicking the project row opens the Project menu");
   assert.equal(store.state.sessionId, "s1", "and does not start a new session");
-  assert.match(root.querySelector("pi-project-menu [data-act='open-past'][data-id='old1']")?.textContent || "", /Old work/);
+  // A past session previews first, like a History entry; Open appears only under the preview.
+  assert.equal(root.querySelector("pi-project-menu [data-act='open-past']"), null, "no Open before a preview");
+  const pastRow = root.querySelector("pi-project-menu [data-act='toggle-preview'][data-key='past:old1']");
+  assert.match(pastRow.textContent, /Old work/);
+  dom.window.__transcriptResponse = { sessionId: "old1", seq: 0, streaming: false, records: [{ id: "u", role: "user", text: "Old question" }, { id: "a", role: "assistant", text: "Old answer" }, { id: "t", role: "tool", tool: "bash" }] };
+  pastRow.click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  delete dom.window.__transcriptResponse;
+  assert.equal(root.querySelector("pi-project-menu [data-key='past:old1']").getAttribute("aria-expanded"), "true");
+  assert.deepEqual([...root.querySelectorAll("pi-project-menu .convo-preview-msg p")].map(node => node.textContent), ["Old question", "Old answer"], "the preview shows the conversation's messages");
+  assert.ok(root.querySelector("pi-project-menu .convo-preview [data-act='open-past'][data-id='old1']"), "Open sits under the preview");
+  root.querySelector("pi-project-menu [data-key='past:old1']").click();
+  assert.equal(root.querySelector("pi-project-menu .convo-preview"), null, "clicking the row again hides it");
   root.querySelector("pi-project-menu [data-act='remove-project']").click();
   assert.equal(store.state.confirm?.type, "removeProject");
   const escape = () => dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));

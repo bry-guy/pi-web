@@ -39,7 +39,7 @@ Each finished turn has one copy button, under its last reply, and your own messa
 
 Untitled chats are named by their first prompt. A chat or project session that was never prompted or named, and is not open, is left out of the sidebar; its file is kept.
 
-The `+` on a project's sidebar row (shown on hover; always on a phone), or `/new` in a project session, opens a new session right away on the project's main checkout, with no dialog. It is not listed in the sidebar until you send its first prompt, so an abandoned new session leaves nothing behind. Main is then fetched and fast-forwarded in the background; that is skipped, and logged in History, when main is dirty, has diverged, another Git operation is running, or a session on main is mid-reply. Use **Switch…** in the session panel to move the session to another branch.
+The `+` on a project's sidebar row (shown on hover; always on a phone), or `/new` in a project session, opens a new session right away on the project's main checkout, with no dialog. It is not listed in the sidebar until you send its first prompt, so an abandoned new session leaves nothing behind. Main is then fetched and fast-forwarded in the background; that is skipped, and logged in History, when main is dirty, has diverged, another Git operation is running, or a session on main is mid-reply. Use **Switch…** in the session panel to move the session to another branch. If the checkout has been moved off main (by hand, or by an agent working there) and another session is using it, it is left where it is: the new session starts on that branch and a notice says so. Nothing switches the checkout in the background.
 
 **Ending** a session or chat (the sidebar's `×`, or **End** in the session panel) stops a running reply, withdraws it from pi-sync on this server (`/sync detach`; the server copy and other devices keep it), and archives it with its forks. Git is not touched. The detach is recorded in the conversation, so it is not shared again even with *sync all conversations* on.
 
@@ -66,8 +66,8 @@ Steps show a `<` that returns to the panel's main screen. `Esc` closes the topmo
 Clicking a project's sidebar row opens the Project menu. The row shows only the name and session count; the worker's state is in the menu's worker card. The menu has:
 
 - **New session** and **End idle sessions** (ends every session tree in the project with no activity for a day and nothing running).
-- **Past sessions**: ended sessions, newest first; **Open** brings one back.
-- **From other devices**: conversations shared for this repository; **Open** adds one as a new session.
+- **Past sessions**: ended sessions, newest first. Tap one to preview its last messages (like a History entry); **Open** under the preview brings it back.
+- **From other devices**: conversations shared for this repository. Tap one to preview it (read from the sync server, without taking it over); **Open** under the preview adds it as a new session.
 - **Worker**, for a project with one: the same facts and actions as **Settings → Workers**.
 - **Remove project…**: for a worker-backed project, deletes its worker (its disk is kept unless *Also delete its disk* is ticked); for a local project, ends its sessions and removes it from the list. The checkout is kept either way, and adding the repository again picks it back up.
 

@@ -193,6 +193,7 @@ export async function newProjectSession(projectId) {
     }
     operation.sessionId = result.id;
     completeOperation(operation, result);
+    if (result.notice) toast(result.notice, "info");
     if (!findNode(project.sessions, result.id)) {
       const now = new Date().toISOString();
       project.sessions.unshift({ id: result.id, title: "New session", draft: true, contextId: result.contextId || null, branch: result.branch || branch, workspacePath: result.workspacePath || null, model: store.state.effectiveDefaultModel, when: "now", updatedAt: now, activityAt: now, streaming: false, children: [] });

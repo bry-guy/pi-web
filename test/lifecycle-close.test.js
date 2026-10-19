@@ -102,3 +102,28 @@ test("removing a project ends its sessions and drops it from the list; the check
   assert.equal((await fixture.state()).projects.some(project => project.id === projectId), false);
   assert.equal(fs.existsSync(path.join(fixture.repo, ".git")), true);
 });
+
+test("a new session never switches a checkout another session is working in", async () => {
+  const holder = await fixture.checkoutSession();
+  const file = path.join(process.env.PI_WEB_HOME, "mock-sessions", `${holder}.json`);
+  const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+  stored.records.push({ role: "user", text: "working on a branch here" });
+  fs.writeFileSync(file, JSON.stringify(stored));
+  fixture.git(fixture.repo, "checkout", "-q", "-b", "feat/by-hand");
+
+  const response = await fixture.post(`/api/projects/${fixture.projectId}/sessions`, { branch: "main", pull: "background" });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.branch, "feat/by-hand", "the new session starts where the checkout is");
+  assert.match(body.notice, /not switched to main/);
+  await new Promise(resolve => setTimeout(resolve, 200)); // let the background update run
+  assert.equal(fixture.git(fixture.repo, "branch", "--show-current").trim(), "feat/by-hand");
+
+  // With nobody working there, a new session brings the checkout back to main as before.
+  await fixture.post(`/api/sessions/${holder}/close`);
+  await fixture.post(`/api/sessions/${body.id}/close`);
+  await fixture.post(`/api/sessions/${fixture.mainSessionId}/close`);
+  const again = await fixture.post(`/api/projects/${fixture.projectId}/sessions`, { branch: "main" });
+  assert.equal((await again.json()).branch, "main");
+  assert.equal(fixture.git(fixture.repo, "branch", "--show-current").trim(), "main");
+});

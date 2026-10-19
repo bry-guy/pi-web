@@ -59,6 +59,7 @@ export const api = {
     return fetch("/api/projects", { method: "POST", headers: JH, body: JSON.stringify(body) }).then(j);
   },
   syncedSessions: (projectId) => fetch(`/api/projects/${projectId}/synced-sessions`).then(j),
+  syncedPreview: (projectId, syncId) => fetch(`/api/projects/${projectId}/synced-sessions/${encodeURIComponent(syncId)}`).then(j),
   newProjectSession: (projectId, options = {}) => fetch(`/api/projects/${projectId}/sessions`, { method: "POST", headers: { ...JH, ...(options?.operationId ? { "x-pi-operation-id": options.operationId } : {}) }, body: JSON.stringify(options || {}) }).then(j),
   forkSession: (id, name = null) => fetch(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", headers: JH, body: JSON.stringify({ name }) }).then(j),
   branchSession: (id, options = {}) => fetch(`/api/sessions/${encodeURIComponent(id)}/branch-context`, { method: "POST", headers: { ...JH, ...(options?.operationId ? { "x-pi-operation-id": options.operationId } : {}) }, body: JSON.stringify(options || {}) }).then(j),

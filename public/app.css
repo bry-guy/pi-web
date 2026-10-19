@@ -1536,3 +1536,13 @@ aside.files { background: var(--rail-bg); box-shadow: inset 1px 0 0 var(--hairli
 }
 .bar-session .bar-main:hover, .bar-session .bar-main:focus-visible { background: var(--hover); outline: 0; }
 .bar-session .bar-sub { cursor: inherit; }
+
+/* Project menu: a past or shared conversation previews inline before it can be opened. */
+.convo-preview { border-top: 1px solid var(--border); background: var(--surface-2); }
+.convo-preview-scroll { display: grid; gap: 8px; max-height: 260px; overflow-y: auto; overscroll-behavior: contain; padding: 10px 11px; }
+.convo-preview-note { color: var(--faint); font: 10.5px var(--mono); }
+.convo-preview-msg { display: grid; gap: 2px; min-width: 0; }
+.convo-preview-msg span { color: var(--faint); font: 600 10px var(--mono); text-transform: uppercase; }
+.convo-preview-msg p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.convo-preview-msg.user p { color: var(--text); }
+.convo-preview-actions { display: flex; justify-content: flex-end; padding: 8px 11px; border-top: 1px solid var(--border); }

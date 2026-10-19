@@ -67,7 +67,7 @@ export function register(api, deps) {
       if (branch === currentBranch) return err(c, 409, "same_branch");
       if (body.mode !== "fork" && sup.isStreaming(id)) return err(c, 409, "session_streaming");
       const existed = !!(await branchContextAsync(project, branch));
-      const context = await ensureBranchContext(project, branch, body.baseBranch || currentBranch || await ws.defaultBranchAsync(project.repoPath), { syncMain: true, report: reporter.log });
+      const context = await ensureBranchContext(project, branch, body.baseBranch || currentBranch || await ws.defaultBranchAsync(project.repoPath), { syncMain: true, report: reporter.log, sup, except: id });
       const latestCwd = await sessionWorkspace(id, sup);
       if (!latestCwd || path.resolve(latestCwd) !== path.resolve(cwd)) {
         const operation = reporter.finish({ status: "error", httpStatus: 409, message: "The session workspace changed while preparing the branch." });
@@ -96,7 +96,7 @@ export function register(api, deps) {
       const operation = reporter.finish({ httpStatus: 200, message: `Switched session ${id} to ${context.branch}.` });
       return c.json({ ok: true, id, branch: context.branch, contextId: context.id, workspacePath: context.path, name: hasName ? name : source?.name || null, setup: null, setupNeeded, operation });
     } catch (e) {
-      const statuses = { bad_branch: 400, no_such_base_branch: 404, checkout_dirty: 409, git_status_unavailable: 409, main_worktree_external: 409, main_fetch_failed: 409, main_not_fast_forwardable: 409, git_switch_failed: 409, session_streaming: 409, same_branch: 409 };
+      const statuses = { checkout_in_use: 409, bad_branch: 400, no_such_base_branch: 404, checkout_dirty: 409, git_status_unavailable: 409, main_worktree_external: 409, main_fetch_failed: 409, main_not_fast_forwardable: 409, git_switch_failed: 409, session_streaming: 409, same_branch: 409 };
       if (statuses[e.code]) {
         const operation = reporter.finish({ status: "error", httpStatus: statuses[e.code], message: e.detail || e.message || e.code });
         return err(c, statuses[e.code], e.code, { ...(e.detail ? { detail: e.detail } : {}), operation });

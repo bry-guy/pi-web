@@ -33,6 +33,19 @@ class PiProjectMenu extends HTMLElement {
       .finally(() => { if (this.menu() === menu) this.render(); });
   }
 
+  /** Loads a conversation preview once: a past session's transcript, or a shared one from the sync server. */
+  loadPreview(menu, key) {
+    const previews = menu.previews ||= {};
+    if (previews[key]) return;
+    previews[key] = { loading: true };
+    const [kind, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+    const request = kind === "past" ? api.transcript(id) : api.syncedPreview(menu.projectId, id);
+    request
+      .then(result => { previews[key] = { records: (result.records || []).filter(record => ["user", "assistant"].includes(record.role) && record.text) }; })
+      .catch(err => { previews[key] = { error: err.message || err.error || "The conversation could not be loaded." }; })
+      .finally(() => { if (this.menu() === menu) this.render(); });
+  }
+
   async run(label, work) {
     const menu = this.menu();
     if (!menu || menu.busy) return;
@@ -55,6 +68,13 @@ class PiProjectMenu extends HTMLElement {
         toast(ended.length ? `Ended ${ended.length} idle session${ended.length === 1 ? "" : "s"}.` : "No idle sessions to end.");
         await refreshState();
       });
+      return;
+    }
+    if (act === "toggle-preview") {
+      const menu = this.menu();
+      menu.preview = menu.preview === t.dataset.key ? null : t.dataset.key;
+      if (menu.preview) this.loadPreview(menu, menu.preview);
+      this.render();
       return;
     }
     if (act === "open-past") {
@@ -89,6 +109,23 @@ class PiProjectMenu extends HTMLElement {
     }
   }
 
+  /** The last few messages of a previewed conversation, then its Open button. */
+  previewBody(preview, openAttrs, busy) {
+    const SHOWN = 12;
+    let content;
+    if (!preview || preview.loading) content = `<div class="convo-preview-note">Loading conversation…</div>`;
+    else if (preview.error) content = `<div class="convo-preview-note">${esc(preview.error)}</div>`;
+    else if (!preview.records.length) content = `<div class="convo-preview-note">No messages.</div>`;
+    else {
+      const hidden = preview.records.length - SHOWN;
+      content = `${hidden > 0 ? `<div class="convo-preview-note">${hidden} earlier message${hidden === 1 ? "" : "s"}</div>` : ""}${preview.records.slice(-SHOWN).map(record => {
+        const text = record.text.length > 600 ? `${record.text.slice(0, 600)}…` : record.text;
+        return `<div class="convo-preview-msg ${record.role}"><span>${record.role === "user" ? "You" : "Pi"}</span><p>${esc(text)}</p></div>`;
+      }).join("")}`;
+    }
+    return `<div class="convo-preview"><div class="convo-preview-scroll">${content}</div><div class="convo-preview-actions"><button class="btn btn-primary" ${openAttrs} ${busy ? "disabled" : ""}>Open</button></div></div>`;
+  }
+
   render() {
     const menu = this.menu();
     const project = menu ? this.project() : null;
@@ -98,7 +135,12 @@ class PiProjectMenu extends HTMLElement {
     const busy = !!menu.busy;
     const primary = project.defaultBranch || project.primaryBranch || "main";
     const row = (title, hint, button) => `<div class="panel-row"><div class="panel-row-text"><strong>${esc(title)}</strong><small>${esc(hint)}</small></div>${button}</div>`;
-    const listRow = (attrs, title, sub, action) => `<button type="button" class="session-history-row" ${attrs}><span class="session-history-main"><strong>${esc(title)}</strong><small>${esc(sub)}</small></span><span class="session-history-resume">${action}</span></button>`;
+    // Like History: a row expands to preview the conversation; Open sits under the preview.
+    const listRow = (key, title, sub, openAttrs) => {
+      const open = menu.preview === key;
+      const preview = open ? this.previewBody(menu.previews?.[key], openAttrs, busy) : "";
+      return `<div class="history-entry"><button type="button" class="history-entry-head" data-act="toggle-preview" data-key="${esc(key)}" aria-expanded="${open}"><span class="history-main"><strong>${esc(title)}</strong><small>${esc(sub)}</small></span><span class="history-status">${open ? "Hide" : "Preview"}</span></button>${preview}</div>`;
+    };
 
     const projectSection = `<section class="session-picker-actions" aria-label="Project">
       <div class="panel-rows">
@@ -108,11 +150,11 @@ class PiProjectMenu extends HTMLElement {
 
     const past = project.ended || [];
     const pastSection = past.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Past sessions</span><span>${past.length}</span></div>
-      <div class="session-history-scroll">${past.map(item => listRow(`data-act="open-past" data-id="${esc(item.id)}"`, item.title, `Ended ${item.when}`, "Open")).join("")}</div></section>` : "";
+      <div class="history-list">${past.map(item => listRow(`past:${item.id}`, item.title, `Ended ${item.when}`, `data-act="open-past" data-id="${esc(item.id)}"`)).join("")}</div></section>` : "";
 
     const synced = menu.synced || [];
     const syncedSection = synced.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>From other devices</span><span>${synced.length}</span></div>
-      <div class="session-history-scroll">${synced.map(item => listRow(`data-act="open-synced" data-sync-id="${esc(item.sessionId)}" data-branch="${esc(item.branch || "")}"`, item.title || "Untitled conversation", `${item.branch || primary}${item.leaseHolder ? ` · running on ${item.leaseHolder}` : ""}`, "Open")).join("")}</div></section>` : "";
+      <div class="history-list">${synced.map(item => listRow(`synced:${item.sessionId}`, item.title || "Untitled conversation", `${item.branch || primary}${item.leaseHolder ? ` · running on ${item.leaseHolder}` : ""}`, `data-act="open-synced" data-sync-id="${esc(item.sessionId)}" data-branch="${esc(item.branch || "")}"`)).join("")}</div></section>` : "";
 
     const worker = project.workspace && (store.state.workers?.workspaces || []).find(item => item.name === project.workspace);
     const workerSection = !project.workspace ? "" : `<section><div class="session-context-heading"><span>Worker</span></div>${worker
