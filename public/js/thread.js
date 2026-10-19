@@ -1158,8 +1158,12 @@ class PiComposer extends HTMLElement {
     const fixedHeight = Math.max(52, composerHeight > editorHeight ? composerHeight - editorHeight : 52);
     const minChatHeight = Math.ceil(this.lineHeight() * 2 + 24);
     const available = this.viewportHeight() - headerHeight - minChatHeight - fixedHeight;
-    const doubled = collapsed * 2.35;
-    return Math.max(collapsed, Math.min(doubled, available > 0 ? available : collapsed));
+    return Math.max(collapsed, available);
+  }
+
+  /** Typing grows the editor up to 40% of the visible viewport (above the keyboard on phones), then it scrolls. */
+  autoEditorHeight(collapsed, maxHeight) {
+    return Math.max(collapsed, Math.min(maxHeight, this.viewportHeight() * 0.4));
   }
 
   resizeEditor() {
@@ -1167,15 +1171,22 @@ class PiComposer extends HTMLElement {
     const collapsed = this.collapsedEditorHeight();
     const lineHeight = this.lineHeight();
     const composer = this.querySelector(".composer");
+    const scroller = this.closest("pi-app")?.querySelector(".scrollable");
+    const pinned = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+    const before = this.ta.style.height;
     this.ta.style.height = "auto";
     const contentHeight = Math.max(this.ta.scrollHeight || 0, collapsed);
-    const overflowing = contentHeight > collapsed + Math.max(4, lineHeight * 0.35);
-    if (!overflowing) this.expanded = false;
     const maxHeight = this.maxEditorHeight(collapsed);
-    const height = this.expanded ? Math.min(contentHeight, maxHeight) : collapsed;
+    const autoHeight = this.autoEditorHeight(collapsed, maxHeight);
+    // Only phones get the full-height editor; on desktop the auto-grown box is enough.
+    const overflowing = mobile() && contentHeight > autoHeight + Math.max(4, lineHeight * 0.35);
+    if (!overflowing) this.expanded = false;
+    const height = this.expanded ? maxHeight : Math.min(contentHeight, autoHeight);
     this.ta.style.height = `${Math.ceil(height)}px`;
     this.ta.style.maxHeight = `${Math.ceil(maxHeight)}px`;
     this.ta.style.overflowY = contentHeight > height ? "auto" : "hidden";
+    // A taller editor shrinks the transcript; keep the latest reply in view if it was.
+    if (pinned && this.ta.style.height !== before) scroller.scrollTop = scroller.scrollHeight;
     composer?.classList.toggle("expanded", this.expanded);
     this.expandBtn.classList.toggle("hidden", !overflowing && !this.expanded);
     this.expandBtn.textContent = this.expanded ? "↓" : "↑";
