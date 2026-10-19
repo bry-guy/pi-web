@@ -1,7 +1,7 @@
 import { api, openTranscript, refreshState } from "./api.js";
 import { renderMarkdown } from "./markdown.js";
 import { setHTML, store } from "./store.js";
-import { closeConversation, esc, icon, mobile, newChat, newProjectSession, selectChat, selectSession } from "./shell.js";
+import { closeConversation, esc, isDraft, icon, mobile, newChat, newProjectSession, selectChat, selectSession } from "./shell.js";
 
 let pendingMessageSequence = 0;
 const copyButton = (side, replies = 1) => {
@@ -1402,7 +1402,7 @@ class PiComposer extends HTMLElement {
         await api.message(id, text, mode, images, pendingId);
         // The first prompt is what makes a new session real: show it in the sidebar now.
         const node = store.state.projects.map(p => store.findSession(id, p.sessions)).find(Boolean);
-        if (node?.draft) { node.draft = false; store.notify("state"); }
+        if (node && isDraft(node)) { node.draft = false; store.notify("state"); }
       }
       if (store.draftData(id)?.revision === sentRevision) store.clearDraft(id);
     } catch (err) {

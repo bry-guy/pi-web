@@ -167,6 +167,13 @@ export async function newChat() {
 
 // A new project session opens at once on the main checkout; the server updates main in the background.
 const creatingSession = new Set();
+// A session with nothing sent yet. The server marks it `draft`; a backend that predates
+// that flag (preview runs this UI against production) still titles it "New session" with no name.
+export function isDraft(node) {
+  if (typeof node.draft === "boolean") return node.draft;
+  return !node.name && node.title === "New session" && !node.streaming;
+}
+
 export async function newProjectSession(projectId) {
   const project = store.state.projects.find(p => p.id === projectId);
   if (!project || creatingSession.has(projectId)) return;
@@ -342,12 +349,12 @@ class PiSidebar extends HTMLElement {
     } else if (act === "chat-row") selectChat(t.dataset.id);
   }
 
-  count(nodes) { return nodes.reduce((n, x) => n + (x.draft ? 0 : 1) + this.count(x.children), 0); }
+  count(nodes) { return nodes.reduce((n, x) => n + (isDraft(x) ? 0 : 1) + this.count(x.children), 0); }
 
   sessionRows(p, nodes, depth, q, out, forceAll = false) {
     for (const n of nodes) {
       // A session with nothing sent yet is not listed; it appears with its first prompt.
-      if (n.draft) continue;
+      if (isDraft(n)) continue;
       const direct = !q || fuzzyMatch(n.title, q);
       const descendant = q && (n.children || []).some(child => nodeMatches(child, q));
       if (q && !forceAll && !direct && !descendant) continue;

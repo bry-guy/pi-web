@@ -27,7 +27,7 @@ const state = {
     ],
     workspaceStatus: { main: { id: "ctx-main", branch: "main", path: "/tmp/demo", kind: "checkout", dirty: false, status: "clean", ahead: 0, behind: 0, sessions: [], externalMain: false, protected: false } }, hooks: { check: true }, updated: "now",
     sessions: [
-      { id: "s1", title: "New session", contextId: "ctx-main", branch: "main", workspacePath: "/tmp/demo", model: "mock/fast", when: "now", streaming: false, children: [] },
+      { id: "s1", title: "New session", draft: false, contextId: "ctx-main", branch: "main", workspacePath: "/tmp/demo", model: "mock/fast", when: "now", streaming: false, children: [] },
       { id: "sibling", title: "Sibling session", contextId: "ctx-main", branch: "main", workspacePath: "/tmp/demo", model: "mock/fast", when: "now", streaming: false, children: [] },
     ],
   }],
@@ -595,6 +595,13 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(dom.window.__newSessionBody.pull, "background", "main is updated after the session opens");
   assert.equal(store.state.sessionId, "s2");
   assert.equal(root.querySelector("pi-sidebar [data-id='s2']"), null, "a new session is not listed until its first prompt");
+  // A backend without the draft flag (preview UI on production data) still hides it.
+  const s2 = store.findSession("s2", store.state.projects[0].sessions);
+  const titled = s2.title;
+  delete s2.draft; s2.title = "New session"; s2.name = null;
+  store.notify("state");
+  assert.equal(root.querySelector("pi-sidebar [data-id='s2']"), null, "an unnamed 'New session' without a draft flag is hidden");
+  s2.draft = true; s2.title = titled;
   assert.equal(dom.window.__setupStarted, true, "setup starts after the returned session is selected");
   assert.equal(dom.window.__setupCalls, 1, "automatic setup uses the existing hook endpoint");
   assert.equal(root.querySelector(".send-btn").disabled, false, "composer remains usable during setup");
