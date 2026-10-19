@@ -213,4 +213,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const lifecycle = createLifecycle({ provider, idleMs: idleMinutes * 60_000, maxAwake });
   serve({ fetch: createWorkspaced({ provider, grants, lifecycle, token: process.env.WORKSPACED_TOKEN, auth: process.env.WORKSPACED_AUTH }).fetch, port, hostname: process.env.WORKSPACED_HOST || "0.0.0.0" });
   console.log(`workspaced (${process.env.WORKSPACED_PROVIDER || "local"}) → :${port}`);
+  // Existing workers keep the manifest they were created with; re-apply the current one (Kubernetes
+  // only rolls a worker whose template actually changed, e.g. new env).
+  if (provider.setGrant) for (const w of await provider.list().catch(() => [])) {
+    const grant = grants[w.grant];
+    if (grant) await provider.setGrant(w.name, grant).catch(e => console.warn(`workspaced: could not refresh ${w.name}: ${e.message}`));
+  }
 }

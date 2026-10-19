@@ -241,7 +241,7 @@ class PiSettings extends HTMLElement {
     const patch = { sync: {} };
     if (syncSettings.serverUrl?.editable !== false) patch.sync.serverUrl = this.querySelector("[data-setting='syncServerUrl']")?.value.trim() || null;
     const choice = name => { const v = this.querySelector(`[data-setting='${name}']`)?.value; return v ? v : null; };
-    if (syncSettings.allConversations?.editable !== false) { const v = choice("syncAllConversations"); patch.sync.allConversations = v === null ? null : v === "on"; }
+    if (syncSettings.allConversations?.editable !== false) { const v = choice("syncAllConversations"); patch.sync.allConversations = v; }
     patch.sync.code = choice("syncCode");
     const snapshot = this.snapshotDrafts(Object.keys(patch.sync).map(key => ({ serverUrl: "syncServerUrl", allConversations: "syncAllConversations", code: "syncCode" })[key]));
     try {

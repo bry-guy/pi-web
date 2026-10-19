@@ -109,8 +109,8 @@ export function normalizeSyncConfig(value, { strict = false } = {}) {
   if (value.serverUrl !== undefined && value.serverUrl !== null && typeof value.serverUrl !== "string") {
     return invalid("Sync server URL must be a string or null.");
   }
-  if (value.allConversations != null && typeof value.allConversations !== "boolean") {
-    return invalid("Sync allConversations must be a boolean or null.");
+  if (value.allConversations != null && !["boolean", "string"].includes(typeof value.allConversations)) {
+    return invalid("Sync allConversations must be on, off, or null.");
   }
   if (value.code != null && !["ask", "auto", "off"].includes(value.code)) {
     return invalid("Sync code must be ask, auto, off, or null.");
@@ -127,7 +127,8 @@ export function normalizeSyncConfig(value, { strict = false } = {}) {
   }
   return {
     serverUrl: serverUrl || null,
-    allConversations: typeof value.allConversations === "boolean" ? value.allConversations : null,
+    // Stored as "on"/"off". A stored boolean false is the old default every save wrote, not a choice.
+    allConversations: value.allConversations === "on" || value.allConversations === true ? "on" : value.allConversations === "off" ? "off" : null,
     code: value.code ?? null,
   };
 }
@@ -163,7 +164,7 @@ export function syncConfig(cfg = loadConfig()) {
     : null;
   return {
     serverUrl,
-    allConversations: envBoolean("PI_WEB_SYNC_ALL_CONVERSATIONS", configured.allConversations),
+    allConversations: envBoolean("PI_WEB_SYNC_ALL_CONVERSATIONS", configured.allConversations === null ? null : configured.allConversations === "on"),
     code: configured.code,
   };
 }
@@ -192,7 +193,7 @@ export function syncSettingsState(cfg = loadConfig()) {
     },
     allConversations: {
       value: effective.allConversations,
-      source: syncEnvironmentOverrides().allConversations ? "PI_WEB_SYNC_ALL_CONVERSATIONS" : typeof cfg.sync?.allConversations === "boolean" ? "config" : "default",
+      source: syncEnvironmentOverrides().allConversations ? "PI_WEB_SYNC_ALL_CONVERSATIONS" : normalizeSyncConfig(cfg.sync).allConversations !== null ? "config" : "default",
       editable: !syncEnvironmentOverrides().allConversations,
     },
     code: { value: effective.code, source: cfg.sync?.code ? "config" : "default", editable: true },
