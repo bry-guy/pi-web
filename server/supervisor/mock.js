@@ -330,8 +330,9 @@ export class MockSupervisor {
         if (!st.streaming || st.msgId !== msgId) return;
         i += 3;
         const chunk = full.slice(0, i);
+        // The file can be gone before a timer fires (a test removed its home); then the turn just stops.
         const cur = this._load(id);
-        const rec = cur.records.find(r => r.id === msgId);
+        const rec = cur?.records.find(r => r.id === msgId);
         if (!rec) return;
         const delta = chunk.slice(rec.text.length);
         rec.text = chunk;
@@ -351,7 +352,7 @@ export class MockSupervisor {
       if (!st.streaming || st.msgId !== msgId) return;
       const piece = thought.slice(i, i + 4);
       const cur = this._load(id);
-      const rec = cur.records.find(r => r.id === msgId);
+      const rec = cur?.records.find(r => r.id === msgId);
       if (!rec) return;
       rec.thinking = (rec.thinking || "") + piece;
       this._save(cur);
@@ -465,7 +466,7 @@ export class MockSupervisor {
   _finishTool(id, toolId, { withDiff, summary, done }) {
     const toolOut = "src/commands/sessions.ts:42  export async function sessionsList(\nsrc/cli.ts:130  .command(\"sessions list\")";
     const s = this._load(id);
-    const toolRec = s.records.find(r => r.id === toolId);
+    const toolRec = s?.records.find(r => r.id === toolId);
     if (!toolRec) return;
     Object.assign(toolRec, { meta: "3 matches · 0.2s", out: toolOut });
     delete toolRec.running;
@@ -505,7 +506,7 @@ export class MockSupervisor {
     st.timers = [];
     if (suffix) {
       const s = this._load(id);
-      const rec = s.records.find(r => r.id === st.msgId);
+      const rec = s?.records.find(r => r.id === st.msgId);
       if (rec) { rec.text += suffix; delete rec.streaming; this._save(s); }
     } else {
       const s = this._load(id);
