@@ -1,11 +1,18 @@
 import { DEFAULT_GRANT } from "./grants.js";
-import { deploymentManifest, GITHUB_SECRET, GRANT_ANNOTATION, MODEL_SECRET, pvcManifest, quantity, serviceManifest, MANAGED_BY, NAME_LABEL, PIN_ANNOTATION, REPO_ANNOTATION, WORKSPACE_PORT } from "./manifests.js";
+import { deploymentManifest, GITHUB_SECRET, GRANT_ANNOTATION, MODEL_SECRET, pvcManifest, quantity, serviceManifest, MANAGED_BY, NAME_LABEL, PIN_ANNOTATION, REPO_ANNOTATION, SCORE_ANNOTATION, WORKSPACE_PORT } from "./manifests.js";
+import { scoreFromRecord } from "./score.js";
 
 const MERGE_PATCH = "application/merge-patch+json";
 const USAGE_TTL_MS = 5_000;
 const USAGE_TIMEOUT_MS = 2_000;
 // Merges containers by name instead of replacing the list.
 const STRATEGIC_PATCH = "application/strategic-merge-patch+json";
+
+// The score declaration a Deployment was built from (its record annotation), re-planned; null if none.
+export function declaredOf(d) {
+  const record = d?.metadata?.annotations?.[SCORE_ANNOTATION];
+  return record ? scoreFromRecord(record) : null;
+}
 
 export function deploymentState(d) {
   if ((d.spec?.replicas ?? 1) === 0) return "sleeping";
@@ -131,6 +138,18 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
     if (res.status >= 300) throw httpError(`kubernetes ${res.status}`, 502, "kubernetes_error");
   }
 
+  // Rebuilds the pod template for a grant and score declaration. A merge patch keeps keys it doesn't
+  // name, so initContainers is nulled out explicitly when there are no sidecars.
+  async function retemplate(name, deployment, grant, score) {
+    const repository = deployment.metadata.annotations?.[REPO_ANNOTATION];
+    const fresh = deploymentManifest({ name, repository, image: deployment.spec.template.spec.containers[0].image, grant,
+      runtimeClassName: deployment.spec.template.spec.runtimeClassName || null, envConfigMap: config.envConfigMap, imagePullSecret: config.imagePullSecret, resources: config.resources, score });
+    const template = fresh.spec.template;
+    template.spec.initContainers ??= null;
+    // Merge patch replaces arrays (containers, envFrom) wholesale and keeps replicas.
+    await patch(name, { metadata: { annotations: { [GRANT_ANNOTATION]: grant.name, [SCORE_ANNOTATION]: score?.record ?? null } }, spec: { template } });
+  }
+
   // metrics-server's pod metrics for the workers; null when the API is missing or forbidden.
   async function readUsage() {
     const out = {};
@@ -194,6 +213,9 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
           const name = d.metadata.labels?.[NAME_LABEL];
           located.set(name, ns);
           const problem = deploymentState(d) === "sleeping" ? null : podProblem(pods.get(name));
+          const declared = declaredOf(d);
+          const sidecars = pods.get(name)?.status?.initContainerStatuses || [];
+          const awake = deploymentState(d) !== "sleeping";
           out.push({
             problem,
             name,
@@ -205,6 +227,10 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
             containers: !!d.spec?.template?.spec?.runtimeClassName,
             resources: d.spec?.template?.spec?.containers?.[0]?.resources ?? null,
             outdated: d.spec?.template?.spec?.containers?.[0]?.image !== config.image,
+            score: declared && {
+              record: declared.record,
+              resources: declared.resources.map(r => ({ ...r, ready: awake && !!sidecars.find(s => s.name === `res-${r.id}`)?.ready })),
+            },
           });
         }
       }
@@ -215,7 +241,7 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
     upgrade: name => patch(name, { spec: { template: { spec: { containers: [{ name: "workspace", image: config.image, resources: config.resources }] } } } }, STRATEGIC_PATCH),
     // The annotation is the record; workspaced keeps no database.
     setPinned: (name, pinned) => patch(name, { metadata: { annotations: { [PIN_ANNOTATION]: pinned ? "true" : null } } }),
-    async create({ name, repository, grant, runtimeClassName = null }) {
+    async create({ name, repository, grant, runtimeClassName = null, score = null }) {
       const existing = await locate(name);
       if (existing && existing.deployment.metadata?.annotations?.[REPO_ANNOTATION] !== repository) {
         throw httpError("workspace name taken", 409, "workspace_name_taken");
@@ -225,7 +251,7 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
       await create(core("persistentvolumeclaims", ns), pvcManifest({ name, repository, storage: config.storage, storageClassName: config.storageClassName }));
       await create(core("services", ns), serviceManifest({ name, repository }));
       await create(apps(ns), deploymentManifest({ name, repository, image: config.image, grant, runtimeClassName,
-        envConfigMap: config.envConfigMap, imagePullSecret: config.imagePullSecret, resources: config.resources }));
+        envConfigMap: config.envConfigMap, imagePullSecret: config.imagePullSecret, resources: config.resources, score }));
       located.set(name, ns);
     },
     // Re-grant in place. The PVC can't move namespaces, so a grant with another
@@ -233,11 +259,12 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
     async setGrant(name, grant) {
       const { ns, deployment } = await mustLocate(name);
       if (ns !== nsOf(grant)) throw httpError("that grant runs in another namespace; remove the project and add it again with it", 409, "grant_namespace_mismatch");
-      const repository = deployment.metadata.annotations?.[REPO_ANNOTATION];
-      const fresh = deploymentManifest({ name, repository, image: deployment.spec.template.spec.containers[0].image, grant,
-        runtimeClassName: deployment.spec.template.spec.runtimeClassName || null, envConfigMap: config.envConfigMap, imagePullSecret: config.imagePullSecret, resources: config.resources });
-      // Merge patch replaces arrays (containers, envFrom) wholesale and keeps replicas.
-      await patch(name, { metadata: { annotations: { [GRANT_ANNOTATION]: grant.name } }, spec: { template: fresh.spec.template } });
+      await retemplate(name, deployment, grant, declaredOf(deployment));
+    },
+    // Score resources (sidecars and their env) take effect when the pod next starts.
+    async setScore(name, grant, declared) {
+      const { deployment } = await mustLocate(name);
+      await retemplate(name, deployment, grant, declared);
     },
     async remove(name, { purge = false } = {}) {
       const ns = (await locate(name))?.ns || home;
