@@ -61,18 +61,6 @@ const clip = (text, max = 60) => {
   const value = String(text || "").replace(/\s+/g, " ").trim();
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 };
-function toolActivity(record) {
-  const arg = String(record.arg || "");
-  const file = arg.split("/").pop() || arg;
-  switch (String(record.tool || "").toLowerCase()) {
-    case "read": return `Reading ${clip(file) || "files"}…`;
-    case "edit": case "write": case "multiedit": return `Editing ${clip(file) || "files"}…`;
-    case "bash": return `Running ${clip(arg) || "a command"}…`;
-    case "grep": case "find": return `Searching ${clip(arg) || "files"}…`;
-    case "ls": return `Listing ${clip(arg) || "files"}…`;
-    default: return `Running ${clip(record.tool) || "a tool"}…`;
-  }
-}
 const workedFor = ms => {
   const seconds = Math.round(ms / 1000);
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
@@ -344,7 +332,7 @@ class PiThread extends HTMLElement {
       this.pendingScroll = this.chatKey === activeKey ? this.chatScrollTop : undefined;
     }
     const visibleRecords = this.visibleRecords(t.records);
-    const busy = t.streaming ? this.renderBusy(t.records, activeKey) : "";
+    const busy = t.streaming ? this.renderBusy(activeKey) : "";
     const activity = this.renderActivity(t.records);
     const notice = this.renderCommandNotice();
     const restore = this.scrollOnNextRender && visibleRecords.length ? savedScroll(activeKey) : anchor;
@@ -389,11 +377,9 @@ class PiThread extends HTMLElement {
     this.scrollOnNextRender = false;
   }
 
-  /** The live line while a turn runs: the extension's message, else the current tool, else "Thinking…". */
-  renderBusy(records, sessionId) {
-    const working = store.state.workingMessages?.[sessionId];
-    const running = [...records].reverse().find(record => record.role === "tool" && record.running);
-    const text = working || (running ? toolActivity(running) : "Thinking…");
+  /** The live line while a turn runs: pi-summarize's working message, else pi's default "Working…". */
+  renderBusy(sessionId) {
+    const text = store.state.workingMessages?.[sessionId] || "Working…";
     startSpinners();
     return `<div class="msg busy-row" role="status" aria-live="polite"><span class="busy-dots" data-busy-dots aria-hidden="true">${dotGrid(spinnerFrame)}</span><span class="busy-text">${esc(text)}</span></div>`;
   }
