@@ -210,3 +210,21 @@ test("kubernetes list reports each declared resource and whether its sidecar is 
   const [w] = await kubernetesProvider({ kube, config: kubernetesConfig({}) }).list();
   assert.deepEqual(w.score, { record, resources: [{ id: "db", type: "postgres", ready: true }] });
 });
+
+test("with score sidecars and a grant ServiceAccount, the token is on the workspace container only", () => {
+  const grant = { name: "ops", env: [], serviceAccount: "ws-fin" };
+  const d = deploymentManifest({ name: "fin", repository: "bry-guy/fin", image: "img:1", grant, score: scoreFromFile(POSTGRES) });
+  const pod = d.spec.template.spec;
+  assert.equal(pod.automountServiceAccountToken, false);
+  assert.equal(pod.serviceAccountName, "ws-fin");
+  const mount = "/var/run/secrets/kubernetes.io/serviceaccount";
+  const sidecar = pod.initContainers.find(c => c.name === "res-db");
+  assert.equal(sidecar.volumeMounts.some(m => m.mountPath.startsWith("/var/run/secrets")), false, "sidecar has no SA mount");
+  assert.deepEqual(pod.containers[0].volumeMounts.find(m => m.mountPath === mount), { name: "sa-token", mountPath: mount, readOnly: true });
+  const vol = pod.volumes.find(v => v.name === "sa-token");
+  assert.deepEqual(vol.projected.sources.map(s => Object.keys(s)[0]), ["serviceAccountToken", "configMap", "downwardAPI"]);
+  // Without score the pod-wide automount is unchanged.
+  const plain = deploymentManifest({ name: "fin", repository: "bry-guy/fin", image: "img:1", grant }).spec.template.spec;
+  assert.equal(plain.automountServiceAccountToken, true);
+  assert.equal(plain.volumes.some(v => v.name === "sa-token"), false);
+});

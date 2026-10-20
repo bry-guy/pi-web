@@ -11,6 +11,7 @@ const GITHUB_DIR = "/run/secrets/pi-ez-github";
 export const MODEL_SECRET = "pi-ez-model-auth";
 const MODEL_DIR = "/run/secrets/pi-ez-model";
 const DATA = "/data";
+const SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
 const HOME = `${DATA}/pi-ez-operator-home`;
 const NAME_RE = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/;
 
@@ -60,6 +61,9 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
   if (!validName(name)) throw new Error("invalid workspace name");
   runtimeClassName = grant.runtimeClass || runtimeClassName;
   const serviceAccountName = grant.serviceAccount || null;
+  // With score sidecars, the pod-wide automount would also reach the database, so the token moves to a
+  // projected volume on the workspace container only (the same files the automount would provide).
+  const scopedToken = !!(score && serviceAccountName);
   const env = [
     ["PORT", String(WORKSPACE_PORT)], ["PI_WEB_MODE", "real"],
     // Shared conversations name the machine that last wrote them; a worker is "web-<project>" in that list.
@@ -88,7 +92,8 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
     // liveness then restarts a worker that stops answering for a minute.
     startupProbe: { httpGet: { path: "/api/health", port: WORKSPACE_PORT }, periodSeconds: 1, failureThreshold: 300 },
     livenessProbe: { httpGet: { path: "/api/health", port: WORKSPACE_PORT }, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 6 },
-    volumeMounts: [{ name: "data", mountPath: DATA }, { name: "github", mountPath: GITHUB_DIR, readOnly: true }, { name: "model", mountPath: MODEL_DIR, readOnly: true }],
+    volumeMounts: [{ name: "data", mountPath: DATA }, { name: "github", mountPath: GITHUB_DIR, readOnly: true }, { name: "model", mountPath: MODEL_DIR, readOnly: true },
+      ...(scopedToken ? [{ name: "sa-token", mountPath: SA_DIR, readOnly: true }] : [])],
   }];
   if (runtimeClassName) {
     // Privileged is confined to the sandbox VM; never emit it without a runtime class.
@@ -121,7 +126,7 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
         spec: {
           // Workers have no business discovering each other via injected *_SERVICE_HOST env.
           enableServiceLinks: false,
-          ...(serviceAccountName ? { serviceAccountName, automountServiceAccountToken: true } : { automountServiceAccountToken: false }),
+          ...(serviceAccountName ? { serviceAccountName, automountServiceAccountToken: !scopedToken } : { automountServiceAccountToken: false }),
           ...(runtimeClassName ? { runtimeClassName } : {}),
           ...(imagePullSecret ? { imagePullSecrets: [{ name: imagePullSecret }] } : {}),
           securityContext: { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 },
@@ -132,6 +137,11 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
             // Optional so workspaces start before the first web login; kubelet refreshes it after.
             { name: "github", secret: { secretName: GITHUB_SECRET, optional: true, defaultMode: 0o440 } },
             { name: "model", secret: { secretName: MODEL_SECRET, optional: true, defaultMode: 0o440 } },
+            ...(scopedToken ? [{ name: "sa-token", projected: { sources: [
+              { serviceAccountToken: { path: "token", expirationSeconds: 3607 } },
+              { configMap: { name: "kube-root-ca.crt", items: [{ key: "ca.crt", path: "ca.crt" }] } },
+              { downwardAPI: { items: [{ path: "namespace", fieldRef: { apiVersion: "v1", fieldPath: "metadata.namespace" } }] } },
+            ] } }] : []),
           ],
         },
       },
