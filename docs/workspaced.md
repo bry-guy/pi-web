@@ -32,6 +32,10 @@ workspaced's own ServiceAccount needs, in each worker namespace: create/get/list
 
 For live CPU and memory in the sidebar, grant one more read: `get` and `list` on `pods` in apiGroup `metrics.k8s.io`, in each worker namespace (a namespaced Role and RoleBinding). Without it, or without metrics-server, usage shows as unavailable and nothing else changes. This repository ships no RBAC manifests; add the rule to your deployment's Role.
 
+## Service dependencies
+
+With `WORKSPACED_PROVIDER=kubernetes`, a repository's root `score.yaml` can declare resources (today: `postgres`). Each runs as a native sidecar in the worker's pod with its data on the worker's volume, and its connection settings reach the worker's environment. Users: [dependencies](dependencies.md). Design: [score-resources](score-resources.md).
+
 ## Grants
 
 A grant says what a project's worker may hold. The deployer defines grants; a user picks one when adding a repository, and the sidebar shows it read-only. A repository-locked grant refuses other repositories, also when a worker wakes.

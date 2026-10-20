@@ -84,6 +84,6 @@ Back up the volumes first. [Deployment](docs/deployment.md) has backup, restore 
 
 ## Docs
 
-[web](docs/web.md) · [workspaced](docs/workspaced.md) · [worker](docs/worker.md) · [Configuration](docs/configuration.md) · [Deployment](docs/deployment.md) · [Implementation](docs/implementation.md) · [Roadmap](docs/roadmap.md)
+[web](docs/web.md) · [workspaced](docs/workspaced.md) · [worker](docs/worker.md) · [Configuration](docs/configuration.md) · [Dependencies](docs/dependencies.md) · [Deployment](docs/deployment.md) · [Implementation](docs/implementation.md) · [Roadmap](docs/roadmap.md)
 
 Development: `npm test`; `PORT=3141 npm run dev` starts a mock server with no model access, and `npm run browser -- --device="iPhone 13" http://localhost:3141` opens it in a mobile browser.
