@@ -294,9 +294,11 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     if (!res.ok) throw Object.assign(new Error("could not share model logins"), { code: "workspaced_unavailable" });
     publishedModelAuth = content;
   }
-  const modelAuthTimer = modelAuthSyncMs ? setInterval(() => pushModelAuth().catch(() => {}), modelAuthSyncMs) : null;
+  // workspaced keeps the GitHub login in memory only (to read score.yaml), so re-share it after a gateway restart.
+  const syncAuth = () => { pushModelAuth().catch(() => {}); pushGitHubAuth().catch(() => {}); };
+  const modelAuthTimer = modelAuthSyncMs ? setInterval(syncAuth, modelAuthSyncMs) : null;
   modelAuthTimer?.unref?.();
-  if (modelAuthTimer) pushModelAuth().catch(() => {});
+  if (modelAuthTimer) syncAuth();
 
   // Adding a repository creates its workspace, then the worker connects it.
   async function createProject(c, body) {
