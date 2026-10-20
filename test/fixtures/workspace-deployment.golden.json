@@ -1,0 +1,401 @@
+{
+  "plain": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "name": "ws-srvivor",
+      "labels": {
+        "app.kubernetes.io/managed-by": "pi-ez-workspaced",
+        "pi-ez.dev/workspace": "srvivor"
+      },
+      "annotations": {
+        "pi-ez.dev/repository": "bry-guy/srvivor",
+        "pi-ez.dev/grant": "default"
+      }
+    },
+    "spec": {
+      "replicas": 1,
+      "strategy": {
+        "type": "Recreate"
+      },
+      "selector": {
+        "matchLabels": {
+          "pi-ez.dev/workspace": "srvivor"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "pi-ez-workspaced",
+            "pi-ez.dev/workspace": "srvivor"
+          }
+        },
+        "spec": {
+          "enableServiceLinks": false,
+          "automountServiceAccountToken": false,
+          "securityContext": {
+            "runAsUser": 1000,
+            "runAsGroup": 1000,
+            "fsGroup": 1000
+          },
+          "containers": [
+            {
+              "name": "workspace",
+              "image": "img:1",
+              "env": [
+                {
+                  "name": "PORT",
+                  "value": "3141"
+                },
+                {
+                  "name": "PI_WEB_MODE",
+                  "value": "real"
+                },
+                {
+                  "name": "PI_SYNC_DEVICE_LABEL",
+                  "value": "web-srvivor"
+                },
+                {
+                  "name": "HOME",
+                  "value": "/data/pi-ez-operator-home"
+                },
+                {
+                  "name": "XDG_CONFIG_HOME",
+                  "value": "/data/pi-ez-operator-home/.config"
+                },
+                {
+                  "name": "XDG_DATA_HOME",
+                  "value": "/data/pi-ez-operator-home/.local/share"
+                },
+                {
+                  "name": "XDG_CACHE_HOME",
+                  "value": "/data/pi-ez-operator-home/.cache"
+                },
+                {
+                  "name": "PI_WEB_HOME",
+                  "value": "/data/pi-ez-web"
+                },
+                {
+                  "name": "PI_CODING_AGENT_DIR",
+                  "value": "/data/pi-ez-agent"
+                },
+                {
+                  "name": "PI_WEB_REPOS_ROOT",
+                  "value": "/data/repos"
+                },
+                {
+                  "name": "PI_WEB_GITHUB_AUTH_FILE",
+                  "value": "/run/secrets/pi-ez-github/github-auth.json"
+                },
+                {
+                  "name": "PI_WEB_MODEL_AUTH_FILE",
+                  "value": "/run/secrets/pi-ez-model/auth.json"
+                }
+              ],
+              "resources": {},
+              "ports": [
+                {
+                  "name": "http",
+                  "containerPort": 3141
+                }
+              ],
+              "readinessProbe": {
+                "httpGet": {
+                  "path": "/api/health",
+                  "port": 3141
+                },
+                "periodSeconds": 1
+              },
+              "startupProbe": {
+                "httpGet": {
+                  "path": "/api/health",
+                  "port": 3141
+                },
+                "periodSeconds": 1,
+                "failureThreshold": 300
+              },
+              "livenessProbe": {
+                "httpGet": {
+                  "path": "/api/health",
+                  "port": 3141
+                },
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 6
+              },
+              "volumeMounts": [
+                {
+                  "name": "data",
+                  "mountPath": "/data"
+                },
+                {
+                  "name": "github",
+                  "mountPath": "/run/secrets/pi-ez-github",
+                  "readOnly": true
+                },
+                {
+                  "name": "model",
+                  "mountPath": "/run/secrets/pi-ez-model",
+                  "readOnly": true
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "data",
+              "persistentVolumeClaim": {
+                "claimName": "ws-srvivor"
+              }
+            },
+            {
+              "name": "github",
+              "secret": {
+                "secretName": "pi-ez-github-auth",
+                "optional": true,
+                "defaultMode": 288
+              }
+            },
+            {
+              "name": "model",
+              "secret": {
+                "secretName": "pi-ez-model-auth",
+                "optional": true,
+                "defaultMode": 288
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "sandboxed": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "name": "ws-srvivor",
+      "labels": {
+        "app.kubernetes.io/managed-by": "pi-ez-workspaced",
+        "pi-ez.dev/workspace": "srvivor"
+      },
+      "annotations": {
+        "pi-ez.dev/repository": "bry-guy/srvivor",
+        "pi-ez.dev/grant": "operator"
+      }
+    },
+    "spec": {
+      "replicas": 1,
+      "strategy": {
+        "type": "Recreate"
+      },
+      "selector": {
+        "matchLabels": {
+          "pi-ez.dev/workspace": "srvivor"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/managed-by": "pi-ez-workspaced",
+            "pi-ez.dev/workspace": "srvivor",
+            "pi-ez.dev/egress": "open"
+          }
+        },
+        "spec": {
+          "enableServiceLinks": false,
+          "serviceAccountName": "infra-operator",
+          "automountServiceAccountToken": true,
+          "runtimeClassName": "kata",
+          "imagePullSecrets": [
+            {
+              "name": "ghcr-pull"
+            }
+          ],
+          "securityContext": {
+            "runAsUser": 1000,
+            "runAsGroup": 1000,
+            "fsGroup": 1000
+          },
+          "containers": [
+            {
+              "name": "workspace",
+              "image": "img:1",
+              "env": [
+                {
+                  "name": "PORT",
+                  "value": "3141"
+                },
+                {
+                  "name": "PI_WEB_MODE",
+                  "value": "real"
+                },
+                {
+                  "name": "PI_SYNC_DEVICE_LABEL",
+                  "value": "web-srvivor"
+                },
+                {
+                  "name": "HOME",
+                  "value": "/data/pi-ez-operator-home"
+                },
+                {
+                  "name": "XDG_CONFIG_HOME",
+                  "value": "/data/pi-ez-operator-home/.config"
+                },
+                {
+                  "name": "XDG_DATA_HOME",
+                  "value": "/data/pi-ez-operator-home/.local/share"
+                },
+                {
+                  "name": "XDG_CACHE_HOME",
+                  "value": "/data/pi-ez-operator-home/.cache"
+                },
+                {
+                  "name": "PI_WEB_HOME",
+                  "value": "/data/pi-ez-web"
+                },
+                {
+                  "name": "PI_CODING_AGENT_DIR",
+                  "value": "/data/pi-ez-agent"
+                },
+                {
+                  "name": "PI_WEB_REPOS_ROOT",
+                  "value": "/data/repos"
+                },
+                {
+                  "name": "PI_WEB_GITHUB_AUTH_FILE",
+                  "value": "/run/secrets/pi-ez-github/github-auth.json"
+                },
+                {
+                  "name": "PI_WEB_MODEL_AUTH_FILE",
+                  "value": "/run/secrets/pi-ez-model/auth.json"
+                },
+                {
+                  "name": "DOCKER_HOST",
+                  "value": "tcp://127.0.0.1:2375"
+                }
+              ],
+              "resources": {
+                "requests": {
+                  "cpu": "250m"
+                },
+                "limits": {
+                  "memory": "4Gi"
+                }
+              },
+              "envFrom": [
+                {
+                  "configMapRef": {
+                    "name": "cm",
+                    "optional": true
+                  }
+                },
+                {
+                  "secretRef": {
+                    "name": "operator-env",
+                    "optional": true
+                  }
+                }
+              ],
+              "ports": [
+                {
+                  "name": "http",
+                  "containerPort": 3141
+                }
+              ],
+              "readinessProbe": {
+                "httpGet": {
+                  "path": "/api/health",
+                  "port": 3141
+                },
+                "periodSeconds": 1
+              },
+              "startupProbe": {
+                "httpGet": {
+                  "path": "/api/health",
+                  "port": 3141
+                },
+                "periodSeconds": 1,
+                "failureThreshold": 300
+              },
+              "livenessProbe": {
+                "httpGet": {
+                  "path": "/api/health",
+                  "port": 3141
+                },
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 6
+              },
+              "volumeMounts": [
+                {
+                  "name": "data",
+                  "mountPath": "/data"
+                },
+                {
+                  "name": "github",
+                  "mountPath": "/run/secrets/pi-ez-github",
+                  "readOnly": true
+                },
+                {
+                  "name": "model",
+                  "mountPath": "/run/secrets/pi-ez-model",
+                  "readOnly": true
+                }
+              ]
+            },
+            {
+              "name": "docker",
+              "image": "docker:28-dind",
+              "command": [
+                "sh",
+                "-ec",
+                "apk add -q e2fsprogs\nimg=/docker-data/docker.img\n[ -f $img ] || { truncate -s 20G $img; mkfs.ext4 -q -E lazy_itable_init=1,lazy_journal_init=1,nodiscard $img; }\nmount -o loop $img /var/lib/docker\nexec dockerd-entrypoint.sh"
+              ],
+              "env": [
+                {
+                  "name": "DOCKER_TLS_CERTDIR",
+                  "value": ""
+                }
+              ],
+              "securityContext": {
+                "privileged": true,
+                "runAsUser": 0
+              },
+              "volumeMounts": [
+                {
+                  "name": "data",
+                  "mountPath": "/docker-data",
+                  "subPath": "docker"
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "data",
+              "persistentVolumeClaim": {
+                "claimName": "ws-srvivor"
+              }
+            },
+            {
+              "name": "github",
+              "secret": {
+                "secretName": "pi-ez-github-auth",
+                "optional": true,
+                "defaultMode": 288
+              }
+            },
+            {
+              "name": "model",
+              "secret": {
+                "secretName": "pi-ez-model-auth",
+                "optional": true,
+                "defaultMode": 288
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

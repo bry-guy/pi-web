@@ -3,6 +3,7 @@ export const NAME_LABEL = "pi-ez.dev/workspace";
 export const REPO_ANNOTATION = "pi-ez.dev/repository";
 export const PIN_ANNOTATION = "pi-ez.dev/keep-awake";
 export const GRANT_ANNOTATION = "pi-ez.dev/grant";
+export const SCORE_ANNOTATION = "pi-ez.dev/score";
 export const EGRESS_LABEL = "pi-ez.dev/egress";
 export const WORKSPACE_PORT = 3141;
 export const GITHUB_SECRET = "pi-ez-github-auth";
@@ -54,7 +55,8 @@ export function serviceManifest({ name, repository }) {
 
 // The grant (see grants.js) supplies the ServiceAccount, env Secrets, egress
 // label and runtime class; nothing else may give a worker credentials.
-export function deploymentManifest({ name, repository, image, grant = { name: "default", env: [] }, runtimeClassName = null, envConfigMap = null, imagePullSecret = null, resources = {}, dindImage = "docker:28-dind" }) {
+// score: a plan from score.js (native sidecars, env, and the record kept in an annotation), or null.
+export function deploymentManifest({ name, repository, image, grant = { name: "default", env: [] }, runtimeClassName = null, envConfigMap = null, imagePullSecret = null, resources = {}, dindImage = "docker:28-dind", score = null }) {
   if (!validName(name)) throw new Error("invalid workspace name");
   runtimeClassName = grant.runtimeClass || runtimeClassName;
   const serviceAccountName = grant.serviceAccount || null;
@@ -68,6 +70,11 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
     ["PI_WEB_MODEL_AUTH_FILE", `${MODEL_DIR}/auth.json`],
     ...(runtimeClassName ? [["DOCKER_HOST", "tcp://127.0.0.1:2375"]] : []),
   ].map(([n, value]) => ({ name: n, value }));
+  const taken = new Set(env.map(e => e.name));
+  for (const e of score?.env || []) {
+    if (taken.has(e.name)) throw Object.assign(new Error(`score variable ${e.name} collides with a workspace setting`), { status: 422, code: "invalid_score" });
+  }
+  env.push(...(score?.env || []));
   const envFrom = [
     ...(envConfigMap ? [{ configMapRef: { name: envConfigMap, optional: true } }] : []),
     // Optional: a grant may name Secrets the deployer hasn't filled yet.
@@ -104,7 +111,7 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
   }
   return {
     apiVersion: "apps/v1", kind: "Deployment",
-    metadata: { ...meta(name, repository), annotations: { [REPO_ANNOTATION]: repository, [GRANT_ANNOTATION]: grant.name } },
+    metadata: { ...meta(name, repository), annotations: { [REPO_ANNOTATION]: repository, [GRANT_ANNOTATION]: grant.name, ...(score ? { [SCORE_ANNOTATION]: score.record } : {}) } },
     spec: {
       replicas: 1,
       strategy: { type: "Recreate" },
@@ -118,6 +125,7 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
           ...(runtimeClassName ? { runtimeClassName } : {}),
           ...(imagePullSecret ? { imagePullSecrets: [{ name: imagePullSecret }] } : {}),
           securityContext: { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 },
+          ...(score ? { initContainers: score.sidecars } : {}),
           containers,
           volumes: [
             { name: "data", persistentVolumeClaim: { claimName: `ws-${name}` } },

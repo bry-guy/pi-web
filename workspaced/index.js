@@ -4,7 +4,8 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { createLifecycle, PASSIVE } from "./lifecycle.js";
 import { slugFromRepository, validName } from "./manifests.js";
-import { grantAllows, parseGrants, resolveGrant, withGrantCheck } from "./grants.js";
+import { grantAllows, grantError, parseGrants, resolveGrant, withGrantCheck } from "./grants.js";
+import { createScoreSource, scoreFromFile, withScore } from "./score.js";
 
 // Hop-by-hop and length/encoding headers; fetch() re-frames bodies itself.
 const DROP_HEADERS = ["connection", "keep-alive", "transfer-encoding", "upgrade", "host", "content-length", "content-encoding", "authorization"];
@@ -18,7 +19,8 @@ function tokenMatches(header, token) {
 // workspaced: creates/removes per-project workspaces, holds grants, and routes
 // web's session traffic to each workspace's worker. Only web calls it.
 // auth "network" means a NetworkPolicy admits only web; otherwise a bearer token.
-export function createWorkspaced({ provider, grants = parseGrants(""), token, auth = "token", fetchImpl = globalThis.fetch, lifecycle = createLifecycle({ provider, fetchImpl, idleMs: 0 }) }) {
+// scores (createScoreSource) reads score.yaml when adding a project; without it, no repository is read.
+export function createWorkspaced({ provider, grants = parseGrants(""), token, auth = "token", fetchImpl = globalThis.fetch, scores = null, lifecycle = createLifecycle({ provider, fetchImpl, idleMs: 0 }) }) {
   if (auth !== "network" && !token) throw new Error("WORKSPACED_TOKEN is required unless WORKSPACED_AUTH=network");
   const app = new Hono();
   const named = handler => async c => {
@@ -57,8 +59,11 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
     if (!validName(name)) return c.json({ error: "invalid_name" }, 400);
     const runtimeClassName = body.containers ? "kata" : null;
     const grant = resolveGrant(grants, body.grant, repository);
+    // Read before anything is created, so a bad score.yaml fails the add cleanly.
+    const score = scores ? scoreFromFile(await scores.read(repository)) : null;
+    if (score && !provider.setScore) throw grantError("score.yaml declares resources, which need WORKSPACED_PROVIDER=kubernetes", 501, "score_unsupported");
     await lifecycle.makeRoom(name, 1).catch(() => {}); // best effort; never blocks adding a project
-    await provider.create({ name, repository, runtimeClassName, grant });
+    await provider.create({ name, repository, runtimeClassName, grant, score });
     return c.json({ name }, 201);
   });
 
@@ -136,6 +141,7 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
 
   app.put("/v1/github-auth", async c => {
     const body = await c.req.json().catch(() => null);
+    scores?.setToken(body?.accessToken);
     await provider.setGitHubAuth(body?.accessToken ? body : null);
     return c.json({ ok: true });
   });
@@ -207,11 +213,12 @@ async function providerFromEnv(grants, env = process.env) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 3150);
   const grants = parseGrants(process.env.WORKSPACED_GRANTS || "");
-  const provider = withGrantCheck(await providerFromEnv(grants), grants);
+  const scores = createScoreSource();
+  const provider = withScore(withGrantCheck(await providerFromEnv(grants), grants), scores, grants);
   const idleMinutes = Number(process.env.WORKSPACED_IDLE_MINUTES ?? 0);
   const maxAwake = Number(process.env.WORKSPACED_MAX_AWAKE ?? 3);
   const lifecycle = createLifecycle({ provider, idleMs: idleMinutes * 60_000, maxAwake });
-  serve({ fetch: createWorkspaced({ provider, grants, lifecycle, token: process.env.WORKSPACED_TOKEN, auth: process.env.WORKSPACED_AUTH }).fetch, port, hostname: process.env.WORKSPACED_HOST || "0.0.0.0" });
+  serve({ fetch: createWorkspaced({ provider, grants, lifecycle, scores, token: process.env.WORKSPACED_TOKEN, auth: process.env.WORKSPACED_AUTH }).fetch, port, hostname: process.env.WORKSPACED_HOST || "0.0.0.0" });
   console.log(`workspaced (${process.env.WORKSPACED_PROVIDER || "local"}) → :${port}`);
   // Existing workers keep the manifest they were created with; re-apply the current one (Kubernetes
   // only rolls a worker whose template actually changed, e.g. new env).
