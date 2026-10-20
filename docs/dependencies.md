@@ -66,7 +66,7 @@ Variables under `containers.<first>.variables` whose value is built only from `$
 - **Network:** the server listens on the pod's loopback only, with trust authentication. Nothing else in the cluster can connect, but every process in the same pod can, including the worker.
 - **Startup:** the worker starts after the database answers `pg_isready`. The entrypoint runs as root briefly to fix the data directory's ownership, then runs as `postgres`.
 - **Memory:** each database is limited to 512Mi and counts against the namespace quota (24Gi in the current deployment).
-- **Secrets:** the database gets no Secrets and no grant environment. Kubernetes mounts a grant's ServiceAccount token into every container in the pod, including the database.
+- **Secrets:** the database gets no Secrets, no grant environment, and no ServiceAccount token. When a grant has a ServiceAccount, the token is mounted only in the workspace container.
 - **Not yet:** no UI status or "restart to apply" marker. The status is in the workspaced API: `score.resources` (with `ready` per resource) on each workspace in `GET /v1/workspaces?detail=1`.
 
 Design and open questions: [score-resources.md](score-resources.md).

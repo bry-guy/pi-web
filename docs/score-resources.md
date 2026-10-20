@@ -8,7 +8,7 @@ Status: implemented for `postgres` on the Kubernetes provider. Plan: `bry-guy/in
 - **Record:** the declaration is stored as the Deployment annotation `pi-ez.dev/score`, containing only resource declarations and the variables that reference resources. Everything else (sidecars, env, probes) is re-planned from that record whenever the template is rebuilt, so grant changes and restarts keep the resources without another GitHub read. App config and possible secrets in `score.yaml` are never stored.
 - **Provisioners:** a built-in table keyed by `type`, currently `postgres` only. Each validates its own params; unknown types and params fail the add with a message naming the resource.
 - **Sidecars:** native sidecars (initContainers with `restartPolicy: Always`). k3s in `bry-guy/infra` is 1.34.5+k3s1 (`selfhost/images/homelab-fedora-bootc/Containerfile`), above the 1.29 minimum. A startup probe (`pg_isready`) holds the worker until the database is up.
-- **Isolation:** the sidecar has only provisioner env, no envFrom, no Secret volumes, and mounts only its `res/<id>` subpath. Pod-level ServiceAccount automount still reaches every container; the design accepts this.
+- **Isolation:** the sidecar has only provisioner env, no envFrom, no Secret volumes, and mounts only its `res/<id>` subpath. Pods with sidecars turn off the pod-wide ServiceAccount automount; the token is projected into the workspace container only (same paths as the automount).
 - **Trust auth:** safe only because `listen_addresses=localhost`. Without it, any pod in the cluster could reach the database by IP.
 - **Injection:** outputs become `SCORE_RESOURCE_*`; resource-only variables become worker env. A collision with a workspace setting fails the add.
 
