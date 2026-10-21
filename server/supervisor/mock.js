@@ -530,7 +530,7 @@ export class MockSupervisor {
 // Settings → Workers in mock mode: fixed workers that answer like workspaced's routes.
 export function registerMockWorkers(api) {
   const resources = { requests: { cpu: "250m", memory: "512Mi" }, limits: { cpu: null, memory: "4Gi" } };
-  const grant = { name: "default", description: "", namespace: "pi", serviceAccount: "default", egress: "open", runtimeClass: null, env: ["GITHUB_TOKEN"] };
+  const grant = { name: "default", description: "", namespace: "pi", serviceAccount: "default", egress: "open", env: ["GITHUB_TOKEN"] };
   const workers = [
     { name: "pi-ez-web", repository: "bry-guy/pi-ez-web", state: "running", keepAwake: true, busy: false, lastUsed: Date.now() - 4_000, resources, usage: { cpuMillicores: 120, memoryBytes: 734_003_200 }, grant },
     { name: "scratch", repository: "bry-guy/scratch", state: "running", keepAwake: false, busy: true, lastUsed: Date.now() - 90_000, resources, usage: { cpuMillicores: 15, memoryBytes: 104_857_600 }, grant },

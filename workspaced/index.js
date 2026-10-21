@@ -57,13 +57,12 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
     if (!repository || repository.length > 300 || /\s/.test(repository)) return c.json({ error: "invalid_repository" }, 400);
     const name = body.name ?? slugFromRepository(repository);
     if (!validName(name)) return c.json({ error: "invalid_name" }, 400);
-    const runtimeClassName = body.containers ? "kata" : null;
     const grant = resolveGrant(grants, body.grant, repository);
     // Read before anything is created, so a bad score.yaml fails the add cleanly.
     const score = scores ? scoreFromFile(await scores.read(repository)) : null;
     if (score && !provider.setScore) throw grantError("score.yaml declares resources, which need WORKSPACED_PROVIDER=kubernetes", 501, "score_unsupported");
     await lifecycle.makeRoom(name, 1).catch(() => {}); // best effort; never blocks adding a project
-    await provider.create({ name, repository, runtimeClassName, grant, score });
+    await provider.create({ name, repository, grant, score });
     return c.json({ name }, 201);
   });
 

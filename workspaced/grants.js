@@ -23,13 +23,15 @@ export function parseGrants(text) {
     const env = g.env ?? [];
     if (!Array.isArray(repos) || !repos.every(r => typeof r === "string" && r)) fail(`${name}.repos must be strings`);
     if (!Array.isArray(env) || !env.every(e => K8S_NAME.test(e))) fail(`${name}.env must be Secret names`);
-    for (const key of ["namespace", "serviceAccount", "runtimeClass"]) if (g[key] != null && !K8S_NAME.test(g[key])) fail(`${name}.${key} is not a valid name`);
+    for (const key of ["namespace", "serviceAccount"]) if (g[key] != null && !K8S_NAME.test(g[key])) fail(`${name}.${key} is not a valid name`);
+    // Refuse rather than silently drop: a grant that used to pick a sandbox must not quietly run without one.
+    if (g.runtimeClass != null) fail(`${name}.runtimeClass is no longer supported; remove it from the grant`);
     if (g.egress != null && !LABEL_VALUE.test(g.egress)) fail(`${name}.egress is not a valid label value`);
     if (!g.anyProject && !repos.length) fail(`${name} needs anyProject or repos`);
     grants[name] = {
       name, anyProject: !!g.anyProject, repos, env,
       namespace: g.namespace || null, serviceAccount: g.serviceAccount || null,
-      runtimeClass: g.runtimeClass || null, egress: g.egress || null,
+      egress: g.egress || null,
       description: typeof g.description === "string" ? g.description : "",
     };
   }

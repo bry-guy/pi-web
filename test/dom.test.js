@@ -805,7 +805,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   dom.window.__workers = {
     usageAvailable: false,
     workspaces: [
-      { name: "app", repository: "bry-guy/app", state: "running", keepAwake: true, busy: false, lastUsed: Date.now() - 60_000, resources: { requests: { cpu: "250m", memory: "512Mi" }, limits: { cpu: null, memory: "4Gi" } }, usage: null, grant: { name: "operator", description: "", namespace: "ops", serviceAccount: "op", egress: "open", runtimeClass: null, env: ["OP_TOKEN"] } },
+      { name: "app", repository: "bry-guy/app", state: "running", keepAwake: true, busy: false, lastUsed: Date.now() - 60_000, resources: { requests: { cpu: "250m", memory: "512Mi" }, limits: { cpu: null, memory: "4Gi" } }, usage: null, grant: { name: "operator", description: "", namespace: "ops", serviceAccount: "op", egress: "open", env: ["OP_TOKEN"] } },
       { name: "scratch", repository: "bry-guy/scratch", state: "sleeping", keepAwake: false, busy: false, lastUsed: null, resources: null, usage: null, grant: null },
     ],
   };

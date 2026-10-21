@@ -8,12 +8,12 @@ One per project. A worker is the same server as [web](web.md), running the Pi SD
 | --- | --- |
 | workspaced | `PORT=3141`, `PI_WEB_HOME`, `PI_CODING_AGENT_DIR`, `PI_WEB_REPOS_ROOT` on its own volume; `PI_WEB_GITHUB_AUTH_FILE` and `PI_WEB_MODEL_AUTH_FILE` pointing at the logins web shared |
 | `WORKSPACE_ENV_CONFIGMAP` | Shared environment, typically `PI_WEB_PRESTART_COMMAND` (dotfiles, default setup hook) and `PI_SYNC_SERVER_URL` |
-| its grant | ServiceAccount, `envFrom` Secrets, namespace, egress label, RuntimeClass. See [grants](workspaced.md#grants) |
+| its grant | ServiceAccount, `envFrom` Secrets, namespace, egress label. See [grants](workspaced.md#grants) |
 | the repository | Its own tools: `mise.toml`, `script/bootstrap`, `gradlew`, whatever the project uses. The **setup** hook (e.g. `mise trust --yes && mise install`) installs them once after cloning |
 
 ## The image
 
-Workers use the pi-ez-web image (`WORKSPACE_IMAGE`). It ships git, ssh, curl, jq, build tools, Node 22 and [mise](https://mise.jdx.dev). Project-specific tools such as Go, kubectl or a Docker CLI come from the repository's `mise.toml`, not the image. If a project needs OS packages mise can't install, build a derived image and point `WORKSPACE_IMAGE` at it:
+Workers use the pi-ez-web image (`WORKSPACE_IMAGE`). It ships git, ssh, curl, jq, build tools, Node 22 and [mise](https://mise.jdx.dev). Project-specific tools such as Go or kubectl come from the repository's `mise.toml`, not the image. If a project needs OS packages mise can't install, build a derived image and point `WORKSPACE_IMAGE` at it:
 
 ```dockerfile
 FROM ghcr.io/bry-guy/pi-ez-web:sha-<commit>
@@ -29,7 +29,7 @@ When more than `WORKSPACED_MAX_AWAKE` workers would run, the least recently used
 **Reload** (`POST /api/pi/reload`, reached through workspaced's `…/reload`) re-fetches the Pi profile and its dotfiles resources and reloads Pi. It answers `409 pi_configuration_busy` while an agent turn runs. It does not re-run `PI_WEB_PRESTART_COMMAND`, which runs only when the worker starts; **restart** does that.
 
 ### When a worker breaks
-Kubernetes restarts a worker that exits, runs out of memory, or stops answering `/api/health` for a minute (liveness); a startup probe gives slow sandboxes such as Kata VMs up to 5 minutes to boot first. Chats survive on the volume; only a running turn is lost. The sidebar marks a worker that crashed, and replaces its status with **restart** when it cannot run (crash loop, image pull failure, unschedulable, stuck sandbox, eviction). The local (Compose) provider restarts a crashed worker up to 3 times in 10 minutes, then marks it failed.
+Kubernetes restarts a worker that exits, runs out of memory, or stops answering `/api/health` for a minute (liveness); a startup probe gives a slow first boot up to 5 minutes. Chats survive on the volume; only a running turn is lost. The sidebar marks a worker that crashed, and replaces its status with **restart** when it cannot run (crash loop, image pull failure, unschedulable, stuck start, eviction). The local (Compose) provider restarts a crashed worker up to 3 times in 10 minutes, then marks it failed.
 
 ## Health
 

@@ -49,7 +49,6 @@ A grant says what a project's worker may hold. The deployer defines grants; a us
     "env": ["operator-env"],
     "namespace": "pi-workspaced",
     "egress": "open",
-    "runtimeClass": null,
     "description": "Cluster access and deploy secrets for the infra repo only."
   }
 }
@@ -62,7 +61,6 @@ A grant says what a project's worker may hold. The deployer defines grants; a us
 | `env` | Secret names loaded with `envFrom` (optional, so they may be filled later) |
 | `namespace` | Where the worker runs |
 | `egress` | Value of the pod label `pi-ez.dev/egress`, for your NetworkPolicies to match |
-| `runtimeClass` | Pod RuntimeClass, e.g. a VM sandbox |
 
 How Secrets get filled (kubectl, External Secrets, a CI job) is your choice. Workers never talk to a secret manager; they see plain environment variables.
 
@@ -70,6 +68,6 @@ How Secrets get filled (kubectl, External Secrets, a CI job) is your choice. Wor
 
 All routes need `Authorization: Bearer $WORKSPACED_TOKEN`. `GET /v1/workspaces` (add `?detail=1` for `busy`, `lastUsed`, `usage` per workspace and `usageAvailable`; usage is `{cpuMillicores, memoryBytes}` from metrics-server, or from `ps` for the local provider, which reports one process and its CPU averaged over its life), `POST /v1/workspaces`, `DELETE /v1/workspaces/:name`, `POST …/:name/wake`, `POST …/:name/sleep` (409 `workspace_busy` for a busy worker unless `?force=1`), `PUT …/:name/pin`, `PUT …/:name/grant`,
 `POST …/:name/restart` (new pods, same volume; the worker stays awake and re-runs `PI_WEB_PRESTART_COMMAND`), `POST …/:name/reset` (wipes the volume: scale to 0, drop the PVC, recreate it, scale up; body must be `{"confirm": "<name>"}` or `400`; the project must be added again afterwards), `POST …/:name/reload` (re-fetches the Pi profile and dotfiles resources and reloads Pi; never wakes a sleeping worker, `409 asleep`). Restart, reset and sleep refuse a busy worker with `409 workspace_busy` unless `?force=1`; reload's busy case is the worker's `409 pi_configuration_busy`. Restart and reset also refuse sleeping workers with `409 asleep`.
- `GET /v1/grants`, `PUT /v1/github-auth`, `PUT /v1/model-auth`, and `/w/:name/*`, which proxies to the worker. Requests to a sleeping worker wake it and wait about 45 s, or return `503 workspace_starting` with `Retry-After`. A worker that cannot start (crash loop, out of memory, no node can schedule it, a sandbox that has not booted after 3 minutes) returns `503 workspace_failed` with a `problem` right away, and `GET /v1/workspaces` reports the same `problem` per worker. Wakes run one at a time so start-up memory spikes don't stack.
+ `GET /v1/grants`, `PUT /v1/github-auth`, `PUT /v1/model-auth`, and `/w/:name/*`, which proxies to the worker. Requests to a sleeping worker wake it and wait about 45 s, or return `503 workspace_starting` with `Retry-After`. A worker that cannot start (crash loop, out of memory, no node can schedule it, a worker that has not started after 3 minutes) returns `503 workspace_failed` with a `problem` right away, and `GET /v1/workspaces` reports the same `problem` per worker. Wakes run one at a time so start-up memory spikes don't stack.
 
-The web server exposes the same to the settings page, under `/api`: `GET /api/remote-workspaces` → `{ usageAvailable, workspaces: [{ name, repository, state, ready, keepAwake, busy, lastUsed, resources, usage, grant: { name, description, namespace, serviceAccount, egress, runtimeClass, env } }] }` (`env` lists Secret names only); `POST /api/remote-workspaces/:name/restart|reset|reload|sleep` (add `?force=1` for a busy worker; reset takes `{"confirm": "<name>"}`), answering with workspaced's status and body; `DELETE /api/remote-workspaces/:name` (deletes the worker, keeping its volume unless `?purge=1`); and `POST /api/remote-workspaces/reload` → `{ results: [{ name, ok, status, error }] }` for every awake worker.
+The web server exposes the same to the settings page, under `/api`: `GET /api/remote-workspaces` → `{ usageAvailable, workspaces: [{ name, repository, state, ready, keepAwake, busy, lastUsed, resources, usage, grant: { name, description, namespace, serviceAccount, egress, env } }] }` (`env` lists Secret names only); `POST /api/remote-workspaces/:name/restart|reset|reload|sleep` (add `?force=1` for a busy worker; reset takes `{"confirm": "<name>"}`), answering with workspaced's status and body; `DELETE /api/remote-workspaces/:name` (deletes the worker, keeping its volume unless `?purge=1`); and `POST /api/remote-workspaces/reload` → `{ results: [{ name, ok, status, error }] }` for every awake worker.

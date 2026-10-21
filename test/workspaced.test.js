@@ -27,17 +27,13 @@ test("slugs are DNS-safe and reject garbage", () => {
   assert.equal(slugFromRepository("///"), null);
 });
 
-test("privileged docker sidecar only exists under a sandbox runtime class", () => {
-  const base = { name: "x", repository: "a/x", image: "img" };
-  const plain = deploymentManifest(base).spec.template.spec;
-  assert.equal(plain.containers.length, 1);
-  assert.equal(plain.runtimeClassName, undefined);
-  assert.equal(plain.automountServiceAccountToken, false);
-  const kata = deploymentManifest({ ...base, runtimeClassName: "kata", grant: { name: "g", env: [], serviceAccount: "ws-x" } }).spec.template.spec;
-  assert.equal(kata.runtimeClassName, "kata");
-  assert.equal(kata.containers[1].securityContext.privileged, true);
-  assert.equal(kata.serviceAccountName, "ws-x");
-  assert.ok(kata.containers[0].env.some(e => e.name === "DOCKER_HOST"));
+test("workers run one unprivileged container and never ask for a runtime class", () => {
+  const spec = deploymentManifest({ name: "x", repository: "a/x", image: "img", grant: { name: "g", env: [], serviceAccount: "ws-x" } }).spec.template.spec;
+  assert.equal(spec.containers.length, 1);
+  assert.equal(spec.runtimeClassName, undefined);
+  assert.ok(!spec.containers.some(c => c.securityContext?.privileged));
+  assert.ok(!spec.containers[0].env.some(e => e.name === "DOCKER_HOST"));
+  assert.equal(spec.serviceAccountName, "ws-x");
 });
 
 test("workers mount the shared GitHub login read-only and optionally", () => {
@@ -71,7 +67,7 @@ test("kubernetes create is idempotent, applies the SA convention, and refuses na
   const ns = "/api/v1/namespaces/pi-workspaced";
   const kube = fakeKube({ [`GET ${ns}/serviceaccounts/ws-srvivor`]: { status: 200, body: {} } });
   const app = createWorkspaced({ provider: kubernetesProvider({ kube, config: kubernetesConfig({}) }), token: TOKEN });
-  assert.equal((await app.request("/v1/workspaces", json({ repository: "bry-guy/srvivor", containers: true }))).status, 201);
+  assert.equal((await app.request("/v1/workspaces", json({ repository: "bry-guy/srvivor" }))).status, 201);
   assert.deepEqual(kube.calls.filter(c => c[0] === "POST").map(c => c[2]), ["PersistentVolumeClaim", "Service", "Deployment"]);
 
   const taken = fakeKube({ "GET /apis/apps/v1/namespaces/pi-workspaced/deployments/ws-srvivor": { status: 200, body: { metadata: { annotations: { "pi-ez.dev/repository": "other/srvivor" } } } } });
@@ -95,7 +91,7 @@ test("local provider persists workspaces, spawns workers, and writes auth 0600",
   await provider.create({ name: "srvivor", repository: "bry-guy/srvivor" });
   assert.equal(spawned[0].PI_WEB_REPOS_ROOT, path.join(root, "srvivor", "repos"));
   assert.match(provider.upstream("srvivor"), /^http:\/\/127\.0\.0\.1:\d+$/);
-  assert.deepEqual(await provider.list(), [{ name: "srvivor", repository: "bry-guy/srvivor", grant: "default", ready: true, state: "running", problem: null, pinned: false, containers: false }]);
+  assert.deepEqual(await provider.list(), [{ name: "srvivor", repository: "bry-guy/srvivor", grant: "default", ready: true, state: "running", problem: null, pinned: false }]);
   await provider.setGitHubAuth({ accessToken: "t" });
   assert.equal(statSync(path.join(root, "github-auth.json")).mode & 0o777, 0o600);
   await assert.rejects(provider.create({ name: "srvivor", repository: "x/srvivor" }), { code: "workspace_name_taken" });
@@ -655,7 +651,7 @@ test("local restart respawns the worker; reset also wipes its data", async () =>
 test("web lists workspaces with activity, usage and grant names, and forwards restart, reset and reload", async () => {
   const seen = [];
   const worker = await listen((req, res) => { seen.push(req.url); res.end(JSON.stringify({ ok: true })); });
-  const ws = { name: "app", repository: "o/app", grant: "operator", state: "running", ready: true, pinned: true, containers: false, resources: { requests: { cpu: "250m" } } };
+  const ws = { name: "app", repository: "o/app", grant: "operator", state: "running", ready: true, pinned: true, resources: { requests: { cpu: "250m" } } };
   const calls = [];
   const provider = {
     list: async () => [{ ...ws }],
@@ -676,7 +672,7 @@ test("web lists workspaces with activity, usage and grant names, and forwards re
     assert.deepEqual(listed.workspaces, [{
       name: "app", repository: "o/app", state: "running", ready: true, keepAwake: true, busy: false, lastUsed: listed.workspaces[0].lastUsed,
       resources: { requests: { cpu: "250m" } }, usage: { cpuMillicores: 5, memoryBytes: 1024 },
-      grant: { name: "operator", description: "", namespace: "ops", serviceAccount: "op", egress: "open", runtimeClass: null, env: ["op-env"] },
+      grant: { name: "operator", description: "", namespace: "ops", serviceAccount: "op", egress: "open", env: ["op-env"] },
     }]);
     assert.equal((await api.request("/remote-workspaces/app/reset", json({ confirm: "nope" }))).status, 400);
     assert.deepEqual(await (await api.request("/remote-workspaces/app/reset", json({ confirm: "app" }))).json(), { ok: true });
@@ -695,14 +691,14 @@ test("web lists workspaces with activity, usage and grant names, and forwards re
 const pod = (status, created = "2026-01-01T00:00:00Z") => ({ metadata: { creationTimestamp: created }, status });
 const T0 = Date.parse("2026-01-01T00:00:00Z");
 
-test("podProblem names OOM, crash loops, scheduling and stuck sandboxes the same for runc and Kata", () => {
+test("podProblem names OOM, crash loops, scheduling and stuck starts", () => {
   const running = { name: "workspace", restartCount: 0, state: { running: {} } };
   assert.equal(podProblem(pod({ phase: "Running", containerStatuses: [running] }), T0), null);
 
   const oomOnce = podProblem(pod({ phase: "Running", containerStatuses: [{ ...running, restartCount: 1, lastState: { terminated: { reason: "OOMKilled", exitCode: 137 } } }] }), T0);
   assert.equal(oomOnce.reason, "OOMKilled"); assert.equal(oomOnce.fatal, false); assert.equal(oomOnce.restarts, 1);
 
-  // Kata: the VM's OOM can surface as exit 137 with reason Error.
+  // Some runtimes report an OOM as exit 137 with reason Error.
   const vmKilled = podProblem(pod({ phase: "Running", containerStatuses: [{ ...running, restartCount: 2, lastState: { terminated: { reason: "Error", exitCode: 137 } } }] }), T0);
   assert.equal(vmKilled.reason, "OOMKilled");
 
@@ -710,11 +706,11 @@ test("podProblem names OOM, crash loops, scheduling and stuck sandboxes the same
   assert.deepEqual([loop.reason, loop.fatal], ["OOMKilled", true]);
   assert.match(loop.message, /out of memory/);
 
-  // Kata overhead can make a pod unschedulable on a full node.
+  // Pod overhead can make a pod unschedulable on a full node.
   const unsched = podProblem(pod({ phase: "Pending", conditions: [{ type: "PodScheduled", status: "False", reason: "Unschedulable", message: "0/3 nodes: Insufficient memory" }] }), T0);
   assert.deepEqual([unsched.reason, unsched.fatal], ["Unschedulable", true]);
 
-  // A Kata sandbox that never boots leaves the container waiting in ContainerCreating.
+  // A pod that never starts leaves its container waiting in ContainerCreating.
   const creating = { phase: "Pending", containerStatuses: [{ name: "workspace", restartCount: 0, state: { waiting: { reason: "ContainerCreating" } } }] };
   assert.equal(podProblem(pod(creating), T0 + 30_000), null, "still within normal boot time");
   assert.equal(podProblem(pod(creating), T0 + STUCK_START_MS + 1).reason, "StuckStarting");
@@ -746,7 +742,7 @@ test("kubernetes list reports the newest pod's problem, not for sleeping workers
   assert.ok(patchBody.spec.template.metadata.annotations["kubectl.kubernetes.io/restartedAt"]);
 });
 
-test("worker manifests give a slow sandbox time to boot, then restart a hung worker", () => {
+test("worker manifests give a slow first boot time, then restart a hung worker", () => {
   const d = deploymentManifest({ name: "x", repository: "r", image: "i", grant: { name: "default" } });
   const c = d.spec.template.spec.containers[0];
   assert.ok(c.startupProbe.periodSeconds * c.startupProbe.failureThreshold >= 300);

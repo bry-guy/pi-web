@@ -12,7 +12,7 @@ export function createLifecycle({
   const lastUsed = new Map();
   const inflight = new Map();
   const waking = new Map();
-  // Wakes run one at a time: each start (and its preload, or a Kata VM boot)
+  // Wakes run one at a time: each start (and its preload)
   // briefly needs more memory than an idle worker, so they must not stack.
   let wakeQueue = Promise.resolve();
   let cache = { at: -Infinity, byName: new Map() };

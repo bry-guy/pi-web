@@ -17,7 +17,7 @@ export function workerCard(worker, usageAvailable, { canDelete = true } = {}) {
   const grantFacts = grant ? `
       <div class="worker-fact"><dt>Grant</dt><dd>${esc(grant.name)}${grant.description ? `<small>${esc(grant.description)}</small>` : ""}</dd></div>
       <div class="worker-fact"><dt>Service account</dt><dd>${esc(grant.serviceAccount || "default")} in ${esc(grant.namespace || "default")}</dd></div>
-      <div class="worker-fact"><dt>Egress · runtime</dt><dd>${esc(grant.egress || "default")} · ${esc(grant.runtimeClass || "default")}</dd></div>
+      <div class="worker-fact"><dt>Egress</dt><dd>${esc(grant.egress || "default")}</dd></div>
       <div class="worker-fact"><dt>Env variables</dt><dd>${grant.env?.length ? grant.env.map(esc).join(", ") : "none"}<small>Names only. Values are not shown.</small></dd></div>`
     : `<div class="worker-fact"><dt>Grant</dt><dd>default</dd></div>`;
   return `<div class="settings-card settings-card-spaced worker-card" data-worker="${name}">

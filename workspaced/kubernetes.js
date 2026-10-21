@@ -19,15 +19,14 @@ export function deploymentState(d) {
   return (d.status?.readyReplicas || 0) > 0 ? "running" : "starting";
 }
 
-// A sandbox (Kata VM) or container that hasn't started after this long is stuck,
+// A container that hasn't started after this long is stuck,
 // not slow; kubelet keeps retrying but the user should hear about it.
 export const STUCK_START_MS = 3 * 60_000;
 const WAITING_PROBLEMS = new Set(["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError", "CreateContainerError", "RunContainerError", "InvalidImageName"]);
 
-// What, if anything, is wrong with a worker, from its pod. Works the same for
-// runc and Kata: an OOM inside the VM is still a container OOMKilled, a VM the
-// kernel or kubelet kills shows as a restart or eviction, and a VM that never
-// boots leaves the pod in ContainerCreating (sandbox errors are only events).
+// What, if anything, is wrong with a worker, from its pod. An OOM is a container
+// OOMKilled, a pod the kernel or kubelet kills shows as a restart or eviction,
+// and a pod that never starts stays in ContainerCreating (sandbox errors are only events).
 export function podProblem(pod, now = Date.now()) {
   if (!pod) return null;
   const s = pod.status || {};
@@ -47,7 +46,7 @@ export function podProblem(pod, now = Date.now()) {
   }
   const created = Date.parse(pod.metadata?.creationTimestamp || "") || now;
   if (!c?.state?.running && !c?.state?.terminated && now - created > STUCK_START_MS) {
-    return problem("StuckStarting", "It has not started after 3 minutes; the sandbox may be failing to boot.", true);
+    return problem("StuckStarting", "It has not started after 3 minutes; the pod may be failing to start.", true);
   }
   if (oom) return problem("OOMKilled", "It ran out of memory and was restarted; the turn that was running was lost.", false);
   if (recent && restarts) return problem(recent.reason, `It crashed (${recent.reason}) and was restarted.`, false);
@@ -143,7 +142,7 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
   async function retemplate(name, deployment, grant, score) {
     const repository = deployment.metadata.annotations?.[REPO_ANNOTATION];
     const fresh = deploymentManifest({ name, repository, image: deployment.spec.template.spec.containers[0].image, grant,
-      runtimeClassName: deployment.spec.template.spec.runtimeClassName || null, envConfigMap: config.envConfigMap, imagePullSecret: config.imagePullSecret, resources: config.resources, score });
+      envConfigMap: config.envConfigMap, imagePullSecret: config.imagePullSecret, resources: config.resources, score });
     const template = fresh.spec.template;
     template.spec.initContainers ??= null;
     // Merge patch replaces arrays (containers, envFrom) wholesale and keeps replicas.
@@ -224,7 +223,6 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
             ready: (d.status?.readyReplicas || 0) > 0,
             state: deploymentState(d),
             pinned: d.metadata.annotations?.[PIN_ANNOTATION] === "true",
-            containers: !!d.spec?.template?.spec?.runtimeClassName,
             resources: d.spec?.template?.spec?.containers?.[0]?.resources ?? null,
             outdated: d.spec?.template?.spec?.containers?.[0]?.image !== config.image,
             score: declared && {
@@ -241,7 +239,7 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
     upgrade: name => patch(name, { spec: { template: { spec: { containers: [{ name: "workspace", image: config.image, resources: config.resources }] } } } }, STRATEGIC_PATCH),
     // The annotation is the record; workspaced keeps no database.
     setPinned: (name, pinned) => patch(name, { metadata: { annotations: { [PIN_ANNOTATION]: pinned ? "true" : null } } }),
-    async create({ name, repository, grant, runtimeClassName = null, score = null }) {
+    async create({ name, repository, grant, score = null }) {
       const existing = await locate(name);
       if (existing && existing.deployment.metadata?.annotations?.[REPO_ANNOTATION] !== repository) {
         throw httpError("workspace name taken", 409, "workspace_name_taken");
@@ -250,7 +248,7 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
       if (ns !== nsOf(grant)) throw httpError("this workspace was created with a grant in another namespace; remove it first", 409, "grant_namespace_mismatch");
       await create(core("persistentvolumeclaims", ns), pvcManifest({ name, repository, storage: config.storage, storageClassName: config.storageClassName }));
       await create(core("services", ns), serviceManifest({ name, repository }));
-      await create(apps(ns), deploymentManifest({ name, repository, image: config.image, grant, runtimeClassName,
+      await create(apps(ns), deploymentManifest({ name, repository, image: config.image, grant,
         envConfigMap: config.envConfigMap, imagePullSecret: config.imagePullSecret, resources: config.resources, score }));
       located.set(name, ns);
     },

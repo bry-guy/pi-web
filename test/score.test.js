@@ -83,9 +83,8 @@ test("unknown types, params, ids, and clashing ports fail with a message naming 
 
 test("without score.yaml the Deployment is byte-identical to the one workspaced always made", () => {
   const plain = deploymentManifest({ name: "srvivor", repository: "bry-guy/srvivor", image: "img:1" });
-  const sandboxed = deploymentManifest({ name: "srvivor", repository: "bry-guy/srvivor", image: "img:1", grant: { name: "operator", env: ["operator-env"], serviceAccount: "infra-operator", egress: "open", runtimeClass: "kata" }, runtimeClassName: "kata", imagePullSecret: "ghcr-pull", envConfigMap: "cm", resources: { requests: { cpu: "250m" }, limits: { memory: "4Gi" } } });
   const golden = readFileSync(new URL("./fixtures/workspace-deployment.golden.json", import.meta.url), "utf8");
-  assert.equal(JSON.stringify({ plain, sandboxed }, null, 2) + "\n", golden);
+  assert.equal(JSON.stringify(plain, null, 2) + "\n", golden);
 });
 
 test("with score.yaml the Deployment gets sidecars, the injected env, and the record", () => {

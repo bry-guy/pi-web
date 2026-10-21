@@ -97,7 +97,7 @@ export function localProvider({ root, spawnImpl = spawn, server = SERVER, maxRes
         const alive = procs.get(name)?.exitCode === null;
         const p = w.sleeping ? null : problem(name);
         const state = alive ? "running" : w.sleeping ? "sleeping" : p?.fatal ? "failed" : "starting";
-        return { name, repository: w.repository, grant: w.grant || "default", ready: alive, state, problem: p, pinned: !!w.pinned, containers: false };
+        return { name, repository: w.repository, grant: w.grant || "default", ready: alive, state, problem: p, pinned: !!w.pinned };
       });
     },
     async scale(name, replicas) {

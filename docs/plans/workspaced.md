@@ -41,7 +41,7 @@ One image, three entrypoints.
 4. **Migrate existing projects.** Snapshot pi-web PVC first. Keep in-pod paths
    (`/data/repos/<name>`, cwd-keyed Pi session dirs) so session files need no
    rewrite. Keep old Deployment manifests for rollback until verified.
-5. **Remaining projects.** castaway (Compose under Kata), finances, each with
+5. **Remaining projects.** castaway (Compose), finances, each with
    its own grants. Remove gateway resources.
 
 ## Security
@@ -78,8 +78,8 @@ One image, three entrypoints.
 - Worker env: ship the prestart script as a file, not an env value.
 
 ## Open: worker sandbox (blocks egress limits)
-Kata as configured costs ~2Gi/250m per worker (`podFixed` overhead) —
-unaffordable. Candidates: Kata tuned small (guest memory 256–512Mi,
-Cloud Hypervisor/Firecracker); smolvm (libkrun, elastic memory);
+Kata and gVisor are retired (Kata cost ~2Gi/250m per worker in `podFixed`
+overhead). Workers run as plain pods; app dependencies are Score sidecars.
+Candidates for a sandbox: smolvm (libkrun, elastic memory);
 Gondolin (earendil-works; QEMU/libkrun microVM with built-in egress and
 secret policy). Measure real per-worker overhead before choosing.

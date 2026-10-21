@@ -17,7 +17,7 @@ The deployment is web (chats, logins) plus workspaced and one worker per project
 
 ## Phase 2 — per-project workspaces
 
-Split into web (UI + chats), workspaced (creates workspaces, grants, routing) and one worker per project, with per-project storage, secrets, optional ServiceAccount, and an opt-in Kata sandbox for Docker Compose. See [project workspaces](plans/workspaced.md). This supersedes the earlier Dev Container and runtime-pod phases: the Pi SDK stays in-process with the project's environment, and grants stay operator-owned.
+Split into web (UI + chats), workspaced (creates workspaces, grants, routing) and one worker per project, with per-project storage, secrets, and an optional ServiceAccount. See [project workspaces](plans/workspaced.md). This supersedes the earlier Dev Container and runtime-pod phases: the Pi SDK stays in-process with the project's environment, and grants stay operator-owned.
 
 ## Phase 3 — workspace polish
 

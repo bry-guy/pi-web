@@ -125,7 +125,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     if (!res.ok) throw Object.assign(new Error("workspaced unavailable"), { code: "workspaced_unavailable", status: 502 });
     const body = await res.json();
     const byName = new Map(allGrants.map(g => [g.name, g]));
-    const grantView = g => g && { name: g.name, description: g.description || "", namespace: g.namespace, serviceAccount: g.serviceAccount, egress: g.egress, runtimeClass: g.runtimeClass, env: g.env || [] };
+    const grantView = g => g && { name: g.name, description: g.description || "", namespace: g.namespace, serviceAccount: g.serviceAccount, egress: g.egress, env: g.env || [] };
     return {
       usageAvailable: !!body.usageAvailable,
       workspaces: (body.workspaces || []).map(w => ({
@@ -306,7 +306,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     if (typeof repository !== "string" || !repository.trim()) return c.json({ error: "invalid_repository" }, 400);
     await pushGitHubAuth();
     await pushModelAuth();
-    const res = await call("/workspaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repository: repository.trim(), containers: !!body.containers, ...(body.grant ? { grant: String(body.grant) } : {}) }) });
+    const res = await call("/workspaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repository: repository.trim(), ...(body.grant ? { grant: String(body.grant) } : {}) }) });
     const created = await res.json().catch(() => ({}));
     if (!res.ok) return c.json({ error: created.error || "workspaced_unavailable" }, res.status);
     await waitReady(created.name);

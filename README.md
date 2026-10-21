@@ -60,7 +60,7 @@ echo "WORKSPACED_TOKEN=$(openssl rand -hex 32)" >> .env
 docker compose -f compose.yaml -f compose.workers.yaml up --build -d
 ```
 
-Workers in Compose share one container and one user, so this separates state, not trust. For real isolation (own pod, volume, ServiceAccount, egress policy, optional VM sandbox), run workspaced with `WORKSPACED_PROVIDER=kubernetes`; see [workspaced](docs/workspaced.md#grants).
+Workers in Compose share one container and one user, so this separates state, not trust. For real isolation (own pod, volume, ServiceAccount, egress policy), run workspaced with `WORKSPACED_PROVIDER=kubernetes`; see [workspaced](docs/workspaced.md#grants).
 
 State lives in the `pi-ez-web-data` and `pi-ez-workspaced-data` volumes. `docker compose down` keeps them; `down --volumes` deletes them.
 

@@ -54,12 +54,11 @@ export function serviceManifest({ name, repository }) {
   };
 }
 
-// The grant (see grants.js) supplies the ServiceAccount, env Secrets, egress
-// label and runtime class; nothing else may give a worker credentials.
+// The grant (see grants.js) supplies the ServiceAccount, env Secrets and egress
+// label; nothing else may give a worker credentials.
 // score: a plan from score.js (native sidecars, env, and the record kept in an annotation), or null.
-export function deploymentManifest({ name, repository, image, grant = { name: "default", env: [] }, runtimeClassName = null, envConfigMap = null, imagePullSecret = null, resources = {}, dindImage = "docker:28-dind", score = null }) {
+export function deploymentManifest({ name, repository, image, grant = { name: "default", env: [] }, envConfigMap = null, imagePullSecret = null, resources = {}, score = null }) {
   if (!validName(name)) throw new Error("invalid workspace name");
-  runtimeClassName = grant.runtimeClass || runtimeClassName;
   const serviceAccountName = grant.serviceAccount || null;
   // With score sidecars, the pod-wide automount would also reach the database, so the token moves to a
   // projected volume on the workspace container only (the same files the automount would provide).
@@ -72,7 +71,6 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
     ["PI_WEB_HOME", `${DATA}/pi-ez-web`], ["PI_CODING_AGENT_DIR", `${DATA}/pi-ez-agent`], ["PI_WEB_REPOS_ROOT", `${DATA}/repos`],
     ["PI_WEB_GITHUB_AUTH_FILE", `${GITHUB_DIR}/github-auth.json`],
     ["PI_WEB_MODEL_AUTH_FILE", `${MODEL_DIR}/auth.json`],
-    ...(runtimeClassName ? [["DOCKER_HOST", "tcp://127.0.0.1:2375"]] : []),
   ].map(([n, value]) => ({ name: n, value }));
   const taken = new Set(env.map(e => e.name));
   for (const e of score?.env || []) {
@@ -88,32 +86,13 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
     name: "workspace", image, env, resources, ...(envFrom.length ? { envFrom } : {}),
     ports: [{ name: "http", containerPort: WORKSPACE_PORT }],
     readinessProbe: { httpGet: { path: "/api/health", port: WORKSPACE_PORT }, periodSeconds: 1 },
-    // Startup allows a slow sandbox boot (Kata) without liveness killing it;
+    // Startup allows a slow first boot without liveness killing it;
     // liveness then restarts a worker that stops answering for a minute.
     startupProbe: { httpGet: { path: "/api/health", port: WORKSPACE_PORT }, periodSeconds: 1, failureThreshold: 300 },
     livenessProbe: { httpGet: { path: "/api/health", port: WORKSPACE_PORT }, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 6 },
     volumeMounts: [{ name: "data", mountPath: DATA }, { name: "github", mountPath: GITHUB_DIR, readOnly: true }, { name: "model", mountPath: MODEL_DIR, readOnly: true },
       ...(scopedToken ? [{ name: "sa-token", mountPath: SA_DIR, readOnly: true }] : [])],
   }];
-  if (runtimeClassName) {
-    // Privileged is confined to the sandbox VM; never emit it without a runtime class.
-    containers.push({
-      name: "docker", image: dindImage,
-      // Kata shares the PVC over virtio-fs, which overlayfs can't use as an upper dir, so
-      // Docker's data lives in a sparse ext4 image on the PVC, loop-mounted inside the VM.
-      // shortcut: apk fetches e2fsprogs on each start; bake a dind image if that bites.
-      command: ["sh", "-ec", [
-        "apk add -q e2fsprogs",
-        "img=/docker-data/docker.img",
-        "[ -f $img ] || { truncate -s 20G $img; mkfs.ext4 -q -E lazy_itable_init=1,lazy_journal_init=1,nodiscard $img; }",
-        "mount -o loop $img /var/lib/docker",
-        "exec dockerd-entrypoint.sh",
-      ].join("\n")],
-      env: [{ name: "DOCKER_TLS_CERTDIR", value: "" }],
-      securityContext: { privileged: true, runAsUser: 0 },
-      volumeMounts: [{ name: "data", mountPath: "/docker-data", subPath: "docker" }],
-    });
-  }
   return {
     apiVersion: "apps/v1", kind: "Deployment",
     metadata: { ...meta(name, repository), annotations: { [REPO_ANNOTATION]: repository, [GRANT_ANNOTATION]: grant.name, ...(score ? { [SCORE_ANNOTATION]: score.record } : {}) } },
@@ -127,7 +106,6 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
           // Workers have no business discovering each other via injected *_SERVICE_HOST env.
           enableServiceLinks: false,
           ...(serviceAccountName ? { serviceAccountName, automountServiceAccountToken: !scopedToken } : { automountServiceAccountToken: false }),
-          ...(runtimeClassName ? { runtimeClassName } : {}),
           ...(imagePullSecret ? { imagePullSecrets: [{ name: imagePullSecret }] } : {}),
           securityContext: { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000 },
           ...(score ? { initContainers: score.sidecars } : {}),
