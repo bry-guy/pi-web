@@ -18,6 +18,7 @@ RUN apt-get update \
       curl \
       git \
       jq \
+      libxml2 \
       openssh-client \
       openssl \
       python3 \
