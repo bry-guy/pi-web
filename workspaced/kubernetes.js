@@ -241,7 +241,7 @@ export function kubernetesProvider({ kube, config = kubernetesConfig(), grants =
     setPinned: (name, pinned) => patch(name, { metadata: { annotations: { [PIN_ANNOTATION]: pinned ? "true" : null } } }),
     async create({ name, repository, grant, score = null }) {
       const existing = await locate(name);
-      if (existing && existing.deployment.metadata?.annotations?.[REPO_ANNOTATION] !== repository) {
+      if (existing && (existing.deployment.metadata?.annotations?.[REPO_ANNOTATION] ?? null) !== (repository ?? null)) {
         throw httpError("workspace name taken", 409, "workspace_name_taken");
       }
       const ns = existing?.ns || nsOf(grant);

@@ -30,7 +30,7 @@ Everything comes from one image, `ghcr.io/bry-guy/pi-ez-web`, run with different
 | [**worker**](docs/worker.md) | started by workspaced | — | Runs Pi for one repository with that project's tools and secrets |
 | [pi-sync](https://github.com/bry-guy/pi-sync) | separate image | no | Syncs conversations with the Pi CLI on your other machines |
 
-web alone is a complete app: it runs projects in its own process. Add workspaced when projects should have their own process, volume, tools and secrets.
+web alone is a complete app: it runs projects in its own process. Add workspaced when projects should have their own process, volume, tools and secrets; chats then move to a worker of their own too.
 
 ## What to configure
 

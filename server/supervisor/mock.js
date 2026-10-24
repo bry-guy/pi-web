@@ -532,6 +532,7 @@ export function registerMockWorkers(api) {
   const resources = { requests: { cpu: "250m", memory: "512Mi" }, limits: { cpu: null, memory: "4Gi" } };
   const grant = { name: "default", description: "", namespace: "pi", serviceAccount: "default", egress: "open", env: ["GITHUB_TOKEN"] };
   const workers = [
+    { name: "chats", repository: null, state: "running", keepAwake: false, busy: false, lastUsed: Date.now() - 20_000, resources, usage: { cpuMillicores: 30, memoryBytes: 314_572_800 }, grant: { ...grant, env: [] } },
     { name: "pi-ez-web", repository: "bry-guy/pi-ez-web", state: "running", keepAwake: true, busy: false, lastUsed: Date.now() - 4_000, resources, usage: { cpuMillicores: 120, memoryBytes: 734_003_200 }, grant },
     { name: "scratch", repository: "bry-guy/scratch", state: "running", keepAwake: false, busy: true, lastUsed: Date.now() - 90_000, resources, usage: { cpuMillicores: 15, memoryBytes: 104_857_600 }, grant },
     { name: "dotfiles", repository: "bry-guy/dotfiles", state: "sleeping", keepAwake: false, busy: false, lastUsed: Date.now() - 3_600_000, resources, usage: null, grant: { ...grant, name: "operator", namespace: "ops", env: [] } },

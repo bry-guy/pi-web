@@ -42,6 +42,14 @@ export function register(api, deps) {
       try { projects.push(await projectState(p, sup)); }
       catch (e) { projects.push({ id: p.id, name: p.name, repoPath: p.repoPath, defaultBranch: await ws.defaultBranchAsync(p.repoPath), error: String(e.message || e), branches: [], sessions: [], contexts: [], worktrees: {}, workspaceStatus: {} }); }
     }
+    const remoteState = remote ? await remote.refresh() : null;
+    let chats = remoteState ? remoteState.chats : await chatsState(sup);
+    // Until web's earlier chats have moved to the chats worker, web still lists and serves them.
+    if (remoteState && remote.localChatsPending()) {
+      const moved = new Set(chats.map(chat => chat.id));
+      chats = [...chats, ...(await chatsState(sup)).filter(chat => !moved.has(chat.id))]
+        .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+    }
     return c.json({
       apiContractVersion: API_CONTRACT_VERSION,
       buildId: BUILD_ID,
@@ -60,8 +68,8 @@ export function register(api, deps) {
       sync: piSyncState(),
       reposRoot: reposRoot(cfg),
       reposRootSource: process.env.PI_WEB_REPOS_ROOT ? "environment" : cfg.reposRoot ? "config" : "default",
-      projects: remote ? await remote.projects() : projects,
-      chats: await chatsState(sup),
+      projects: remoteState ? remoteState.projects : projects,
+      chats,
     });
   });
 

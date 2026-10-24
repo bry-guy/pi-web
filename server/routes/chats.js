@@ -1,3 +1,5 @@
+import { importChatItem } from "../chat-transfer.js";
+
 export function register(api, deps) {
   const { fs, path, chatsDir, newId, hub, sup } = deps;
 
@@ -11,5 +13,11 @@ export function register(api, deps) {
     const { id } = await sup.createSession({ cwd: scratch });
     hub.emit(id, "session_created", { session: { id, title: "New session" } });
     return c.json({ id });
+  });
+
+  // The chats worker receives web's earlier chats here, one file at a time (see chat-transfer.js).
+  api.post("/chats/import", async c => {
+    const body = await c.req.json().catch(() => null);
+    return c.json({ ok: true, written: importChatItem(body) });
   });
 }

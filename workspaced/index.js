@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { createLifecycle, PASSIVE } from "./lifecycle.js";
-import { slugFromRepository, validName } from "./manifests.js";
+import { CHATS_WORKSPACE, slugFromRepository, validName } from "./manifests.js";
 import { grantAllows, grantError, parseGrants, resolveGrant, withGrantCheck } from "./grants.js";
 import { createScoreSource, scoreFromFile, withScore } from "./score.js";
 
@@ -53,6 +53,13 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
 
   app.post("/v1/workspaces", async c => {
     const body = await c.req.json().catch(() => null);
+    // The chats worker holds plain chats: no repository, no score, and only a grant any project may use.
+    if (body?.chats === true) {
+      const grant = resolveGrant(grants, body.grant, null);
+      await lifecycle.makeRoom(CHATS_WORKSPACE, 1).catch(() => {});
+      await provider.create({ name: CHATS_WORKSPACE, repository: null, grant, score: null });
+      return c.json({ name: CHATS_WORKSPACE }, 201);
+    }
     const repository = typeof body?.repository === "string" ? body.repository.trim() : "";
     if (!repository || repository.length > 300 || /\s/.test(repository)) return c.json({ error: "invalid_repository" }, 400);
     const name = body.name ?? slugFromRepository(repository);

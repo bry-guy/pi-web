@@ -540,7 +540,7 @@ class PiSettings extends HTMLElement {
       ? `<div class="worker-results" role="status">${this.workerResults.map(result => `<div class="${result.ok ? "" : "error"}">${esc(result.name)}: ${result.ok ? "reloaded" : esc(workerErrorMessage({ error: result.error }))}</div>`).join("")}</div>`
       : "";
     const list = inventory
-      ? workers.length ? workers.map(worker => workerCard(worker, inventory.usageAvailable)).join("") : `<div class="modal-empty">No workers yet. Adding a project starts one.</div>`
+      ? workers.length ? workers.map(worker => workerCard(worker, inventory.usageAvailable, { canDelete: !!worker.repository })).join("") : `<div class="modal-empty">No workers yet. Adding a project starts one.</div>`
       : store.state.workersError ? "" : `<div class="modal-empty">Loading workers…</div>`;
     return `<section class="settings-section">
         <div class="settings-card settings-card-spaced"><div class="settings-row">

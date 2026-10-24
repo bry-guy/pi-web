@@ -1,11 +1,17 @@
 // Client for workspaced. Projects live in per-project workers; web routes
 // project/session calls to the owning worker, merges their state into
-// /api/state, and re-emits their events on its own SSE hub. Without
-// PI_WEB_WORKSPACED_URL none of this is active and projects stay in-process.
+// /api/state, and re-emits their events on its own SSE hub. Plain chats live
+// in one more worker, "chats", which has no repository. Without
+// PI_WEB_WORKSPACED_URL none of this is active and everything stays in-process.
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { chatTransfer } from "./chat-transfer.js";
+
+// workspaced's CHATS_WORKSPACE: the worker without a repository.
+const CHATS = "chats";
+const isChats = w => w.name === CHATS && !w.repository;
 
 // Workers read web's model logins from a read-only copy. Pi refreshes OAuth
 // itself only inside 5 minutes of expiry (and would fail on the read-only
@@ -20,10 +26,11 @@ export function remoteWorkspacesFromEnv(env, deps) {
   if (!url) return null;
   const modelAuthPath = path.join(env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"), "auth.json");
   const cachePath = env.PI_WEB_HOME ? path.join(env.PI_WEB_HOME, "remote-projects.json") : null;
-  return createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token: env.WORKSPACED_TOKEN || null, modelAuthPath, cachePath, ...deps });
+  return createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token: env.WORKSPACED_TOKEN || null, modelAuthPath, cachePath, transfer: chatTransfer(), ...deps });
 }
 
-export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS }) {
+// transfer: web's own earlier chats to copy into the chats worker (chat-transfer.js), or null.
+export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, log = console.log }) {
   const owners = { project: new Map(), session: new Map() };
   const streams = new Map();
   const auth = token ? { authorization: `Bearer ${token}` } : {};
@@ -40,6 +47,19 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     } catch { /* the cache is a convenience */ }
   }
   for (const [name, projects] of Object.entries(snapshots)) remember(name, projects);
+
+  // Last known chats, so they stay listed while the chats worker sleeps.
+  const chatCachePath = cachePath ? path.join(path.dirname(cachePath), "remote-chats.json") : null;
+  let chatSnapshot = [];
+  try { chatSnapshot = chatCachePath ? JSON.parse(readFileSync(chatCachePath, "utf8")) : []; } catch { chatSnapshot = []; }
+  function saveChats() {
+    if (!chatCachePath) return;
+    try {
+      writeFileSync(`${chatCachePath}.tmp`, JSON.stringify(chatSnapshot), { mode: 0o600 });
+      renameSync(`${chatCachePath}.tmp`, chatCachePath);
+    } catch { /* the cache is a convenience */ }
+  }
+  for (const chat of chatSnapshot) owners.session.set(chat.id, CHATS);
 
   const call = (path, init = {}) => fetchImpl(`${url}/v1${path}`, { ...init, headers: { ...auth, ...(init.headers || {}) } });
   const workerPath = (name, rest) => `/workspaces/${encodeURIComponent(name)}/api${rest}`;
@@ -68,6 +88,11 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
 
   // An ended session must not come back from the cached snapshot of a slow or sleeping worker.
   function forgetSession(name, id) {
+    if (name === CHATS) {
+      chatSnapshot = chatSnapshot.filter(s => s.id !== id);
+      saveChats();
+      return;
+    }
     const prune = nodes => (nodes || []).filter(s => s.id !== id).map(s => ({ ...s, children: prune(s.children) }));
     if (!snapshots[name]) return;
     snapshots[name] = snapshots[name].map(p => ({ ...p, sessions: prune(p.sessions) }));
@@ -79,16 +104,20 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     streams.delete(name);
   }
 
-  // Remote projects for /api/state; also refreshes ownership and event streams.
+  // Remote projects and chats for /api/state; also refreshes ownership and event streams.
   // Only running workers are polled or streamed: web must never wake a worker.
-  async function projects() {
-    let workspaces;
-    try { workspaces = await list(); } catch { return []; }
-    const known = new Set(workspaces.map(w => w.name));
+  async function refresh() {
+    maybeMoveChats();
+    let all;
+    try { all = await list(); } catch { return { projects: [], chats: [] }; }
+    const known = new Set(all.map(w => w.name));
     let changed = false;
     for (const name of Object.keys(snapshots)) if (!known.has(name)) { delete snapshots[name]; changed = true; }
     for (const name of streams.keys()) if (!known.has(name)) unsubscribe(name);
+    const chatsWorker = all.find(isChats);
+    const workspaces = all.filter(w => !isChats(w));
     const tag = (w, p) => ({ ...p, workspace: w.name, workspaceState: w.state || (w.ready ? "running" : "starting"), workspacePinned: !!w.pinned, workspaceGrant: w.grant || "default", workspaceProblem: w.problem || null });
+    const chats = chatsWorker ? chatList(chatsWorker) : Promise.resolve([]);
     const lists = await Promise.all(workspaces.map(async w => {
       const running = w.state ? w.state === "running" : w.ready;
       let fresh = null;
@@ -105,8 +134,64 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       return [tag(w, { id: `workspace:${w.name}`, name: w.name, pending: true, branches: [], sessions: [], contexts: [], worktrees: {}, workspaceStatus: {} })];
     }));
     if (changed) saveSnapshots();
-    return lists.flat();
+    return { projects: lists.flat(), chats: await chats };
   }
+  const projects = async () => (await refresh()).projects;
+
+  async function chatList(w) {
+    if ((w.state || (w.ready ? "running" : "starting")) !== "running") {
+      unsubscribe(w.name);
+      return chatSnapshot;
+    }
+    subscribe(w.name);
+    const fresh = (await workerState(w.name).catch(() => null))?.chats;
+    if (!fresh) return chatSnapshot;
+    for (const chat of fresh) owners.session.set(chat.id, w.name);
+    if (JSON.stringify(fresh) !== JSON.stringify(chatSnapshot)) { chatSnapshot = fresh; saveChats(); }
+    return fresh;
+  }
+
+  // Creates the chats worker the first time it is needed, and waits until it answers.
+  let chatsStarting = null;
+  function ensureChats() {
+    chatsStarting ??= (async () => {
+      if (!(await list()).some(isChats)) {
+        await pushGitHubAuth();
+        await pushModelAuth();
+        const res = await call("/workspaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chats: true }) });
+        if (!res.ok) throw Object.assign(new Error("could not create the chats worker"), { code: "workspaced_unavailable", status: 502 });
+      }
+      await call(`/workspaces/${CHATS}/wake`, { method: "POST" }).catch(() => {});
+      await waitReady(CHATS);
+      subscribe(CHATS);
+    })().finally(() => { chatsStarting = null; });
+    return chatsStarting;
+  }
+
+  async function createChat(c) {
+    await ensureChats();
+    const res = await call(workerPath(CHATS, "/chats"), { method: "POST", headers: { "content-type": "application/json" }, body: await c.req.text() || "{}" });
+    const body = await res.json().catch(() => ({ error: "workspace_unavailable" }));
+    if (res.ok && body.id) owners.session.set(body.id, CHATS);
+    return c.json(body, res.status);
+  }
+
+  // Web's earlier in-process chats move to the chats worker once; until then web still serves them.
+  let moving = null;
+  let lastMoveAttempt = -Infinity;
+  function maybeMoveChats() {
+    if (!transfer?.pending() || moving || Date.now() - lastMoveAttempt < 60_000) return;
+    lastMoveAttempt = Date.now();
+    moving = (async () => {
+      await ensureChats();
+      const count = await transfer.run(async item => {
+        const res = await call(workerPath(CHATS, "/chats/import"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(item) });
+        if (!res.ok) throw new Error(`import answered ${res.status}`);
+      });
+      log(`pi-ez-web: moved ${count} chat files to the chats worker`);
+    })().catch(e => log(`pi-ez-web: could not move chats to the chats worker yet: ${e.message}`)).finally(() => { moving = null; });
+  }
+  const localChatsPending = () => !!transfer?.pending();
 
   async function setPinned(name, pinned) {
     const res = await call(`/workspaces/${encodeURIComponent(name)}/pin`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ pinned: !!pinned }) });
@@ -153,6 +238,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     unsubscribe(name);
     delete snapshots[name];
     saveSnapshots();
+    if (name === CHATS) { chatSnapshot = []; saveChats(); }
     for (const map of Object.values(owners)) for (const [id, owner] of map) if (owner === name) map.delete(id);
     return { status: 200, body: { ok: true, name, purged: purge } };
   }
@@ -327,7 +413,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
 
   return {
     wake,
-    projects, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
+    projects, refresh, createChat, localChatsPending, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };
 }
@@ -366,6 +452,7 @@ export function registerRemoteRoutes(api, remote) {
     const { status, body: out } = await remote.setGrant(c.req.param("name"), body.grant);
     return c.json(out, status);
   });
+  api.post("/chats", c => remote.createChat(c));
   api.post("/projects", async c => {
     const body = await c.req.json().catch(() => ({}));
     if (body.source !== "github" && body.source !== "git-url") return c.json({ error: "unsupported_repository_source" }, 400);

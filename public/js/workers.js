@@ -22,7 +22,7 @@ export function workerCard(worker, usageAvailable, { canDelete = true } = {}) {
     : `<div class="worker-fact"><dt>Grant</dt><dd>default</dd></div>`;
   return `<div class="settings-card settings-card-spaced worker-card" data-worker="${name}">
       <div class="settings-row">
-        <div class="sr-main"><div class="sr-title">${name}<span class="worker-state ${state}">${esc(state)}</span>${worker.busy ? `<span class="worker-state busy">busy</span>` : ""}</div><div class="sr-sub">${esc(worker.repository || "")}</div></div>
+        <div class="sr-main"><div class="sr-title">${name}<span class="worker-state ${state}">${esc(state)}</span>${worker.busy ? `<span class="worker-state busy">busy</span>` : ""}</div><div class="sr-sub">${esc(worker.repository || "Plain chats (no repository)")}</div></div>
       </div>
       <div class="settings-row">
         <div class="sr-main"><div class="sr-title">Keep awake</div><div class="sr-sub">Never put to sleep automatically.</div></div>

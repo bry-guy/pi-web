@@ -6,6 +6,8 @@ export const GRANT_ANNOTATION = "pi-ez.dev/grant";
 export const SCORE_ANNOTATION = "pi-ez.dev/score";
 export const EGRESS_LABEL = "pi-ez.dev/egress";
 export const WORKSPACE_PORT = 3141;
+// The one worker without a repository; web runs plain chats in it.
+export const CHATS_WORKSPACE = "chats";
 export const GITHUB_SECRET = "pi-ez-github-auth";
 const GITHUB_DIR = "/run/secrets/pi-ez-github";
 export const MODEL_SECRET = "pi-ez-model-auth";
@@ -36,7 +38,7 @@ function meta(name, repository) {
   return {
     name: `ws-${name}`,
     labels: { "app.kubernetes.io/managed-by": MANAGED_BY, [NAME_LABEL]: name },
-    annotations: { [REPO_ANNOTATION]: repository },
+    annotations: repository ? { [REPO_ANNOTATION]: repository } : {},
   };
 }
 
@@ -95,7 +97,7 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
   }];
   return {
     apiVersion: "apps/v1", kind: "Deployment",
-    metadata: { ...meta(name, repository), annotations: { [REPO_ANNOTATION]: repository, [GRANT_ANNOTATION]: grant.name, ...(score ? { [SCORE_ANNOTATION]: score.record } : {}) } },
+    metadata: { ...meta(name, repository), annotations: { ...meta(name, repository).annotations, [GRANT_ANNOTATION]: grant.name, ...(score ? { [SCORE_ANNOTATION]: score.record } : {}) } },
     spec: {
       replicas: 1,
       strategy: { type: "Recreate" },

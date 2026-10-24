@@ -1,6 +1,6 @@
 # worker
 
-One per project. A worker is the same server as [web](web.md), running the Pi SDK in-process against a single cloned repository, with that project's tools and secrets. workspaced starts it; you never deploy one by hand.
+One per project, plus one named `chats` for plain chats. A worker is the same server as [web](web.md), running the Pi SDK in-process against a single cloned repository, with that project's tools and secrets. The `chats` worker has no repository and always uses a grant any project may use; it gets the same environment and dotfiles as project workers. workspaced starts it; you never deploy one by hand.
 
 ## What a worker gets
 

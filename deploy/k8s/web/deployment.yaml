@@ -187,7 +187,7 @@ spec:
             # Name shown to other pi-sync clients; the pod name changes every deploy.
             - name: PI_SYNC_DEVICE_LABEL
               value: web
-            # Projects run in per-project workers via workspaced; chats stay here.
+            # Projects run in per-project workers via workspaced; chats in its "chats" worker.
             - name: PI_WEB_WORKSPACED_URL
               value: http://pi-workspaced.pi-workspaced.svc:3150
           ports:

@@ -130,7 +130,7 @@ export function localProvider({ root, spawnImpl = spawn, server = SERVER, maxRes
     // Local workers share this machine's trust zone; a grant is recorded, not enforced.
     async create({ name, repository, grant }) {
       const all = read();
-      if (all[name] && all[name].repository !== repository) throw Object.assign(new Error("workspace name taken"), { status: 409, code: "workspace_name_taken" });
+      if (all[name] && (all[name].repository ?? null) !== (repository ?? null)) throw Object.assign(new Error("workspace name taken"), { status: 409, code: "workspace_name_taken" });
       all[name] = { ...all[name], repository, grant: grant?.name || "default" };
       writeAtomic(registry, JSON.stringify(all, null, 2));
       await start(name, all[name]);
