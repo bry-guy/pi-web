@@ -138,8 +138,11 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   }
   const projects = async () => (await refresh()).projects;
 
+  // Whether the chats worker answered at the last look; when not, the next chat request wakes it first.
+  let chatsAwake = false;
   async function chatList(w) {
-    if ((w.state || (w.ready ? "running" : "starting")) !== "running") {
+    chatsAwake = (w.state || (w.ready ? "running" : "starting")) === "running";
+    if (!chatsAwake) {
       unsubscribe(w.name);
       return chatSnapshot;
     }
@@ -163,6 +166,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       }
       await call(`/workspaces/${CHATS}/wake`, { method: "POST" }).catch(() => {});
       await waitReady(CHATS);
+      chatsAwake = true;
       subscribe(CHATS);
     })().finally(() => { chatsStarting = null; });
     return chatsStarting;
@@ -280,6 +284,8 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   }
 
   async function forward(c, name) {
+    // Unlike a project, the UI has no worker state for a chat to wake, so web wakes the chats worker itself.
+    if (name === CHATS && !chatsAwake) await ensureChats();
     const raw = c.req.url;
     const search = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
     const rest = c.req.path.replace(/^.*?\/api(?=\/)/, "");
@@ -292,8 +298,10 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     try {
       res = await fetchImpl(`${url}/v1${workerPath(name, rest)}${search}`, { method: c.req.method, headers, body: hasBody ? c.req.raw.body : undefined, duplex: "half", signal: c.req.raw.signal });
     } catch {
+      if (name === CHATS) chatsAwake = false;
       return c.json({ error: "workspace_unavailable", workspace: name }, 502);
     }
+    if (name === CHATS && res.status >= 502) chatsAwake = false;
     const out = new Headers(res.headers);
     for (const h of DROP_HEADERS) out.delete(h);
     const closed = c.req.method === "POST" && rest.match(/^\/sessions\/([^/]+)\/close$/);

@@ -76,6 +76,14 @@ test("web lists chats from the chats worker, creates them there, and routes thei
     assert.deepEqual(state.projects, [], "the chats worker is not a project");
     assert.deepEqual(state.chats.map(c => c.id), ["c1"]);
     assert.deepEqual(await (await api.request("/sessions/c1/meta")).json(), { path: "/api/sessions/c1/meta" });
+
+    // A sleeping chats worker is woken by the next chat request instead of failing it.
+    workers[0].state = "sleeping";
+    await remote.refresh();
+    workers[0].state = "running";
+    const before = seen.length;
+    assert.deepEqual(await (await api.request("/sessions/c1/meta")).json(), { path: "/api/sessions/c1/meta" });
+    assert.deepEqual(seen.slice(before).filter(r => !r.endsWith("/events")), ["GET /api/health", "GET /api/sessions/c1/meta"], "waits for the worker, then forwards");
   } finally {
     remote.stop();
     daemon.close();
