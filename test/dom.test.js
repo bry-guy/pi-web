@@ -294,24 +294,32 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(card(), null);
   assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { confirmed: true });
+  // Typed answers go in the message box, whose button becomes Answer.
+  const composerText = () => root.querySelector("pi-composer textarea");
+  const sendButton = () => root.querySelector("pi-composer .send-btn");
+  const answerWith = async text => {
+    composerText().value = text;
+    sendButton().click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  };
+  assert.equal(sendButton().textContent, "↑");
   applyEvent({ v: 1, seq: 3, sessionId: "s1", type: "extension_ui_request", requestId: "ui-3", method: "input", title: "Name", placeholder: "Session name" });
-  root.querySelector("[data-extension-ui-value]").value = "Web session";
-  root.querySelector("[data-extension-ui-submit]").click();
-  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(card().querySelector("input, textarea"), null, "the card has no text field of its own");
+  assert.equal(sendButton().textContent, "Answer");
+  await answerWith("Web session");
   assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "Web session" });
+  assert.equal(composerText().value, "", "the answer leaves the message box");
+  assert.equal(sendButton().textContent, "↑");
   applyEvent({ v: 1, seq: 4, sessionId: "s1", type: "extension_ui_request", requestId: "ui-4", method: "editor", title: "Edit", prefill: "before" });
-  root.querySelector("[data-extension-ui-value]").value = "after";
-  root.querySelector("[data-extension-ui-submit]").click();
-  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(composerText().value, "before", "a suggested answer starts the draft");
+  await answerWith("after");
   assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "after" });
   // ask_user_question: option rows with descriptions, plus an inline "type your own" field.
   applyEvent({ v: 1, seq: 5, sessionId: "s1", type: "extension_ui_request", requestId: "ui-5", method: "select", title: "[Approach] Which one?", options: ["1. Fast — quick fix", "2. Thorough — full rewrite", "3. Type something."] });
   assert.match(root.querySelector(".ask-head").textContent, /Approach/);
-  assert.equal(root.querySelectorAll(".ask-option").length, 2, "the 'Type something.' row becomes a field");
+  assert.equal(root.querySelectorAll(".ask-option").length, 2, "the 'Type something.' row becomes the message box");
   assert.match(root.querySelector(".ask-option small").textContent, /quick fix/);
-  root.querySelector("[data-extension-ui-value]").value = "Neither";
-  root.querySelector("[data-extension-ui-submit]").click();
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await answerWith("Neither");
   assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "3. Type something." }, "a typed answer picks the questionnaire's own row");
   applyEvent({ v: 1, seq: 51, sessionId: "s1", type: "extension_ui_request", requestId: "ui-5b", method: "input", title: "[Approach] Which one?\n\n1. Fast — quick fix\n2. Thorough — full rewrite\n\nType your answer:", placeholder: "" });
   assert.equal(card(), null, "its follow-up prompt is answered without showing");
@@ -320,9 +328,10 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(store.state.asks.s1, undefined);
   // Multi-select: checkboxes, sent as the numbers the questionnaire expects.
   applyEvent({ v: 1, seq: 6, sessionId: "s1", type: "extension_ui_request", requestId: "ui-6", method: "input", title: "Pick some\n\n1. A — first\n2. B — second\n\nEnter the numbers", placeholder: "1,3; custom answer" });
-  root.querySelector("[data-extension-ui-check='2']").checked = true;
-  root.querySelector("[data-extension-ui-submit]").click();
-  await new Promise(resolve => setTimeout(resolve, 0));
+  const box = root.querySelector("[data-extension-ui-check='2']");
+  box.checked = true;
+  box.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  await answerWith("");
   assert.deepEqual(dom.window.__extensionUiResponses.at(-1), { value: "2" });
   // A question answered or timed out elsewhere disappears; another session's question waits there.
   applyEvent({ v: 1, seq: 7, sessionId: "s1", type: "extension_ui_request", requestId: "ui-7", method: "confirm", title: "Gone soon" });
@@ -617,6 +626,16 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   newChat.click();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(store.state.chatId, "c1");
+  // The Chats heading opens its menu: new chat, past (ended) chats to reopen, and the chats worker.
+  store.state.endedChats = [{ id: "c0", title: "Old chat", when: "1d ago" }];
+  root.querySelector(".chats-head [data-act='chats-menu']").click();
+  const chatsMenu = root.querySelector("pi-project-menu .session-picker");
+  assert.ok(chatsMenu, "the Chats menu opens");
+  assert.match(chatsMenu.textContent, /New chat/);
+  assert.match(chatsMenu.textContent, /Past chats\s*1/);
+  assert.match(chatsMenu.textContent, /Old chat/);
+  chatsMenu.querySelector("[data-act='close-project-menu']").click();
+  assert.equal(root.querySelector("pi-project-menu .session-picker"), null);
 
   const projectNew = root.querySelector("[data-act='project-row'] [data-act='project-new-session']");
   assert.ok(projectNew, "the project row has a + for a new session");

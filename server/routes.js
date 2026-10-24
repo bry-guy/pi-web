@@ -6,7 +6,7 @@ import path from "node:path";
 import {
   chatsDir, loadBindings, loadConfig, newId, normalizeHookSets, normalizeHooks, normalizePiConfig, normalizeSyncConfig, normalizeThinkingLevel, repositorySource, reposRoot, resolvePath, saveBindings, saveConfig, slug, syncConfig, worktreeRoot,
 } from "./config.js";
-import { chatsState, projectState, sessionWorkspace, sessionsUsingWorkspaceAsync } from "./domain.js";
+import { chatsListing, chatsState, projectState, sessionWorkspace, sessionsUsingWorkspaceAsync } from "./domain.js";
 import { cleanupCandidate, closeSession, restoreSession, findProjectByWorkspace, findProjectByWorkspaceAsync, returnSessionToMain } from "./lifecycle.js";
 import { hub } from "./events.js";
 import * as ws from "./workspaces.js";
@@ -62,7 +62,7 @@ export function buildApi(sup, { extensionUi = null } = {}) {
     chatsDir, loadBindings, loadConfig, newId, normalizeHookSets, normalizeHooks, normalizePiConfig,
     normalizeSyncConfig, normalizeThinkingLevel, repositorySource, reposRoot, resolvePath,
     saveBindings, saveConfig, slug, syncConfig, worktreeRoot,
-    chatsState, projectState, sessionWorkspace, sessionsUsingWorkspaceAsync,
+    chatsListing, chatsState, projectState, sessionWorkspace, sessionsUsingWorkspaceAsync,
     cleanupCandidate, closeSession, restoreSession, findProjectByWorkspace, findProjectByWorkspaceAsync, returnSessionToMain,
     normalizeGitHubOwner, cloneRepository, DEFAULT_DIFF_TARGET, readFileTree, readFileView,
     hookResult, projectHooks, runHook, resolveProjectEnvironment, gitCredentialEnvironment,

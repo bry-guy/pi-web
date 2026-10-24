@@ -2,8 +2,10 @@
 // project/session calls to the owning worker, merges their state into
 // /api/state, and re-emits their events on its own SSE hub. Plain chats live
 // in one more worker, "chats", which has no repository. Without
-// PI_WEB_WORKSPACED_URL none of this is active and everything stays in-process.
+// PI_WEB_WORKSPACED_URL (only mock mode and tests) web serves everything in-process.
+// PI_WEB_WORKSPACED_URL=local runs workspaced inside web, its workers as child processes.
 
+import { randomBytes } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -22,11 +24,36 @@ const MODEL_AUTH_SYNC_MS = 5 * 60_000;
 const DROP_HEADERS = ["connection", "keep-alive", "transfer-encoding", "upgrade", "host", "content-length", "content-encoding"];
 
 export function remoteWorkspacesFromEnv(env, deps) {
-  const url = env.PI_WEB_WORKSPACED_URL;
+  let url = env.PI_WEB_WORKSPACED_URL;
   if (!url) return null;
+  let token = env.WORKSPACED_TOKEN || null;
+  let fetchImpl;
+  if (url === "local") {
+    const embedded = embeddedWorkspaced(env);
+    ({ url, token, fetchImpl } = embedded);
+  }
   const modelAuthPath = path.join(env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"), "auth.json");
   const cachePath = env.PI_WEB_HOME ? path.join(env.PI_WEB_HOME, "remote-projects.json") : null;
-  return createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token: env.WORKSPACED_TOKEN || null, modelAuthPath, cachePath, transfer: chatTransfer(), ...deps });
+  return createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), ...(fetchImpl ? { fetchImpl } : {}), ...deps });
+}
+
+// workspaced with the local provider, answering web's calls in-process (no port, no network).
+// Workers share this machine and HOME, so they skip the prestart web already ran.
+export function embeddedWorkspaced(env, { log = console.log } = {}) {
+  const token = randomBytes(32).toString("hex");
+  const home = env.PI_WEB_HOME || path.join(homedir(), ".pi-web-ui");
+  const workspacedEnv = { ...env, WORKSPACED_PROVIDER: "local", WORKSPACED_ROOT: env.WORKSPACED_ROOT || path.join(home, "workspaces") };
+  const ready = import("../workspaced/index.js")
+    .then(m => m.workspacedFromEnv(workspacedEnv, { token, auth: "token", local: { env: { PI_WEB_PRESTART_COMMAND: "" } } }));
+  ready.then(({ provider }) => {
+    log(`pi-ez-web: workers run as local processes under ${workspacedEnv.WORKSPACED_ROOT}`);
+    const stop = signal => { provider.stop(); process.exit(signal === "SIGINT" ? 130 : 143); };
+    process.once("SIGTERM", stop);
+    process.once("SIGINT", stop);
+    process.once("exit", () => provider.stop());
+  }, e => log(`pi-ez-web: could not start the built-in workspaced: ${e.message}`));
+  const fetchImpl = async (input, init) => (await ready).app.fetch(new Request(input, init));
+  return { url: "http://workspaced.internal", token, fetchImpl };
 }
 
 // transfer: web's own earlier chats to copy into the chats worker (chat-transfer.js), or null.
@@ -134,12 +161,15 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       return [tag(w, { id: `workspace:${w.name}`, name: w.name, pending: true, branches: [], sessions: [], contexts: [], worktrees: {}, workspaceStatus: {} })];
     }));
     if (changed) saveSnapshots();
-    return { projects: lists.flat(), chats: await chats };
+    return { projects: lists.flat(), chats: await chats, ended: chatsEnded, piConfiguration: chatsPi };
   }
   const projects = async () => (await refresh()).projects;
 
   // Whether the chats worker answered at the last look; when not, the next chat request wakes it first.
   let chatsAwake = false;
+  // The chats worker's Pi setup, which Settings → Pi shows and edits; null until it has answered once.
+  let chatsPi = null;
+  let chatsEnded = [];
   async function chatList(w) {
     chatsAwake = (w.state || (w.ready ? "running" : "starting")) === "running";
     if (!chatsAwake) {
@@ -147,7 +177,13 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       return chatSnapshot;
     }
     subscribe(w.name);
-    const fresh = (await workerState(w.name).catch(() => null))?.chats;
+    const state = await workerState(w.name).catch(() => null);
+    if (state?.piConfiguration) chatsPi = state.piConfiguration;
+    if (state?.endedChats) {
+      chatsEnded = state.endedChats;
+      for (const chat of chatsEnded) owners.session.set(chat.id, w.name);
+    }
+    const fresh = state?.chats;
     if (!fresh) return chatSnapshot;
     for (const chat of fresh) owners.session.set(chat.id, w.name);
     if (JSON.stringify(fresh) !== JSON.stringify(chatSnapshot)) { chatSnapshot = fresh; saveChats(); }
@@ -195,7 +231,16 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       log(`pi-ez-web: moved ${count} chat files to the chats worker`);
     })().catch(e => log(`pi-ez-web: could not move chats to the chats worker yet: ${e.message}`)).finally(() => { moving = null; });
   }
-  const localChatsPending = () => !!transfer?.pending();
+
+  // Settings → Pi applies to the chats worker (project workers keep their own setup).
+  async function chatsPost(rest, body) {
+    await ensureChats();
+    const res = await call(workerPath(CHATS, rest), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+    const out = await res.json().catch(() => ({ error: "workspace_unavailable" }));
+    if (res.ok && out.piConfiguration) chatsPi = out.piConfiguration;
+    return { status: res.status, body: out };
+  }
+  const isChatSession = id => owners.session.get(id) === CHATS;
 
   async function setPinned(name, pinned) {
     const res = await call(`/workspaces/${encodeURIComponent(name)}/pin`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ pinned: !!pinned }) });
@@ -424,7 +469,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
 
   return {
     wake,
-    projects, refresh, createChat, localChatsPending, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
+    projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };
 }
@@ -437,11 +482,24 @@ export function registerRemoteRoutes(api, remote) {
     return c.json(body, status);
   });
   for (const [kind, pattern] of [["project", "/projects/:id/*"], ["session", "/sessions/:id/*"]]) {
-    api.use(pattern, async (c, next) => {
+    api.use(pattern, async c => {
       const name = await remote.owner(kind, c.req.param("id"));
-      return name ? remote.forward(c, name) : next();
+      // Web runs no conversations of its own: an id no worker owns does not exist.
+      return name ? remote.forward(c, name) : c.json({ error: kind === "session" ? "no_such_session" : "no_such_project" }, 404);
     });
   }
+  api.post("/pi/reload", async c => {
+    const { status, body } = await remote.chatsPost("/pi/reload", {});
+    return c.json(body, status);
+  });
+  // Pi setup goes to the chats worker; every other setting is web's own.
+  api.post("/settings", async (c, next) => {
+    const body = await c.req.json().catch(() => ({}));
+    if (body.pi === undefined) return next();
+    const sessionId = body.activeSessionId && remote.isChatSession(body.activeSessionId) ? body.activeSessionId : null;
+    const { status, body: out } = await remote.chatsPost("/settings", { pi: body.pi, operationId: body.operationId, activeSessionId: sessionId });
+    return c.json(out, status);
+  });
   api.put("/remote-workspaces/:name/pin", async c => {
     const body = await c.req.json().catch(() => ({}));
     await remote.setPinned(c.req.param("name"), !!body.pinned);

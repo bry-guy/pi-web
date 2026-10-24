@@ -6,7 +6,7 @@
     "pretest": "scripts/install-pi-sync.sh",
     "test": "node --test --test-concurrency=2 test/*.test.js",
     "test:dom": "node --test test/dom.test.js",
-    "start": "node server/index.js",
+    "start": "PI_WEB_WORKSPACED_URL=${PI_WEB_WORKSPACED_URL-local} node server/index.js",
     "workspaced": "node workspaced/index.js",
     "dev": "PI_WEB_MODE=mock node server/index.js",
     "browser": "playwright open",

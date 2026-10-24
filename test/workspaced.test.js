@@ -87,9 +87,14 @@ test("local provider persists workspaces, spawns workers, and writes auth 0600",
   const root = mkdtempSync(path.join(tmpdir(), "workspaced-"));
   const spawned = [];
   const spawnImpl = (_bin, _args, opts) => { const child = new EventEmitter(); child.exitCode = null; child.kill = () => { child.exitCode = 0; }; spawned.push(opts.env); return child; };
-  const provider = localProvider({ root, spawnImpl });
-  await provider.create({ name: "srvivor", repository: "bry-guy/srvivor" });
+  const provider = localProvider({ root, spawnImpl, env: { PI_WEB_PRESTART_COMMAND: "" } });
+  const saved = process.env.PI_WEB_WORKSPACED_URL;
+  process.env.PI_WEB_WORKSPACED_URL = "local";
+  try { await provider.create({ name: "srvivor", repository: "bry-guy/srvivor" }); }
+  finally { if (saved === undefined) delete process.env.PI_WEB_WORKSPACED_URL; else process.env.PI_WEB_WORKSPACED_URL = saved; }
   assert.equal(spawned[0].PI_WEB_REPOS_ROOT, path.join(root, "srvivor", "repos"));
+  assert.equal(spawned[0].PI_WEB_WORKSPACED_URL, "", "a worker never runs a gateway of its own");
+  assert.equal(spawned[0].PI_WEB_PRESTART_COMMAND, "", "extra worker env applies");
   assert.match(provider.upstream("srvivor"), /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.deepEqual(await provider.list(), [{ name: "srvivor", repository: "bry-guy/srvivor", grant: "default", ready: true, state: "running", problem: null, pinned: false }]);
   await provider.setGitHubAuth({ accessToken: "t" });
@@ -105,6 +110,22 @@ test("local provider persists workspaces, spawns workers, and writes auth 0600",
   const third = localProvider({ root, spawnImpl });
   await third.init();
   assert.equal(spawned.length, 2, "sleeping workers stay asleep across restarts");
+});
+
+test("web's built-in workspaced answers in-process with its own token", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "embedded-"));
+  const { embeddedWorkspaced } = await import("../server/remote-workspaces.js");
+  const listeners = ["SIGTERM", "SIGINT", "exit"].map(name => [name, process.listeners(name)]);
+  const { url, token, fetchImpl } = embeddedWorkspaced({ ...process.env, PI_WEB_HOME: root, WORKSPACED_ROOT: undefined }, { log: () => {} });
+  try {
+    assert.equal((await fetchImpl(`${url}/v1/workspaces`)).status, 401);
+    const res = await fetchImpl(`${url}/v1/workspaces`, { headers: { authorization: `Bearer ${token}` } });
+    assert.deepEqual(await res.json(), { workspaces: [] });
+    assert.ok(statSync(path.join(root, "workspaces")).isDirectory(), "workers live under PI_WEB_HOME/workspaces");
+  } finally {
+    // Leave the test process's own signal handling as it was.
+    for (const [name, kept] of listeners) for (const fn of process.listeners(name)) if (!kept.includes(fn)) process.removeListener(name, fn);
+  }
 });
 
 function listen(handler) {
@@ -133,7 +154,10 @@ test("web routes owned ids to workers, merges state, and re-sequences events", a
     const projects = await remote.projects();
     assert.deepEqual(projects.map(p => [p.id, p.workspace]), [["p1", "srvivor"]]);
     assert.deepEqual(await (await api.request("/sessions/s1/message", { method: "POST", body: "{}" })).json(), { path: "/api/sessions/s1/message", method: "POST" });
-    assert.deepEqual(await (await api.request("/sessions/local-chat/message", { method: "POST" })).json(), { local: true });
+    // Web runs no conversations itself: an id no worker owns is unknown, not served locally.
+    const unknown = await api.request("/sessions/local-chat/message", { method: "POST" });
+    assert.equal(unknown.status, 404);
+    assert.deepEqual(await unknown.json(), { error: "no_such_session" });
     // Projects exist only in workers and only from GitHub or Git URLs.
     const local = await api.request("/projects", { method: "POST", body: JSON.stringify({ source: "local", repoPath: "/tmp" }) });
     assert.equal(local.status, 400);

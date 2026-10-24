@@ -47,7 +47,12 @@ test("web lists chats from the chats worker, creates them there, and routes thei
   const seen = [];
   const worker = await listen((req, res) => {
     seen.push(`${req.method} ${req.url}`);
-    if (req.url === "/api/state") return res.end(JSON.stringify({ projects: [], chats: [{ id: "c1", title: "hi" }] }));
+    if (req.url === "/api/state") return res.end(JSON.stringify({ projects: [], chats: [{ id: "c1", title: "hi" }], endedChats: [{ id: "c0", title: "old" }], piConfiguration: { profile: { status: "loaded" } } }));
+    if (req.url === "/api/settings") {
+      let body = "";
+      req.on("data", d => { body += d; });
+      return req.on("end", () => res.end(JSON.stringify({ forwarded: JSON.parse(body), piConfiguration: { profile: { status: "loaded", source: "new" } } })));
+    }
     if (req.url === "/api/events") { res.writeHead(200, { "content-type": "text/event-stream" }); return undefined; }
     if (req.url === "/api/health") return res.end("{}");
     if (req.url === "/api/chats") return res.end(JSON.stringify({ id: "c2" }));
@@ -67,7 +72,7 @@ test("web lists chats from the chats worker, creates them there, and routes thei
     const api = new Hono();
     registerRemoteRoutes(api, remote);
     api.all("*", c => c.json({ local: true }));
-    assert.deepEqual(await remote.refresh(), { projects: [], chats: [] }, "no chats worker until the first chat");
+    assert.deepEqual(await remote.refresh(), { projects: [], chats: [], ended: [], piConfiguration: null }, "no chats worker until the first chat");
     const created = await api.request("/chats", { method: "POST", body: "{}" });
     assert.deepEqual(await created.json(), { id: "c2" });
     assert.deepEqual(workers.map(w => [w.name, w.repository]), [["chats", null]]);
@@ -75,6 +80,13 @@ test("web lists chats from the chats worker, creates them there, and routes thei
     const state = await remote.refresh();
     assert.deepEqual(state.projects, [], "the chats worker is not a project");
     assert.deepEqual(state.chats.map(c => c.id), ["c1"]);
+    assert.deepEqual(state.ended.map(c => c.id), ["c0"], "ended chats stay reachable for Past chats");
+    assert.deepEqual(state.piConfiguration, { profile: { status: "loaded" } }, "Settings → Pi shows the chats worker's setup");
+    assert.deepEqual(await (await api.request("/sessions/c0/restore", { method: "POST" })).json(), { path: "/api/sessions/c0/restore" });
+    // Pi setup goes to the chats worker; a project session's id is not passed on.
+    const saved = await (await api.request("/settings", { method: "POST", body: JSON.stringify({ pi: { profile: "~/.pi/agent" }, operationId: "op1", activeSessionId: "p-session" }) })).json();
+    assert.deepEqual(saved.forwarded, { pi: { profile: "~/.pi/agent" }, operationId: "op1", activeSessionId: null });
+    assert.deepEqual((await (await api.request("/settings", { method: "POST", body: JSON.stringify({ defaultThinkingLevel: "low" }) })).json()), { local: true }, "other settings stay web's");
     assert.deepEqual(await (await api.request("/sessions/c1/meta")).json(), { path: "/api/sessions/c1/meta" });
 
     // A sleeping chats worker is woken by the next chat request instead of failing it.

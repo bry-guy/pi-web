@@ -2,7 +2,9 @@
 
 The site you open: chats, the sidebar, settings, model and GitHub sign-in. It is `node server/index.js` from the pi-ez-web image (the image's default command), listening on port 3141.
 
-Without workspaced, web runs projects itself in its own process. That is the one-container quick start. With `PI_WEB_WORKSPACED_URL` set, every project lives in a worker, plain chats live in one more worker named `chats`, and web only proxies to them. Web creates the chats worker with the first chat. Chats that web ran itself before are copied into it once, on the first state poll after start: chat folders, Pi session files, ended chats and their pi-sync records. Web keeps its copies but stops listing them (marker: `chats-moved.json` in `PI_WEB_HOME`); until the copy succeeds, web keeps serving them and retries every minute.
+Web runs no conversations itself. Every project lives in a worker, plain chats live in one more worker named `chats`, and web only proxies to them; an id no worker owns answers 404. `PI_WEB_WORKSPACED_URL=local` runs workspaced inside web with the local provider: workers are child processes under `PI_WEB_HOME/workspaces` (or `WORKSPACED_ROOT`), share web's `HOME`, and skip `PI_WEB_PRESTART_COMMAND` because web already ran it. That is the one-container setup (`npm start` and `compose.yaml` default to it). With a URL, web talks to a separate workspaced. Only mock mode and tests leave it unset, which serves everything in-process.
+
+Web creates the chats worker with the first chat. Chats that web ran itself before workers are copied into it once, on the first state poll after start: chat folders, Pi session files, ended chats and their pi-sync records. Web keeps its copies but does not list them; they appear once the copy reaches the chats worker (marker: `chats-moved.json` in `PI_WEB_HOME`; a failed copy retries every minute).
 
 ## Configure
 
@@ -11,8 +13,9 @@ Without workspaced, web runs projects itself in its own process. That is the one
 | `PI_WEB_HOME` | `~/.pi-web-ui` | App state: `config.json`, chat bindings, the GitHub login, the snapshot cache of worker projects |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | Pi's directory: model logins (`auth.json`) and sessions |
 | `HOME`, `XDG_*_HOME` | | Keep on the persistent volume so tools and caches survive restarts |
-| `PI_WEB_WORKSPACED_URL` | unset | Base URL of workspaced. Setting it moves projects and chats to workers |
-| `WORKSPACED_TOKEN` | unset | Bearer token for workspaced. Must match workspaced's token |
+| `PI_WEB_WORKSPACED_URL` | `local` with `npm start` and Compose | `local` (built-in workspaced, workers as child processes) or the base URL of a separate workspaced. Unset only in mock mode and tests |
+| `WORKSPACED_TOKEN` | unset | Bearer token for a separate workspaced. Must match workspaced's token |
+| `WORKSPACED_MAX_AWAKE`, `WORKSPACED_IDLE_MINUTES`, `WORKSPACED_ROOT` | 3, 0, `PI_WEB_HOME/workspaces` | With `local`: as for [workspaced](workspaced.md) |
 | `PI_WEB_GITHUB_CLIENT_ID` / `PI_WEB_GITHUB_TOKEN` | unset | GitHub sign-in (public OAuth client ID) or a fixed token. See [Configuration](configuration.md) |
 | `PI_WEB_PRESTART_COMMAND` | unset | Shell run before start, e.g. fetching dotfiles or seeding `config.json` (120 s limit) |
 | `PI_SYNC_SERVER_URL` | unset | Optional [pi-sync](https://github.com/bry-guy/pi-sync) server |
@@ -73,14 +76,15 @@ Clicking a project's sidebar row opens the Project menu. The row shows only the 
 
 ## Questions from Pi
 
-When Pi or an extension asks something (`ask_user_question`, a confirmation, a value to type), it appears as a card above the composer, not a modal: the rest of the app stays usable. Options are buttons with their descriptions; *Type something.* becomes an inline field; multi-select questions are checkboxes. A question belongs to its conversation: switch away and it waits there. It goes away once answered, dismissed (`×` or `Esc`), timed out, or when the turn that asked ends.
+When Pi or an extension asks something (`ask_user_question`, a confirmation, a value to type), it appears as a card above the composer, not a modal: the rest of the app stays usable. Options are buttons with their descriptions and multi-select questions are checkboxes (ticks are kept per question). Anything typed (*Type something.*, a value, extra text for a multi-select) goes in the message box, whose send button reads **Answer** while the question waits, so the draft is kept per conversation like any other. A question belongs to its conversation: switch away and it waits there. It goes away once answered, dismissed (`×` or `Esc`), timed out, or when the turn that asked ends.
 
 ## Settings
 
 **Settings** lists its categories on the left (on a phone, first): Providers, Pi, Workers, Sync, Repositories, Defaults, Appearance, Diagnostics. Each category has its own address (`#settings/workers`, `#settings/pi`, …), so reloading or using Back returns to it. `<` returns to the chat, and on a phone `<` on a category returns to the list. Settings has one header: while it is open the chat header steps aside, so there is a single `<` and a single title. Providers and Diagnostics explain what each card shows; Diagnostics lists the build, the mode, what Pi loaded and any load errors, then the server logs.
 
-- **Pi**: the dotfiles profile, extra packages to load, and local extension paths (advanced), with what Pi loaded and any problems. **Save & reload** fetches the profile, installs missing packages, and reloads idle sessions. It is refused while a session is running; stop it first.
+- **Pi**: the chats worker's dotfiles profile, extra packages to load, and local extension paths (advanced), with what Pi loaded and any problems. **Save & reload** fetches the profile, installs missing packages, and reloads idle chats. It is refused while a chat is running; stop it first. Project workers keep their own setup; reload them from **Workers**.
 - **Workers** (needs workspaced; otherwise the page says workers are not enabled): every worker, including `chats` (plain chats, no repository, and no **Delete**). Each worker's state (asleep, starting, awake, busy), keep-awake, last use, resource requests and limits, live usage (`n/a` when workspaced reports none), and its grant: name, service account, namespace, egress, runtime class, and environment variable names (never values). **Reload** re-reads one worker's profile and extensions; **Reload all awake workers** does every awake worker and lists each result. **Restart** starts a fresh pod and reruns startup; the disk is kept. **Stop** puts it to sleep now (disk kept, it wakes on use). **Reset** wipes the worker's disk and needs its name typed; add the project again afterwards. **Delete** deletes the worker, so its project and sessions leave the list; its disk is kept (adding the repository again picks it back up) unless you tick **Also delete its disk**. A busy or asleep worker refuses restart and reset, and the page says why. The page refreshes every 5 seconds while it is visible.
+- The sidebar's **Chats** heading opens the Chats menu: **New chat**, **Past chats** (ended chats; preview one, and **Open** brings it back) and the `chats` worker's card with Restart and Stop. Ended chats stay on the chats worker's disk; pi-sync is only for other devices.
 - The sidebar shows each project's worker state; a small dot marks a worker kept awake. A worker that crashed shows an amber state; one that cannot run (crash loop, out of memory, unschedulable, stuck starting) shows **restart** in red, and tapping it restarts the worker. The reason is in its tooltip, and [Worker](worker.md#when-a-worker-breaks) explains recovery.
 
 `mise run dev` (mock mode) shows three fixed sample workers, so the Workers page can be tried without a cluster.

@@ -25,16 +25,16 @@ Everything comes from one image, `ghcr.io/bry-guy/pi-ez-web`, run with different
 
 | Component | Command | Required | Role |
 | --- | --- | --- | --- |
-| [**web**](docs/web.md) | `node server/index.js` (default) | yes | The site: chats, sidebar, settings, model and GitHub sign-in |
-| [**workspaced**](docs/workspaced.md) | `node workspaced/index.js` | for isolated projects | Starts, sleeps and wakes one worker per project; hands out grants |
+| [**web**](docs/web.md) | `node server/index.js` (default) | yes | The site: sidebar, settings, model and GitHub sign-in; routes every conversation to a worker |
+| [**workspaced**](docs/workspaced.md) | `node workspaced/index.js` | for separate or isolated workers | Starts, sleeps and wakes one worker per project and one for chats; hands out grants |
 | [**worker**](docs/worker.md) | started by workspaced | — | Runs Pi for one repository with that project's tools and secrets |
 | [pi-sync](https://github.com/bry-guy/pi-sync) | separate image | no | Syncs conversations with the Pi CLI on your other machines |
 
-web alone is a complete app: it runs projects in its own process. Add workspaced when projects should have their own process, volume, tools and secrets; chats then move to a worker of their own too.
+Every chat and project runs in a worker. web alone is still a complete app: with `PI_WEB_WORKSPACED_URL=local` (the default for `npm start` and `compose.yaml`) it runs workspaced inside itself and starts workers as child processes. Run workspaced separately when workers should have their own container, or, with Kubernetes, their own pod, volume, tools and secrets.
 
 ## What to configure
 
-**web**: a persistent volume for `PI_WEB_HOME`, `PI_CODING_AGENT_DIR` and `HOME`. To use workers, also set `PI_WEB_WORKSPACED_URL` and `WORKSPACED_TOKEN`. Models, GitHub and the default repository source are set in **Settings**. → [web](docs/web.md), [Configuration](docs/configuration.md)
+**web**: a persistent volume for `PI_WEB_HOME`, `PI_CODING_AGENT_DIR` and `HOME`. `PI_WEB_WORKSPACED_URL` is `local` (built-in workspaced) or the URL of a separate workspaced plus its `WORKSPACED_TOKEN`. Models, GitHub and the default repository source are set in **Settings**. → [web](docs/web.md), [Configuration](docs/configuration.md)
 
 **workspaced**: the same `WORKSPACED_TOKEN` and a provider. With `WORKSPACED_PROVIDER=local`, workers are child processes. With `kubernetes`, each worker is a pod with its own PVC, and you also set `WORKSPACE_IMAGE` and RBAC. Optional: `WORKSPACED_GRANTS` (what each project's worker may hold) and `WORKSPACED_MAX_AWAKE` (default 3; the least recently used idle worker sleeps to make room). → [workspaced](docs/workspaced.md)
 
@@ -44,7 +44,7 @@ web alone is a complete app: it runs projects in its own process. Add workspaced
 
 You need Docker with the Compose plugin.
 
-**1. web only.** One container; projects run inside it.
+**1. web only.** One container; each chat and project runs in a worker process inside it.
 
 ```sh
 git clone https://github.com/bry-guy/pi-ez-web.git && cd pi-ez-web
@@ -53,7 +53,7 @@ docker compose up --build -d
 
 Open <http://127.0.0.1:3141>. In **Settings**, sign in to a model provider, then use **Projects → Git URL** to clone a public repository and start a chat.
 
-**2. With workers.** Adds workspaced; each project gets its own worker process and state directory.
+**2. Separate workspaced.** Moves the workers to a workspaced container of their own.
 
 ```sh
 echo "WORKSPACED_TOKEN=$(openssl rand -hex 32)" >> .env

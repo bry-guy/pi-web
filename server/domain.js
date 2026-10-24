@@ -204,6 +204,11 @@ export async function projectState(project, sup) {
 }
 
 export async function chatsState(sup) {
+  return (await chatsListing(sup)).chats;
+}
+
+// Open chats for the sidebar, and ended ones (newest 20) for the Chats menu's Past chats.
+export async function chatsListing(sup) {
   const root = chatsDir();
   const cwds = [root];
   try {
@@ -221,7 +226,12 @@ export async function chatsState(sup) {
   // An unprompted, unnamed chat that nothing has open is an empty scratch file.
   // Hide it from the sidebar without touching the file.
   const list = discovered.filter(s => !closed.has(s.id) && (hasPrompt(s) || promptText(s.name) || sup.isStreaming(s.id) || sup.isOpen?.(s.id)));
-  return list
+  const ended = discovered
+    .filter(s => closed.has(s.id) && (hasPrompt(s) || promptText(s.name)))
+    .sort((a, b) => compareTimestamp(b.modified, a.modified))
+    .slice(0, 20)
+    .map(s => ({ id: s.id, title: titleOf(s), when: rel(s.modified), updatedAt: isoTime(s.modified) }));
+  const chats = list
     .sort((a, b) => compareTimestamp(b.modified, a.modified))
     .map(s => ({
       id: s.id,
@@ -235,6 +245,7 @@ export async function chatsState(sup) {
       modelFallback: !!s.modelFallback,
       modelUnavailable: !!s.modelUnavailable,
     }));
+  return { chats, ended };
 }
 
 // Pi reports "(no messages)" in place of a prompt for sessions that have none.

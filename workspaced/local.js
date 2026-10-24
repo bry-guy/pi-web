@@ -24,7 +24,8 @@ function writeAtomic(file, data) {
 // One trust boundary: workers share HOME and tools; only state dirs differ.
 // A worker that dies on its own is restarted, at most maxRestarts times within
 // restartWindowMs; after that it stays down and reports the problem.
-export function localProvider({ root, spawnImpl = spawn, server = SERVER, maxRestarts = 3, restartWindowMs = 10 * 60_000, restartDelayMs = 1_000, log = console.log } = {}) {
+// env: extra variables for every worker (web's embedded gateway uses it to skip its prestart).
+export function localProvider({ root, env: extraEnv = {}, spawnImpl = spawn, server = SERVER, maxRestarts = 3, restartWindowMs = 10 * 60_000, restartDelayMs = 1_000, log = console.log } = {}) {
   mkdirSync(root, { recursive: true });
   const registry = path.join(root, "workspaces.json");
   const authFile = path.join(root, "github-auth.json");
@@ -71,7 +72,7 @@ export function localProvider({ root, spawnImpl = spawn, server = SERVER, maxRes
       env: { ...process.env, PORT: String(port), PI_WEB_MODE: process.env.PI_WEB_MODE || "real",
         PI_WEB_HOME: path.join(dir, "pi-ez-web"), PI_CODING_AGENT_DIR: path.join(dir, "pi-ez-agent"),
         PI_WEB_REPOS_ROOT: path.join(dir, "repos"), PI_WEB_GITHUB_AUTH_FILE: authFile, PI_WEB_MODEL_AUTH_FILE: modelAuthFile,
-        WORKSPACED_TOKEN: "" },
+        WORKSPACED_TOKEN: "", PI_WEB_WORKSPACED_URL: "", ...extraEnv },
     });
     child.port = port;
     procs.set(name, child);

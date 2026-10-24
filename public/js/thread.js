@@ -1351,10 +1351,39 @@ class PiComposer extends HTMLElement {
   renderAttachments() {
     this.attachmentsEl.innerHTML = this.attachments.map((image, index) => `<div class="attachment-thumb"><img src="data:${esc(image.mimeType)};base64,${esc(image.data)}" alt="${esc(image.name || "Attached image")}"><button type="button" data-remove-image="${index}" aria-label="Remove image">×</button></div>`).join("");
   }
+  // The question card (pi-extension-ui) when the open conversation's question takes typed text.
+  asking(id = store.activeKey()) {
+    const card = document.querySelector("pi-extension-ui");
+    return card?.acceptsText?.(id) ? card : null;
+  }
+
+  async answer(id, card) {
+    const rawText = this.ta.value;
+    const sentRevision = store.draftData(id)?.revision;
+    this.sendingIds.add(id);
+    store.setDraftSending(true, id);
+    this.sync();
+    try {
+      if (await card.answer(rawText) && store.draftData(id)?.revision === sentRevision) {
+        store.setDraft("", id);
+        if (store.activeKey() === id) this.ta.value = "";
+      }
+    } finally {
+      this.sendingIds.delete(id);
+      store.setDraftSending(false, id);
+      if (store.activeKey() === id) this.sync();
+    }
+  }
+
   async send(forcedMode) {
     const id = store.activeKey();
     const text = this.ta.value.trim();
     const rawText = this.ta.value;
+    const card = !forcedMode && !text.startsWith("/") && !text.startsWith("!") ? this.asking(id) : null;
+    if (card) {
+      if (!this.sendingIds.has(id)) await this.answer(id, card);
+      return;
+    }
     const draft = store.draftData(id);
     const attachments = store.draftAttachments(id).slice();
     if (!id || (!text && !attachments.length) || store.transcript(id).compacting
@@ -1451,6 +1480,13 @@ class PiComposer extends HTMLElement {
     this.attachBtn.disabled = !!draftState?.sending;
     this.imageInput.disabled = !!draftState?.sending;
     this.sendBtn.disabled = compacting || !!draftState?.sending || !!draftState?.pendingAttachments;
+    // While Pi waits for a typed answer, the message box answers it.
+    const answering = !!this.asking(activeId);
+    this.sendBtn.classList.toggle("answer", answering);
+    this.sendBtn.textContent = answering ? "Answer" : "↑";
+    this.sendBtn.title = answering ? "Answer Pi's question" : "Send";
+    this.sendBtn.setAttribute("aria-label", answering ? "Answer Pi's question" : "Send message");
+    if (answering) this.ta.placeholder = "Type your answer…";
     this.resizeEditor();
   }
 }

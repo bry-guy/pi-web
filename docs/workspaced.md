@@ -2,6 +2,8 @@
 
 The control plane. It creates, wakes, sleeps and deletes one worker per project and proxies web's requests to them. It is `node workspaced/index.js` from the same pi-ez-web image, on port 3150. It is the only component that needs a Kubernetes client, and the most privileged one: it can do whatever its largest grant allows.
 
+web can also run it inside itself: with `PI_WEB_WORKSPACED_URL=local`, web builds the same gateway with the `local` provider and calls it in-process (no port, a random token), with workers under `PI_WEB_HOME/workspaces`. See [web](web.md).
+
 ## Providers
 
 | `WORKSPACED_PROVIDER` | Workers are | Isolation |

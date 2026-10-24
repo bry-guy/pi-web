@@ -1,14 +1,22 @@
 // The Project menu: everything about a project rather than one conversation —
 // new and idle sessions, past sessions, conversations from other devices, its worker, removal.
+// The Chats menu is its sibling for plain chats: new chat, past chats, and the chats worker.
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { setHTML, store, toast } from "./store.js";
-import { esc, newProjectSession, restoreConversation, selectSession } from "./shell.js";
+import { esc, newChat, newProjectSession, restoreConversation, selectChat, selectSession } from "./shell.js";
 import { workerAction, workerCard } from "./workers.js";
 import { gitErrorMessage, launchSetup } from "./panel-utils.js";
 
 export function openProjectMenu(projectId) {
   store.set({ projectMenu: { projectId }, sessionPicker: null, drawerOpen: false });
 }
+
+export function openChatsMenu() {
+  store.set({ projectMenu: { chats: true }, sessionPicker: null, drawerOpen: false });
+}
+
+// workspaced's worker for plain chats.
+const CHATS_WORKER = "chats";
 
 class PiProjectMenu extends HTMLElement {
   connectedCallback() {
@@ -56,6 +64,7 @@ class PiProjectMenu extends HTMLElement {
   }
 
   async onClick(e) {
+    if (this.menu()?.chats) return this.onChatsClick(e);
     const project = this.project();
     if (!project) return;
     if (e.target.matches(".session-picker-scrim") || e.target.closest("[data-act='close-project-menu']")) { this.close(); return; }
@@ -126,8 +135,80 @@ class PiProjectMenu extends HTMLElement {
     return `<div class="convo-preview"><div class="convo-preview-scroll">${content}</div><div class="convo-preview-actions"><button class="btn btn-primary" ${openAttrs} ${busy ? "disabled" : ""}>Open</button></div></div>`;
   }
 
+  async onChatsClick(e) {
+    if (e.target.matches(".session-picker-scrim") || e.target.closest("[data-act='close-project-menu']")) { this.close(); return; }
+    const t = e.target.closest("[data-act]");
+    const act = t?.dataset.act;
+    if (act === "new-chat") {
+      this.close();
+      await newChat().catch(err => store.setError(`Could not create chat: ${err.message || err}`));
+      return;
+    }
+    if (act === "toggle-preview") {
+      const menu = this.menu();
+      menu.preview = menu.preview === t.dataset.key ? null : t.dataset.key;
+      if (menu.preview) this.loadPreview(menu, menu.preview);
+      this.render();
+      return;
+    }
+    if (act === "open-past") {
+      // Opening an ended chat brings it back into the list.
+      this.close();
+      await restoreConversation(t.dataset.id);
+      selectChat(t.dataset.id);
+      return;
+    }
+    const worker = e.target.closest("[data-act$='-worker']");
+    if (worker) {
+      if (["restart-worker", "reset-worker"].includes(worker.dataset.act)) this.close();
+      await workerAction(worker.dataset.act, worker.dataset.name, worker.dataset.pinned === "1", (message, kind) => kind === "error" ? this.fail(message) : toast(message));
+    }
+  }
+
+  /** The dialog frame, built once per opening so re-renders do not replay its entry animation. */
+  frame(title, subtitle, body) {
+    const head = `<div><div class="modal-title">${esc(title)}</div>${subtitle ? `<div class="session-picker-subtitle">${esc(subtitle)}</div>` : ""}</div><button class="ghost-btn" data-act="close-project-menu" aria-label="Close">×</button>`;
+    if (!this.querySelector(".session-picker")) {
+      this.innerHTML = `<div class="session-picker-scrim"><section class="session-picker" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="session-picker-head"></div><div class="session-picker-body"></div></section></div>`;
+      this.__html = null;
+    }
+    const scroller = this.querySelector(".session-picker-body");
+    const top = scroller.scrollTop;
+    setHTML(this.querySelector(".session-picker-head"), head);
+    setHTML(scroller, body);
+    scroller.scrollTop = top;
+  }
+
+  listRow(menu, key, title, sub, openAttrs) {
+    const open = menu.preview === key;
+    const preview = open ? this.previewBody(menu.previews?.[key], openAttrs, !!menu.busy) : "";
+    return `<div class="history-entry"><button type="button" class="history-entry-head" data-act="toggle-preview" data-key="${esc(key)}" aria-expanded="${open}"><span class="history-main"><strong>${esc(title)}</strong><small>${esc(sub)}</small></span><span class="history-status">${open ? "Hide" : "Preview"}</span></button>${preview}</div>`;
+  }
+
+  renderChats(menu) {
+    const workers = store.state.workers;
+    if (!menu.workersLoaded) { menu.workersLoaded = true; void refreshWorkers(); }
+    const row = (title, hint, button) => `<div class="panel-row"><div class="panel-row-text"><strong>${esc(title)}</strong><small>${esc(hint)}</small></div>${button}</div>`;
+    const actions = `<section class="session-picker-actions" aria-label="Chats"><div class="panel-rows">
+      ${row("New chat", "A conversation without a repository.", `<button class="btn btn-secondary" data-act="new-chat">New</button>`)}
+    </div></section>`;
+    const past = store.state.endedChats || [];
+    const pastSection = `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Past chats</span><span>${past.length}</span></div>
+      ${past.length
+        ? `<div class="history-list">${past.map(item => this.listRow(menu, `past:${item.id}`, item.title, `Ended ${item.when}`, `data-act="open-past" data-id="${esc(item.id)}"`)).join("")}</div>`
+        : `<div class="session-history-empty">Ended chats show up here, and opening one brings it back.</div>`}</section>`;
+    // Without workspaced (mock mode) there is no workers list, and no chats worker to show.
+    const worker = (workers?.workspaces || []).find(item => item.name === CHATS_WORKER);
+    const workerSection = !workers && !store.state.workersError ? "" : `<section><div class="session-context-heading"><span>Worker</span></div>${worker
+      ? workerCard(worker, workers.usageAvailable, { canDelete: false })
+      : `<div class="session-history-empty">${esc(store.state.workersError || "The chats worker starts with the first chat.")}</div>`}</section>`;
+    const error = menu.error ? `<div class="session-picker-error">${esc(menu.error)}</div>` : "";
+    this.frame("Chats", "Conversations without a repository", `${error}${actions}${pastSection}${workerSection}`);
+  }
+
   render() {
     const menu = this.menu();
+    if (menu?.chats) { this.renderChats(menu); return; }
     const project = menu ? this.project() : null;
     if (!menu || !project) { setHTML(this, ""); return; }
     this.loadSynced(menu);
@@ -136,11 +217,7 @@ class PiProjectMenu extends HTMLElement {
     const primary = project.defaultBranch || project.primaryBranch || "main";
     const row = (title, hint, button) => `<div class="panel-row"><div class="panel-row-text"><strong>${esc(title)}</strong><small>${esc(hint)}</small></div>${button}</div>`;
     // Like History: a row expands to preview the conversation; Open sits under the preview.
-    const listRow = (key, title, sub, openAttrs) => {
-      const open = menu.preview === key;
-      const preview = open ? this.previewBody(menu.previews?.[key], openAttrs, busy) : "";
-      return `<div class="history-entry"><button type="button" class="history-entry-head" data-act="toggle-preview" data-key="${esc(key)}" aria-expanded="${open}"><span class="history-main"><strong>${esc(title)}</strong><small>${esc(sub)}</small></span><span class="history-status">${open ? "Hide" : "Preview"}</span></button>${preview}</div>`;
-    };
+    const listRow = (...args) => this.listRow(menu, ...args);
 
     const projectSection = `<section class="session-picker-actions" aria-label="Project">
       <div class="panel-rows">
@@ -168,17 +245,7 @@ class PiProjectMenu extends HTMLElement {
 
     const progress = busy ? `<div class="session-picker-progress" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>${esc(menu.busy)}</span></div>` : "";
     const error = menu.error ? `<div class="session-picker-error">${esc(menu.error)}</div>` : "";
-    const head = `<div><div class="modal-title">Project</div><div class="session-picker-subtitle">${esc(project.name)}</div></div><button class="ghost-btn" data-act="close-project-menu" aria-label="Close">×</button>`;
-    // Built once per opening, so re-renders do not replay the entry animation.
-    if (!this.querySelector(".session-picker")) {
-      this.innerHTML = `<div class="session-picker-scrim"><section class="session-picker" role="dialog" aria-modal="true" aria-label="Project"><div class="session-picker-head"></div><div class="session-picker-body"></div></section></div>`;
-      this.__html = null;
-    }
-    const scroller = this.querySelector(".session-picker-body");
-    const top = scroller.scrollTop;
-    setHTML(this.querySelector(".session-picker-head"), head);
-    setHTML(scroller, `${progress}${error}${projectSection}${pastSection}${syncedSection}${workerSection}${dangerSection}`);
-    scroller.scrollTop = top;
+    this.frame("Project", project.name, `${progress}${error}${projectSection}${pastSection}${syncedSection}${workerSection}${dangerSection}`);
   }
 }
 

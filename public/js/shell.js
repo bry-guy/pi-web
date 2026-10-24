@@ -2,7 +2,7 @@ import { api, openTranscript, refreshState, transcriptLoading } from "./api.js";
 import { activeOperations, beginOperation, completeOperation, operationForScope, operationHint } from "./operations.js";
 import { setHTML, store, toast } from "./store.js";
 import { launchSetup } from "./panel-utils.js";
-import { openProjectMenu } from "./project-menu.js";
+import { openChatsMenu, openProjectMenu } from "./project-menu.js";
 
 export const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 export const mobile = () => matchMedia("(max-width: 760px)").matches;
@@ -326,6 +326,7 @@ class PiSidebar extends HTMLElement {
       store.set({ railOpen: true });
       requestAnimationFrame(() => this.querySelector(".rail-search")?.focus());
     }
+    else if (act === "chats-menu") openChatsMenu();
     else if (act === "new-chat") newChat().catch(err => store.setError(`Could not create chat: ${err.message || err}`));
     else if (act === "repo-picker") store.set({ repoPickerOpen: true, drawerOpen: false });
     else if (act === "settings") store.set({ view: "settings", drawerOpen: false });
@@ -398,7 +399,7 @@ class PiSidebar extends HTMLElement {
           <div class="sec-head"><div class="sec-label">Projects</div>
             <button class="ghost-btn cta-plus" data-act="repo-picker" title="New project" style="padding:3px 6px">+</button></div>
           <div class="projects-list"></div>
-          <div class="sec-head chats-head"><div class="sec-label">Chats</div>
+          <div class="sec-head chats-head"><button class="sec-label sec-menu" data-act="chats-menu" title="Chats: past chats and the chats worker">Chats</button>
             <button class="ghost-btn cta-plus" data-act="new-chat" title="New chat" style="padding:3px 6px">+</button></div>
           <div class="chats-list"></div>
         </div>

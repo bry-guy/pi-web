@@ -92,50 +92,76 @@ after(() => {
   }
 });
 
-test("typed answers survive re-renders, including a failed send", async () => {
+test("the composer answers typed questions; a failed answer keeps the question", async () => {
   for (const method of ["input", "editor"]) {
+    store.state.drafts = {};
     const request = { sessionId: "s1", requestId: method, method, prefill: "original" };
     const element = mount(request);
-    const field = element.querySelector("[data-extension-ui-value]");
-    assert.equal(field.value, "original");
-    field.value = "typed draft";
-    field.focus();
-    store.notify("state");
-    assert.equal(element.querySelector("[data-extension-ui-value]").value, "typed draft");
-    assert.equal(document.activeElement, element.querySelector("[data-extension-ui-value]"));
+    assert.equal(element.querySelector("input, textarea"), null, "the card has no text field");
+    assert.equal(element.acceptsText("s1"), true);
+    assert.equal(store.draft("s1"), "original", "a suggested answer starts the composer's draft");
 
     const response = deferred();
     api.extensionUiResponse = () => response.promise;
     store.setError = message => { store.state.error = message; store.notify("state"); };
-    element.querySelector("[data-extension-ui-submit]").click();
-    assert.equal(element.querySelector("[data-extension-ui-value]").readOnly, true);
+    const sent = element.answer("typed draft");
+    assert.equal(element.querySelector(".ask-card").getAttribute("aria-busy"), "true");
     response.reject(new Error("rejected"));
-    await settle();
-    const current = element.querySelector("[data-extension-ui-value]");
-    assert.equal(current.value, "typed draft", "a failed send keeps the answer");
-    assert.equal(current.readOnly, false);
-    assert.ok(store.state.asks.s1, "and the question");
+    assert.equal(await sent, false, "a failed send reports it, so the composer keeps the text");
+    assert.equal(element.querySelector(".ask-card").getAttribute("aria-busy"), "false");
+    assert.ok(store.state.asks.s1, "and the question stays");
     element.remove();
     root = null;
   }
 });
 
+test("confirm questions and plain option lists do not take the composer's text", () => {
+  const element = mount({ sessionId: "s1", requestId: "c", method: "confirm", title: "Sure?" });
+  assert.equal(element.acceptsText("s1"), false);
+  ask({ sessionId: "s1", requestId: "s", method: "select", title: "Pick", options: ["a", "b"] });
+  assert.equal(element.acceptsText("s1"), false);
+  ask({ sessionId: "s1", requestId: "o", method: "select", title: "Pick", options: ["1. a — first", "2. Type something."] });
+  assert.equal(element.acceptsText("s1"), true, "a questionnaire with its own 'type something' row does");
+});
+
 test("answering or dismissing removes the question; a new one starts from its prefill", async () => {
+  store.state.drafts = {};
   const request = { sessionId: "s1", requestId: "first", method: "input", prefill: "prefill" };
   const element = mount(request);
-  element.querySelector("[data-extension-ui-value]").value = "submitted";
-  element.querySelector("[data-extension-ui-submit]").click();
-  await settle();
+  assert.equal(await element.answer("submitted"), true);
   assert.equal(store.state.asks.s1, undefined);
   assert.equal(element.querySelector(".ask-card"), null);
 
+  store.setDraft("", "s1");
   ask({ ...request, requestId: "second" });
-  const field = element.querySelector("[data-extension-ui-value]");
-  assert.equal(field.value, "prefill");
-  field.value = "dismissed draft";
+  assert.equal(store.draft("s1"), "prefill");
+  store.setDraft("kept", "s1");
+  ask({ ...request, requestId: "third" });
+  assert.equal(store.draft("s1"), "kept", "a prefill never replaces what was typed");
   element.querySelector("[data-extension-ui-cancel]").click();
   await settle();
   assert.equal(store.state.asks.s1, undefined, "dismissing clears it even if the server already forgot it");
+});
+
+test("ticked boxes are remembered per question across conversation switches", async () => {
+  const sent = [];
+  api.extensionUiResponse = async (_session, _request, body) => { sent.push(body); return { ok: true }; };
+  const multi = sessionId => ({ sessionId, requestId: "m", method: "input", title: "Pick some\n\n1. A — first\n2. B — second\n3. C — third\n\nEnter the numbers", placeholder: "1,3; custom answer" });
+  const element = mount(multi("s1"));
+  ask(multi("s2"));
+  const tick = n => {
+    const box = element.querySelector(`[data-extension-ui-check='${n}']`);
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change", { bubbles: true }));
+  };
+  tick(3);
+  tick(1);
+  store.set({ sessionId: "s2" });
+  assert.equal(element.querySelectorAll("[data-extension-ui-check]:checked").length, 0, "the other conversation's question starts empty");
+  store.set({ sessionId: "s1" });
+  assert.deepEqual([...element.querySelectorAll("[data-extension-ui-check]:checked")].map(b => b.dataset.extensionUiCheck), ["1", "3"]);
+  await element.answer("and more");
+  assert.deepEqual(sent.at(-1), { value: "1,3; and more" });
 });
 
 test("a stale question clears itself, and an old reply cannot unlock a newer question", async () => {
@@ -150,14 +176,13 @@ test("a stale question clears itself, and an old reply cannot unlock a newer que
   let calls = 0;
   api.extensionUiResponse = () => (++calls === 1 ? oldResponse.promise : newResponse.promise);
   ask({ sessionId: "s1", requestId: "old", method: "input" });
-  element.querySelector("[data-extension-ui-submit]").click();
-  ask({ sessionId: "s1", requestId: "new", method: "input", prefill: "new prefill" });
-  assert.equal(element.querySelector("[data-extension-ui-value]").value, "new prefill");
-  element.querySelector("[data-extension-ui-submit]").click();
+  void element.answer("old");
+  ask({ sessionId: "s1", requestId: "new", method: "input" });
+  void element.answer("new");
   oldResponse.resolve({ ok: true });
   await settle();
   assert.equal(store.state.asks.s1.requestId, "new", "the old reply does not remove the new question");
-  assert.equal(element.querySelector("[data-extension-ui-value]").readOnly, true, "nor unlock it");
+  assert.equal(element.querySelector(".ask-card").getAttribute("aria-busy"), "true", "nor unlock it");
   newResponse.resolve({ ok: true });
   await settle();
   assert.equal(store.state.asks.s1, undefined);

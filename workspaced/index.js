@@ -204,32 +204,44 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
   return app;
 }
 
-async function providerFromEnv(grants, env = process.env) {
+async function providerFromEnv(grants, env = process.env, localOptions = {}) {
   if ((env.WORKSPACED_PROVIDER || "local") === "kubernetes") {
     const { inClusterKube } = await import("./kube.js");
     const { kubernetesProvider } = await import("./kubernetes.js");
     return kubernetesProvider({ kube: inClusterKube(), grants });
   }
   const { localProvider } = await import("./local.js");
-  const provider = localProvider({ root: env.WORKSPACED_ROOT || `${env.HOME}/.pi-ez-workspaces` });
+  const provider = localProvider({ root: env.WORKSPACED_ROOT || `${env.HOME}/.pi-ez-workspaces`, ...localOptions });
   await provider.init();
   return provider;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const port = Number(process.env.PORT || 3150);
-  const grants = parseGrants(process.env.WORKSPACED_GRANTS || "");
+// Everything workspaced needs from its environment; shared by the standalone
+// gateway below and the one web embeds (embedded.js).
+export async function workspacedFromEnv(env = process.env, { token = env.WORKSPACED_TOKEN, auth = env.WORKSPACED_AUTH, local = {} } = {}) {
+  const grants = parseGrants(env.WORKSPACED_GRANTS || "");
   const scores = createScoreSource();
-  const provider = withScore(withGrantCheck(await providerFromEnv(grants), grants), scores, grants);
-  const idleMinutes = Number(process.env.WORKSPACED_IDLE_MINUTES ?? 0);
-  const maxAwake = Number(process.env.WORKSPACED_MAX_AWAKE ?? 3);
+  const raw = await providerFromEnv(grants, env, local);
+  const provider = withScore(withGrantCheck(raw, grants), scores, grants);
+  const idleMinutes = Number(env.WORKSPACED_IDLE_MINUTES ?? 0);
+  const maxAwake = Number(env.WORKSPACED_MAX_AWAKE ?? 3);
   const lifecycle = createLifecycle({ provider, idleMs: idleMinutes * 60_000, maxAwake });
-  serve({ fetch: createWorkspaced({ provider, grants, lifecycle, scores, token: process.env.WORKSPACED_TOKEN, auth: process.env.WORKSPACED_AUTH }).fetch, port, hostname: process.env.WORKSPACED_HOST || "0.0.0.0" });
-  console.log(`workspaced (${process.env.WORKSPACED_PROVIDER || "local"}) → :${port}`);
+  const app = createWorkspaced({ provider, grants, lifecycle, scores, token, auth });
   // Existing workers keep the manifest they were created with; re-apply the current one (Kubernetes
   // only rolls a worker whose template actually changed, e.g. new env).
-  if (provider.setGrant) for (const w of await provider.list().catch(() => [])) {
-    const grant = grants[w.grant];
-    if (grant) await provider.setGrant(w.name, grant).catch(e => console.warn(`workspaced: could not refresh ${w.name}: ${e.message}`));
-  }
+  const refreshGrants = async () => {
+    if (provider.setGrant) for (const w of await provider.list().catch(() => [])) {
+      const grant = grants[w.grant];
+      if (grant) await provider.setGrant(w.name, grant).catch(e => console.warn(`workspaced: could not refresh ${w.name}: ${e.message}`));
+    }
+  };
+  return { app, provider: raw, refreshGrants };
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const port = Number(process.env.PORT || 3150);
+  const { app, refreshGrants } = await workspacedFromEnv();
+  serve({ fetch: app.fetch, port, hostname: process.env.WORKSPACED_HOST || "0.0.0.0" });
+  console.log(`workspaced (${process.env.WORKSPACED_PROVIDER || "local"}) → :${port}`);
+  await refreshGrants();
 }

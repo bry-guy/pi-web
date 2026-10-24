@@ -18,6 +18,10 @@ services:
       PI_WEB_HOME: /data/pi-ez-web
       PI_CODING_AGENT_DIR: /data/pi-ez-agent
       PI_WEB_REPOS_ROOT: /data/repos
+      # Chats and projects run as worker processes inside this container (compose.workers.yaml
+      # moves them to a separate workspaced). Each awake worker needs ~150-250 MB.
+      PI_WEB_WORKSPACED_URL: ${PI_WEB_WORKSPACED_URL:-local}
+      WORKSPACED_MAX_AWAKE: ${WORKSPACED_MAX_AWAKE:-2}
     volumes:
       - pi-ez-web-data:/data
     restart: unless-stopped

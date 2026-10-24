@@ -170,6 +170,7 @@ function applyState(s) {
   store.set({
     projects: s.projects,
     chats: s.chats,
+    endedChats: s.endedChats || [],
     buildId: s.buildId || null,
     reconnecting: false,
     defaultModel: s.defaultModel || null,

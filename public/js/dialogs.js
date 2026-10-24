@@ -295,26 +295,60 @@ export function parseQuestion(request) {
   return parsed;
 }
 
+// Typed answers go in the composer, which keeps a draft per conversation; this card
+// holds the question, its options and checkboxes (remembered per question).
 class PiExtensionUI extends HTMLElement {
   connectedCallback() {
     this.busy = false;
     this.draftKey = null;
+    this.checks = new Map();
     this.unsub = store.subscribe(w => { if (w === "state") this.render(); });
     this.addEventListener("click", e => void this.onClick(e));
+    this.addEventListener("change", e => {
+      const box = e.target.closest("[data-extension-ui-check]");
+      const request = this.request();
+      if (!box || !request) return;
+      const key = `${request.sessionId}:${request.requestId}`;
+      const picked = this.checks.get(key) || new Set();
+      if (box.checked) picked.add(box.dataset.extensionUiCheck);
+      else picked.delete(box.dataset.extensionUiCheck);
+      this.checks.set(key, picked);
+    });
     this.addEventListener("keydown", e => {
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
         void this.cancel();
-      } else if (e.key === "Enter" && e.target.matches("input[data-extension-ui-value]")) {
-        e.preventDefault();
-        void this.submitField();
-      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && e.target.matches("textarea")) {
-        e.preventDefault();
-        void this.submitField();
       }
     });
     this.render();
+  }
+
+  /** Whether the composer's text answers this conversation's question (its button reads Answer). */
+  acceptsText(sessionId = store.activeKey()) {
+    const request = store.state.asks?.[sessionId];
+    if (!request || this.autoKey === `${request.sessionId}:${request.requestId}`) return false;
+    if (request.method === "input" || request.method === "editor") return true;
+    const question = parseQuestion(request);
+    return question.multi || (request.method === "select" && question.otherIndex >= 0);
+  }
+
+  /** Answers the active question with the composer's text; true when it was sent. */
+  async answer(text) {
+    const request = this.request();
+    if (!request || this.busy) return false;
+    const question = parseQuestion(request);
+    const typed = String(text || "");
+    if (question.multi) {
+      const picked = [...(this.checks.get(`${request.sessionId}:${request.requestId}`) || [])].sort((a, b) => a - b);
+      return this.send(request, { value: typed.trim() ? `${picked.join(",")}; ${typed.trim()}` : picked.join(",") });
+    }
+    if (request.method === "select") {
+      if (!typed.trim() || question.otherIndex < 0) return false;
+      this.followUp = { sessionId: request.sessionId, question: question.question, text: typed.trim(), until: Date.now() + 15_000 };
+      return this.send(request, { value: request.options[question.otherIndex] });
+    }
+    return this.send(request, { value: typed });
   }
 
   disconnectedCallback() { this.unsub?.(); }
@@ -338,24 +372,6 @@ class PiExtensionUI extends HTMLElement {
     }
     const confirm = e.target.closest("[data-extension-ui-confirm]");
     if (confirm) return this.send(request, { confirmed: confirm.dataset.extensionUiConfirm === "yes" });
-    if (e.target.closest("[data-extension-ui-submit]")) return this.submitField();
-  }
-
-  submitField() {
-    const request = this.request();
-    if (!request || this.busy) return;
-    const question = parseQuestion(request);
-    const text = this.querySelector("[data-extension-ui-value]")?.value || "";
-    if (question.multi) {
-      const picked = [...this.querySelectorAll("[data-extension-ui-check]:checked")].map(box => box.dataset.extensionUiCheck);
-      return this.send(request, { value: text.trim() ? `${picked.join(",")}; ${text.trim()}` : picked.join(",") });
-    }
-    if (request.method === "select") {
-      if (!text.trim() || question.otherIndex < 0) return;
-      this.followUp = { sessionId: request.sessionId, question: question.question, text: text.trim(), until: Date.now() + 15_000 };
-      return this.send(request, { value: request.options[question.otherIndex] });
-    }
-    return this.send(request, { value: text });
   }
 
   async send(request, body) {
@@ -366,11 +382,14 @@ class PiExtensionUI extends HTMLElement {
     this.render();
     try {
       await api.extensionUiResponse(request.sessionId, request.requestId, body);
+      this.checks.delete(key);
       this.done(request);
+      return true;
     } catch (error) {
       // No longer waiting (answered elsewhere, timed out, or the turn ended): just clear it.
-      if (error.error === "stale_extension_ui_request") this.done(request);
-      else store.setError(`Could not send the answer: ${error.message || error.error || error}`);
+      if (error.error === "stale_extension_ui_request") { this.done(request); return true; }
+      store.setError(`Could not send the answer: ${error.message || error.error || error}`);
+      return false;
     } finally {
       if (this.busyKey === key) { this.busy = false; this.busyKey = null; }
       this.render();
@@ -401,39 +420,34 @@ class PiExtensionUI extends HTMLElement {
     }
     if (this.autoKey === key) { setHTML(this, ""); return; }
     const fresh = this.draftKey !== key;
-    // Keep what was typed (and checked) across re-renders of the same question.
-    const oldField = this.querySelector("[data-extension-ui-value]");
-    const typed = fresh ? (request.prefill || "") : oldField?.value ?? "";
-    const checked = fresh ? new Set() : new Set([...this.querySelectorAll("[data-extension-ui-check]:checked")].map(box => box.dataset.extensionUiCheck));
-    const hadFocus = !fresh && document.activeElement === oldField;
+    // A suggested answer starts the composer's draft, unless something is already typed there.
+    if (fresh && request.prefill && !store.draft(request.sessionId)) {
+      store.setDraft(request.prefill, request.sessionId);
+      document.querySelector("pi-composer")?.sync?.();
+    }
     if (fresh && this.busyKey !== key) { this.busy = false; this.busyKey = null; }
     this.draftKey = key;
+    const checked = this.checks.get(key) || new Set();
     const q = parseQuestion(request);
     const off = this.busy ? "disabled" : "";
-    const ro = this.busy ? "readonly" : "";
     const head = `<div class="ask-head"><strong>${esc(q.header || (request.method === "confirm" ? "Confirm" : "Pi is asking"))}</strong><button class="ask-dismiss" data-extension-ui-cancel ${off} title="Dismiss (Esc)" aria-label="Dismiss">×</button></div>`;
     const question = q.question ? `<p class="ask-question">${esc(q.question)}</p>` : "";
     const preview = q.preview ? `<details class="ask-preview"><summary>Previews</summary><pre>${esc(q.preview)}</pre></details>` : "";
     const optionText = option => `<strong>${esc(option.label)}</strong>${option.description ? `<small>${esc(option.description)}</small>` : ""}`;
+    const hint = text => `<p class="ask-hint">${esc(text)}</p>`;
     let body;
     if (request.method === "select") {
       body = `<div class="ask-options">${q.options.map((option, index) => index === q.otherIndex ? "" : `<button class="ask-option" data-extension-ui-option="${index}" ${off}>${optionText(option)}</button>`).join("")}</div>`;
-      if (q.otherIndex >= 0) body += `<div class="ask-field"><input data-extension-ui-value placeholder="Or type your own answer" autocomplete="off" ${ro}><button class="btn btn-secondary" data-extension-ui-submit ${off}>Send</button></div>`;
+      if (q.otherIndex >= 0) body += hint("Or type your own answer below and press Answer.");
     } else if (request.method === "confirm") {
       body = `${request.message ? `<p class="ask-message">${esc(request.message)}</p>` : ""}<div class="ask-actions"><button class="btn btn-ghost" data-extension-ui-confirm="no" ${off}>No</button><button class="btn btn-primary" data-extension-ui-confirm="yes" ${off}>Yes</button></div>`;
     } else if (q.multi) {
       body = `<div class="ask-options">${q.options.map((option, index) => `<label class="ask-option ask-check"><input type="checkbox" data-extension-ui-check="${index + 1}" ${checked.has(String(index + 1)) ? "checked" : ""} ${off}><span>${optionText(option)}</span></label>`).join("")}</div>
-        <div class="ask-field"><input data-extension-ui-value placeholder="Anything to add (optional)" autocomplete="off" ${ro}><button class="btn btn-primary" data-extension-ui-submit ${off}>Send</button></div>`;
+        ${hint("Tick what applies, add anything below if you like, then press Answer.")}`;
     } else {
-      const field = request.method === "editor"
-        ? `<textarea data-extension-ui-value rows="6" placeholder="${esc(request.placeholder || "")}" ${ro}></textarea>`
-        : `<input data-extension-ui-value placeholder="${esc(request.placeholder || "")}" autocomplete="off" ${ro}>`;
-      body = `<div class="ask-field ${request.method === "editor" ? "multiline" : ""}">${field}<button class="btn btn-primary" data-extension-ui-submit ${off}>Send</button></div>`;
+      body = hint(request.placeholder ? `Type your answer below (${request.placeholder}) and press Answer.` : "Type your answer below and press Answer.");
     }
-    setHTML(this, `<div class="ask-dock"><section class="ask-card" role="region" aria-label="${esc(q.header || "Pi is asking")}" aria-busy="${this.busy}">${head}<div class="ask-body">${question}${preview}${body}</div></section></div>`);
-    const field = this.querySelector("[data-extension-ui-value]");
-    if (field && field.value !== typed) field.value = typed;
-    if (hadFocus) field?.focus();
+    setHTML(this, `<div class="ask-dock"><section class="ask-card" data-ask="${esc(key)}" role="region" aria-label="${esc(q.header || "Pi is asking")}" aria-busy="${this.busy}">${head}<div class="ask-body">${question}${preview}${body}</div></section></div>`);
   }
 }
 
