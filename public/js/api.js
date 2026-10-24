@@ -283,6 +283,7 @@ export async function openTranscript(id, { scrollToLatest = true, operation = nu
 
 // --- SSE ---
 let es = null;
+let sseOpened = false;
 let recoveryTimer = null;
 let recoveryAttempt = 0;
 let recoveryInFlight = false;
@@ -354,6 +355,10 @@ export function connectSSE() {
   if (es) es.close();
   es = new EventSource(`${BASE}api/events?build=${encodeURIComponent(store.state.buildId || "")}`);
   es.onopen = () => {
+    // The server keeps no event backlog: events sent while this stream was down are lost,
+    // so reload the open transcript once the new stream is up.
+    if (sseOpened && store.activeKey()) void openTranscript(store.activeKey(), { scrollToLatest: false });
+    sseOpened = true;
     if (recoveryTimer || recoveryInFlight) {
       if (recoveryTimer) clearTimeout(recoveryTimer);
       recoveryTimer = null;
@@ -387,6 +392,12 @@ function byId(records, id) { return records.find(r => r.id === id); }
 
 // Event families that never touch transcript sequence state; true means handled.
 function applyUiEvent(evt) {
+  // Web lost events from a worker while reconnecting to it (see remote-workspaces.js subscribe).
+  if (evt.type === "events_resync") {
+    const id = store.activeKey();
+    if (id) void openTranscript(id, { scrollToLatest: false });
+    return true;
+  }
   if (evt.type === "session_switched" && evt.toSessionId) {
     // pi-sync catches up in place: the same id reloads its transcript, a different id selects the replacement.
     if (evt.toSessionId === evt.sessionId) {
@@ -589,8 +600,11 @@ function applyTranscriptEvent(evt, t, replay) {
         const id = `error:${evt.turnId || evt.seq || evt.sessionId}`;
         if (!byId(recs, id)) recs.push({ id, role: "error", text: evt.error });
       }
-      if (!replay && evt.sessionId === store.activeKey()) {
-        openTranscript(evt.sessionId, { scrollToLatest: false });
+      // The finished turn's reply must come from a snapshot taken after it ended. A turn_end
+      // replayed from a load's buffer came after that load's snapshot, so load once more.
+      if (evt.sessionId === store.activeKey()) {
+        if (replay) reloadAfterLoad.add(evt.sessionId);
+        else openTranscript(evt.sessionId, { scrollToLatest: false });
       }
       break;
     }

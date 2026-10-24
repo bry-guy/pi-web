@@ -140,7 +140,7 @@ test("web routes owned ids to workers, merges state, and re-sequences events", a
     assert.deepEqual(await local.json(), { error: "unsupported_repository_source" });
     for (let i = 0; i < 50 && !frames.some(f => f.includes("token")); i++) await new Promise(r => setTimeout(r, 20));
     const evt = JSON.parse(frames.find(f => f.includes("token")).split("data: ")[1]);
-    assert.equal(evt.seq, 1, "web renumbers worker events");
+    assert.equal(evt.seq, 2, "web renumbers worker events (1 is the resync on connect)");
     assert.equal(evt.sessionId, "s1");
   } finally {
     remote.stop();
@@ -379,12 +379,12 @@ test("web renumbers worker transcript snapshots so live events still apply", asy
   const remote = createRemoteWorkspaces({ url: `http://127.0.0.1:${daemon.address().port}`, token: TOKEN, hub, retryMs: 50, modelAuthSyncMs: 0 });
   try {
     await remote.projects();
-    for (let i = 0; i < 200 && hub.currentSeq() < 5; i++) await new Promise(r => setTimeout(r, 10));
-    assert.equal(hub.currentSeq(), 5);
+    for (let i = 0; i < 200 && hub.currentSeq() < 6; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(hub.currentSeq(), 6, "3 others, the resync on connect, 2 worker events");
     const api = new Hono();
     registerRemoteRoutes(api, remote);
     const snap = await (await api.request("/sessions/s1/transcript")).json();
-    assert.equal(snap.seq, 5, "worker seq 901 maps to web seq of that event, not 901");
+    assert.equal(snap.seq, 6, "worker seq 901 maps to web seq of that event, not 901");
   } finally {
     remote.stop();
     daemon.close();

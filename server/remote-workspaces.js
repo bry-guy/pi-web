@@ -331,6 +331,9 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
           // A new connection may be a restarted worker numbering from zero.
           const pairs = [];
           seqMaps.set(name, pairs);
+          // Workers keep no event backlog; anything sent while web was not listening is gone,
+          // so open transcripts reload from a snapshot instead.
+          hub.emit(null, "events_resync", { workspace: name });
           const decoder = new TextDecoder();
           let buffer = "";
           for await (const chunk of res.body) {
