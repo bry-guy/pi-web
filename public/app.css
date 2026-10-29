@@ -1578,14 +1578,8 @@ pi-extension-ui { display: block; flex: 0 0 auto; background: var(--bg); }
   .row .caret .icon { width: 16px; height: 16px; }
   .rail-search-clear { width: 40px; height: 40px; }
 }
-/* Touch has no hover: conversation rows read as tappable with full contrast and a trailing chevron. */
-@media (hover: none) {
-  .row { opacity: 1; }
-  .row[data-act="session-row"]::after, .row[data-act="chat-row"]::after {
-    content: ""; flex: 0 0 auto; width: 7px; height: 7px; margin-right: 4px;
-    border-top: 1.6px solid var(--faint); border-right: 1.6px solid var(--faint); transform: rotate(45deg);
-  }
-}
+/* Touch has no hover: conversation rows show at full contrast so they read as tappable. */
+@media (hover: none) { .row { opacity: 1; } }
 
 /* Pi settings: a row that opens a sub-page (Extensions, Skills). */
 .settings-link { width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; align-items: center; }
@@ -1596,8 +1590,17 @@ pi-extension-ui { display: block; flex: 0 0 auto; background: var(--bg); }
 .segmented { border-radius: var(--radius-md); }
 .segmented button { border-radius: var(--radius-sm); }
 
-/* Adding a project is its own labelled button under the list, so the only sidebar + means "new session/chat". */
-.rail-add-project { display: flex; align-items: center; gap: 8px; width: calc(100% - 16px); margin: 4px 8px 8px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: var(--radius-md); background: transparent; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
-.rail-add-project:hover, .rail-add-project:focus-visible { color: var(--text); background: var(--hover); outline: 0; }
-.rail-add-project .icon { width: 16px; height: 16px; }
-@media (max-width: 760px) { .rail-add-project { min-height: 44px; } }
+/* "New project" / "New chat": one labelled button under each section heading. */
+.rail-cta { display: flex; align-items: center; gap: 10px; width: calc(100% - 16px); margin: 0 8px 4px; padding: 7px 10px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--accent); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
+.rail-cta:hover, .rail-cta:focus-visible { background: var(--accent-soft); outline: 0; }
+.rail-cta .icon { width: 18px; height: 18px; }
+@media (max-width: 760px) { .rail-cta { min-height: 44px; } }
+
+/* The empty state shrinks with the space the composer leaves, and never centers past the top. */
+.scrollable:has(.empty-pi) { container-type: size; }
+.col-pad:has(.empty-pi) { justify-content: safe center; }
+@container (max-height: 320px) {
+  .empty-pi .tile { width: 40px; height: 40px; font-size: 22px; border-radius: 12px; }
+  .col-pad .empty-greeting { font-size: 24px; margin-top: 10px; }
+}
+@container (max-height: 180px) { .empty-pi .tile { display: none; } .col-pad .empty-greeting { font-size: 20px; margin: 0; } }

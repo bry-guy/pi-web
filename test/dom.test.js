@@ -612,7 +612,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   assert.equal(dom.window.document.activeElement, search);
 
-  const newChat = root.querySelector(".chats-head [data-act='new-chat']");
+  const newChat = root.querySelector(".rail [data-act='new-chat']");
   assert.ok(newChat);
   newChat.click();
   await new Promise(resolve => setTimeout(resolve, 10));

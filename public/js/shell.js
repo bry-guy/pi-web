@@ -411,10 +411,10 @@ class PiSidebar extends HTMLElement {
         </div>
         <div class="rail-scroll">
           <div class="sec-head"><div class="sec-label">Projects</div></div>
+          <button class="rail-cta" data-act="repo-picker">${icon("plus")}<span>New project</span></button>
           <div class="projects-list"></div>
-          <button class="rail-add-project" data-act="repo-picker">${icon("plus")}<span>Add project</span></button>
-          <div class="sec-head chats-head"><button class="sec-label sec-menu" data-act="chats-menu" title="Chats: past chats and the chats worker">Chats</button>
-            <button class="ghost-btn cta-plus" data-act="new-chat" title="New chat" aria-label="New chat">${icon("plus")}</button></div>
+          <div class="sec-head chats-head"><button class="sec-label sec-menu" data-act="chats-menu" title="Chats: past chats and the chats worker">Chats</button></div>
+          <button class="rail-cta" data-act="new-chat">${icon("plus")}<span>New chat</span></button>
           <div class="chats-list"></div>
         </div>
         <button class="rail-foot" data-act="settings" title="Settings" aria-label="Settings">
