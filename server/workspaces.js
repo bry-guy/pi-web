@@ -631,18 +631,20 @@ export async function listBranchesAsync(repoPath) {
 
 export function listRemoteBranches(repoPath) {
   try {
-    return git(repoPath, "branch", "--remotes", "--format=%(refname:short)")
+    return git(repoPath, "branch", "--remotes", "--format=%(refname)")
       .split("\n")
-      .map(s => s.trim())
+      // Full refnames: some git versions shorten refs/remotes/origin/HEAD to a bare "origin", which is not a branch.
+      .map(s => s.trim().replace(/^refs\/remotes\//, ""))
       .filter(branch => branch && !branch.endsWith("/HEAD"));
   } catch { return []; }
 }
 
 export async function listRemoteBranchesAsync(repoPath) {
   try {
-    return (await gitReadAsync(repoPath, "branch", "--remotes", "--format=%(refname:short)"))
+    return (await gitReadAsync(repoPath, "branch", "--remotes", "--format=%(refname)"))
       .split("\n")
-      .map(s => s.trim())
+      // Full refnames: some git versions shorten refs/remotes/origin/HEAD to a bare "origin", which is not a branch.
+      .map(s => s.trim().replace(/^refs\/remotes\//, ""))
       .filter(branch => branch && !branch.endsWith("/HEAD"));
   } catch { return []; }
 }

@@ -341,8 +341,9 @@ class PiThread extends HTMLElement {
       if (index >= 0) this.historyLimit = Math.max(this.historyLimit || HISTORY_PAGE_SIZE, visibleRecords.length - index + 1);
     }
     const history = this.historyRecords(visibleRecords);
-    if (visibleRecords.length === 0 && !activity && !notice && !busy) {
-      setHTML(this, EMPTY_STATE);
+    // Startup activity (extensions loading, notices) sits under the greeting instead of replacing it.
+    if (visibleRecords.length === 0 && !busy) {
+      setHTML(this, EMPTY_STATE + activity + notice);
       return;
     }
     const turns = turnsOf(visibleRecords);

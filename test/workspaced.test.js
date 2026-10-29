@@ -531,7 +531,9 @@ test("usage: quantities parse, metrics-server pods sum per worker, and missing m
   assert.equal(await hung.usage(), null, "a stalled metrics API gives up quickly");
 });
 
-test("usage: local workers report their child's memory and CPU from ps", async () => {
+// The local provider reads usage from ps; minimal containers ship without it.
+const hasPs = (await import("node:child_process")).spawnSync("ps", ["-p", String(process.pid)]).status === 0;
+test("usage: local workers report their child's memory and CPU from ps", { skip: !hasPs && "ps is not installed" }, async () => {
   const root = mkdtempSync(path.join(tmpdir(), "workspaced-usage-"));
   const { spawn } = await import("node:child_process");
   const provider = localProvider({ root, spawnImpl: () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]) });

@@ -4,7 +4,7 @@
   "description": "Self-hostable web UI for Pi coding-agent sessions",
   "scripts": {
     "pretest": "scripts/install-pi-sync.sh",
-    "test": "node --test --test-concurrency=2 test/*.test.js",
+    "test": "node --import ./test/clean-env.js --test --test-concurrency=2 test/*.test.js",
     "test:dom": "node --test test/dom.test.js",
     "start": "PI_WEB_WORKSPACED_URL=${PI_WEB_WORKSPACED_URL-local} node server/index.js",
     "workspaced": "node workspaced/index.js",
