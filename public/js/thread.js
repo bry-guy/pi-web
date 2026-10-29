@@ -341,9 +341,10 @@ class PiThread extends HTMLElement {
       if (index >= 0) this.historyLimit = Math.max(this.historyLimit || HISTORY_PAGE_SIZE, visibleRecords.length - index + 1);
     }
     const history = this.historyRecords(visibleRecords);
-    // Startup activity (extensions loading, notices) sits under the greeting instead of replacing it.
-    if (visibleRecords.length === 0 && !busy) {
-      setHTML(this, EMPTY_STATE + activity + notice);
+    // Before the first prompt, extension activity (observational memory, advisor, …) and notices
+    // sit under the greeting instead of replacing it.
+    if (!busy && visibleRecords.every(record => record.role === "activity")) {
+      setHTML(this, EMPTY_STATE + visibleRecords.map(m => this.renderRecordCached(m)).join("") + activity + notice);
       return;
     }
     const turns = turnsOf(visibleRecords);
@@ -423,10 +424,17 @@ class PiThread extends HTMLElement {
 
   renderSteps(turn) {
     const { steps, duration } = turnStats(turn);
-    const summaries = turn.records.filter(record => record.role === "summary");
+    // A pi-summarize "continues" entry is a step merged into the breadcrumb before it: its tools join that group.
+    const summaries = [];
+    for (const record of turn.records) {
+      if (record.role !== "summary") continue;
+      const previous = summaries.at(-1);
+      if (record.continues && previous) previous.toolCallIds = [...previous.toolCallIds, ...(record.toolCallIds || [])];
+      else summaries.push({ ...record, toolCallIds: [...(record.toolCallIds || [])] });
+    }
     const claimed = new Set();
     const groups = summaries.map(summary => {
-      const ids = new Set(summary.toolCallIds || []);
+      const ids = new Set(summary.toolCallIds);
       const members = turn.records.filter(record => (record.role === "tool" && ids.has(record.id))
         || (record.role === "assistant" && record.thinking && (record.toolIds || []).some(id => ids.has(id))));
       members.forEach(record => claimed.add(record));

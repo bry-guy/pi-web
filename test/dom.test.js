@@ -588,6 +588,11 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.match(store.state.operations.find(operation => operation.kind === "switch-session").events.at(-1).message, /Switched session s1 to develop/);
   store.state.transcripts.sibling.streaming = false;
   store.notify("transcript");
+  store.state.transcripts.sibling.records = [{ id: "om", role: "activity", key: "om", title: "Observational memory", status: "completed" }];
+  store.notify("transcript");
+  assert.ok(root.querySelector("pi-thread .empty-pi"), "extension activity before the first prompt keeps the greeting");
+  store.state.transcripts.sibling.records = [];
+  store.notify("transcript");
 
   store.state.openTree.p1 = false;
   store.notify("state");
@@ -1480,6 +1485,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     applyEvent({ v: 1, seq: 2, sessionId: "s1", type: "turn_end", reason: "done" }, true);
     assert.equal(thread.querySelector(".busy-row"), null);
     assert.equal(thread.querySelector(".turn-done-row").textContent.trim(), "Worked 43s · 2 steps›");
+    store.state.transcripts.s1.records.push({ id: "sum2", role: "summary", text: "Read files.js", continues: true, toolCallIds: ["t2"], at: T + 43000 });
+    store.notify("transcript");
 
     thread.querySelector(".turn-done-row").click();
     assert.equal(location.hash, "#steps=u1");
@@ -1489,6 +1496,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     assert.equal(thread.querySelector(".step-group-body"), null, "summaries start collapsed");
     thread.querySelector(".step-summary").click();
     assert.match(thread.querySelector(".step-group-body").textContent, /src\/files\.js/);
+    assert.equal(thread.querySelectorAll(".step-summary").length, 1, "a merged step joins its breadcrumb instead of adding a line");
+    assert.match(thread.querySelector(".step-group-body").textContent, /npm test/, "the merged step's tools are grouped under it");
     thread.querySelector('[data-toggle="think:a:u1"]').click();
     assert.match(thread.querySelector(".step-thinking").textContent, /Read the file first\./);
 

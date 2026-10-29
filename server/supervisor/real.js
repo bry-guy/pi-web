@@ -1617,6 +1617,7 @@ function summaryRecord(entry) {
     id: entry.id, role: "summary", text: String(data.text || ""),
     at: timeOf(data.at) || entryTime(entry),
     toolCallIds: Array.isArray(data.toolCallIds) ? data.toolCallIds.map(String) : [],
+    ...(data.continues ? { continues: true } : {}),
   };
 }
 
