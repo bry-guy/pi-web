@@ -27,7 +27,7 @@ Use `config.json` when you want to predefine projects or change settings that ar
 | `reposRoot` | Where repositories are cloned |
 | `worktreeRoot` | Where the app creates worktrees; use a stable absolute path |
 | `defaultModel` | Automatic selection (`null`) or a `provider/modelId` |
-| `defaultThinkingLevel` | Default reasoning level for new chats |
+| `defaultThinkingLevel` | Default reasoning level for new chats; unset follows the Pi profile, then `medium` |
 | `pi` | Explicit Pi profile, packages, and extensions |
 | `repositorySources` | Default project-picker source and GitHub options |
 | `sync` | Optional pi-sync server and conversation setting |

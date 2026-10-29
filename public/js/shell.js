@@ -30,6 +30,9 @@ export const icon = name => {
     sidebar: '<rect x="3" y="4" width="14" height="12" rx="2.5"/><path d="M8 4v12"/>',
     code: '<path d="m6.5 6-4 4 4 4"/><path d="m13.5 6 4 4-4 4"/><path d="m11.4 4-2.8 12"/>',
     chevronRight: '<path d="m7.5 4 6 6-6 6"/>',
+    plus: '<path d="M10 4v12M4 10h12"/>',
+    search: '<circle cx="9" cy="9" r="5.5"/><path d="m13 13 4 4"/>',
+    close: '<path d="m5 5 10 10M15 5 5 15"/>',
   };
   return `<svg class="icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">${paths[name] || ""}</svg>`;
 };
@@ -289,6 +292,9 @@ class PiSidebar extends HTMLElement {
         this.renderResults();
       }
     });
+    this.addEventListener("keydown", e => {
+      if (e.key === "Escape" && e.target.matches(".rail-search") && e.target.value) { e.preventDefault(); this.clearSearch(); }
+    });
     this.render();
   }
   disconnectedCallback() { this.unsub?.(); }
@@ -310,6 +316,7 @@ class PiSidebar extends HTMLElement {
       newProjectSession(t.dataset.id);
       return;
     }
+    if (act === "clear-search") { this.clearSearch(); return; }
     if (act === "close-row") {
       e.stopPropagation();
       void closeConversation(t.dataset.id, t.dataset.kind);
@@ -343,6 +350,13 @@ class PiSidebar extends HTMLElement {
     } else if (act === "chat-row") selectChat(t.dataset.id);
   }
 
+  clearSearch() {
+    const input = this.querySelector(".rail-search");
+    store.state.query = "";
+    if (input) { input.value = ""; input.focus(); }
+    this.renderResults();
+  }
+
   count(nodes) { return nodes.reduce((n, x) => n + (isDraft(x) ? 0 : 1) + this.count(x.children), 0); }
 
   sessionRows(p, nodes, depth, q, out, forceAll = false) {
@@ -359,11 +373,11 @@ class PiSidebar extends HTMLElement {
       const unread = !!store.state.unread[n.id];
       out.push(`<div class="row-wrap nested" style="margin-left:${20 + depth * 14}px">
         <div class="row ${sel ? "active " : ""}${streaming ? "streaming " : ""}${unread ? "unread" : ""}" role="button" tabindex="0" ${kids ? `aria-expanded="${open || !!q}"` : ""} data-act="session-row" data-id="${esc(n.id)}" data-pid="${esc(p.id)}" data-kids="${kids ? 1 : 0}">
-          <span class="caret" ${kids ? `data-act="toggle-tree" data-tree-id="${esc(n.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(n.title)}"` : ""}>${kids ? ((open || q) ? "▾" : "▸") : "·"}</span>
+          <span class="caret" ${kids ? `data-act="toggle-tree" data-tree-id="${esc(n.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(n.title)}"` : ""}>${kids ? icon("chevronRight") : ""}</span>
           <span class="lbl">${esc(n.title)}</span>
           <span class="live-dot" aria-label="${unread ? "Unread reply" : "Streaming"}"></span>
           <button class="row-close" data-act="close-row" data-kind="session" data-pid="${esc(p.id)}" data-id="${esc(n.id)}"
-            data-label="${esc(n.title)}" data-branch="${esc(n.branch || "")}" title="End session" aria-label="End session ${esc(n.title)}">×</button>
+            data-label="${esc(n.title)}" data-branch="${esc(n.branch || "")}" title="End session" aria-label="End session ${esc(n.title)}">${icon("close")}</button>
         </div></div>`);
       if (kids && (open || q || forceAll)) this.sessionRows(p, n.children, depth + 1, forceAll ? "" : q, out, forceAll);
     }
@@ -380,8 +394,8 @@ class PiSidebar extends HTMLElement {
         setHTML(this, `<aside class="mini">
           <button class="mini-logo" data-act="collapse" title="Expand sidebar">π</button>
           <div class="mini-gap"></div>
-          <button class="mini-btn cta-plus" data-act="new-chat" title="New chat">+</button>
-          <button class="mini-btn quiet" data-act="search" title="Search sessions" aria-label="Search sessions">⌕</button>
+          <button class="mini-btn cta-plus" data-act="new-chat" title="New chat" aria-label="New chat">${icon("plus")}</button>
+          <button class="mini-btn quiet" data-act="search" title="Search sessions" aria-label="Search sessions">${icon("search")}</button>
           <div class="mini-flex"></div>
           <button class="mini-btn quiet" data-act="settings" title="Settings">${icon("settings")}</button>
         </aside>`);
@@ -393,14 +407,14 @@ class PiSidebar extends HTMLElement {
           <button class="rail-logo" data-act="collapse" title="Collapse sidebar">π</button><div class="rail-word">pi</div>
         </div>
         <div class="rail-actions">
-          <input class="rail-search" placeholder="Filter chats and sessions" aria-label="Filter chats and sessions">
+          <div class="rail-search-wrap">${icon("search")}<input class="rail-search" type="search" placeholder="Filter chats and sessions" aria-label="Filter chats and sessions"><button class="rail-search-clear" data-act="clear-search" title="Clear filter" aria-label="Clear filter" hidden>${icon("close")}</button></div>
         </div>
         <div class="rail-scroll">
-          <div class="sec-head"><div class="sec-label">Projects</div>
-            <button class="ghost-btn cta-plus" data-act="repo-picker" title="New project" style="padding:3px 6px">+</button></div>
+          <div class="sec-head"><div class="sec-label">Projects</div></div>
           <div class="projects-list"></div>
+          <button class="rail-add-project" data-act="repo-picker">${icon("plus")}<span>Add project</span></button>
           <div class="sec-head chats-head"><button class="sec-label sec-menu" data-act="chats-menu" title="Chats: past chats and the chats worker">Chats</button>
-            <button class="ghost-btn cta-plus" data-act="new-chat" title="New chat" style="padding:3px 6px">+</button></div>
+            <button class="ghost-btn cta-plus" data-act="new-chat" title="New chat" aria-label="New chat">${icon("plus")}</button></div>
           <div class="chats-list"></div>
         </div>
         <button class="rail-foot" data-act="settings" title="Settings" aria-label="Settings">
@@ -420,6 +434,8 @@ class PiSidebar extends HTMLElement {
     if (this.dataset.layout !== "rail") return;
     const s = store.state;
     const q = s.query.trim().toLowerCase();
+    const clear = this.querySelector(".rail-search-clear");
+    if (clear) clear.hidden = !s.query;
     const projRows = [];
     for (const p of s.projects) {
       const nameMatch = !q || fuzzyMatch(p.name, q);
@@ -428,10 +444,10 @@ class PiSidebar extends HTMLElement {
       const active = s.view === "chat" && s.projectId === p.id && !s.chatId;
       projRows.push(`<div class="row-wrap" style="margin-top:1px">
         <div class="row mono ${active && !open ? "active" : ""}" role="button" tabindex="0" aria-expanded="${open}" data-act="project-row" data-id="${esc(p.id)}">
-          <span class="caret" data-act="toggle-tree" data-tree-id="${esc(p.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(p.name)}">${open ? "▾" : "▸"}</span>
+          <span class="caret" data-act="toggle-tree" data-tree-id="${esc(p.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(p.name)}">${icon("chevronRight")}</span>
           <span class="lbl">${esc(p.name)}</span>
           <span class="count">${this.count(p.sessions)}</span>
-          <button class="row-new" data-act="project-new-session" data-id="${esc(p.id)}" data-tip="New session" aria-label="New session in ${esc(p.name)}">+</button>
+          <button class="row-new" data-act="project-new-session" data-id="${esc(p.id)}" data-tip="New session" aria-label="New session in ${esc(p.name)}">${icon("plus")}</button>
         </div></div>`);
       if (open) this.sessionRows(p, p.sessions, 0, nameMatch ? "" : q, projRows, !!q && nameMatch);
     }
@@ -443,7 +459,7 @@ class PiSidebar extends HTMLElement {
         return `<div class="row ${s.chatId === cRow.id ? "active " : ""}${streaming ? "streaming " : ""}${unread ? "unread " : ""}" role="button" tabindex="0" data-act="chat-row" data-id="${esc(cRow.id)}">
         <span class="lbl">${esc(cRow.title)}</span><span class="live-dot" aria-label="${unread ? "Unread reply" : "Streaming"}"></span><span class="when">${esc(cRow.when)}</span>
         <button class="row-close" data-act="close-row" data-kind="chat" data-id="${esc(cRow.id)}"
-          data-label="${esc(cRow.title)}" data-branch="" title="End chat" aria-label="End chat ${esc(cRow.title)}">×</button>
+          data-label="${esc(cRow.title)}" data-branch="" title="End chat" aria-label="End chat ${esc(cRow.title)}">${icon("close")}</button>
       </div>`;
       }).join("");
     setHTML(this.querySelector(".projects-list"), projRows.join(""));

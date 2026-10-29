@@ -485,8 +485,9 @@ class PiSessionPicker extends HTMLElement {
       fork: ["Fork session", `Copy ${sessionName || "this conversation"} to a new branch`],
     };
     const [title, subtitle] = heads[screen];
-    const back = screen === "main" ? "" : `<button class="ghost-btn session-picker-back" data-act="back-session-picker" aria-label="Back">${icon("chevronLeft")}</button>`;
-    const head = `${back}<div><div class="modal-title">${esc(title)}</div><div class="session-picker-subtitle">${esc(subtitle)}</div></div><button class="ghost-btn" data-act="close-session-picker" aria-label="Close">×</button>`;
+    // One Back control: a step returns to the panel, the panel returns to the chat.
+    const back = `<button class="ghost-btn session-picker-back" data-act="${screen === "main" ? "close-session-picker" : "back-session-picker"}" aria-label="Back" title="Back">${icon("chevronLeft")}</button>`;
+    const head = `${back}<div><div class="modal-title">${esc(title)}</div><div class="session-picker-subtitle">${esc(subtitle)}</div></div>`;
     // The scrim and dialog are built once per opening: re-creating them on every
     // update replayed their fade/pop entry animations, so the screen flashed and jumped.
     let dialog = this.querySelector(".session-picker");

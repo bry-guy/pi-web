@@ -6,7 +6,6 @@
   "reposRoot": "/data/repos",
   "port": 3141,
   "defaultModel": null,
-  "defaultThinkingLevel": "medium",
   "sync": {
     "serverUrl": null,
     "allConversations": false

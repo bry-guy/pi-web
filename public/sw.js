@@ -1,4 +1,4 @@
-const CACHE_NAME = "pi-ez-web-shell-v2";
+const CACHE_NAME = "pi-ez-web-shell-v3";
 const SHELL = [
   "./",
   "./manifest.webmanifest",
