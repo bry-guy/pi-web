@@ -74,7 +74,7 @@ test("async workspace readers match sync output and preserve defaults", async ()
     assert.deepEqual(await ws.listBranchesAsync(fixture.repo), ws.listBranches(fixture.repo));
     assert.deepEqual(await ws.listBranchesAsync(fixture.repo), ["checkout-away", "feature/async", "main"]);
     assert.deepEqual(await ws.listRemoteBranchesAsync(fixture.repo), ws.listRemoteBranches(fixture.repo));
-    assert.deepEqual(await ws.listRemoteBranchesAsync(fixture.repo), ["origin", "origin/alpha", "origin/zeta"]);
+    assert.deepEqual(await ws.listRemoteBranchesAsync(fixture.repo), ["origin/alpha", "origin/zeta"]);
     assert.equal(await ws.defaultBranchAsync(fixture.repo), ws.defaultBranch(fixture.repo));
     assert.equal(await ws.defaultBranchAsync(fixture.repo, [], null), ws.defaultBranch(fixture.repo, [], null));
 

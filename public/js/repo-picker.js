@@ -1,7 +1,7 @@
 import { api, refreshState } from "./api.js";
 import { beginOperation, completeOperation } from "./operations.js";
 import { store } from "./store.js";
-import { esc, selectSession } from "./shell.js";
+import { esc, icon, selectSession } from "./shell.js";
 import { launchSetup } from "./panel-utils.js";
 
 /* ---------------- repo picker ---------------- */
@@ -240,8 +240,8 @@ class PiRepoPicker extends HTMLElement {
         <div class="modal">
           <div class="modal-head">
             <div class="modal-title-row">
+              <button class="ghost-btn session-picker-back" data-act="close" aria-label="Back" title="Back">${icon("chevronLeft")}</button>
               <div class="modal-title">Select a repository</div>
-              <button class="ghost-btn" data-act="close" style="font-size:15px">×</button>
             </div>
             <div class="modal-filter-row">
               <div class="source-picker">

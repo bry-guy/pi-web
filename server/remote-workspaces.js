@@ -391,6 +391,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
               if (!data) continue;
               try {
                 const { v: _v, seq, sessionId, type, ...rest } = JSON.parse(data);
+                if (type === "ping") continue; // the worker's keepalive; web sends its own
                 if (sessionId) owners.session.set(sessionId, name);
                 hub.emit(sessionId, type, rest);
                 pairs.push([Number(seq), hub.currentSeq()]);

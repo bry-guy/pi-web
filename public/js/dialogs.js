@@ -1,7 +1,7 @@
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { beginOperation, combineOperationResults, completeOperation, operationFor, operationHint } from "./operations.js";
 import { setHTML, store } from "./store.js";
-import { esc, openSessionPicker, selectSession } from "./shell.js";
+import { esc, icon, openSessionPicker, selectSession } from "./shell.js";
 import { gitErrorMessage, workerErrorMessage } from "./panel-utils.js";
 
 
@@ -86,7 +86,7 @@ class PiLogs extends HTMLElement {
     const serverLogs = (store.state.logs || []).map(entry => this.serverEntry(entry)).join("");
     const loading = store.state.logsLoading ? `<div class="logs-empty">Loading server logs…</div>` : "";
     const error = store.state.logsError ? `<div class="logs-error">Could not load the server log: ${esc(store.state.logsError)}</div>` : "";
-    this.innerHTML = `<div class="logs-scrim"><section class="logs-modal" role="dialog" aria-modal="true" aria-label="Logs"><div class="logs-head"><div><div class="logs-title">Logs</div><div class="logs-subtitle">Live actions in this tab and the server log file.</div></div><button class="ghost-btn" data-act="close-logs" aria-label="Close">×</button></div><div class="logs-body">${error}${loading}<section class="logs-section"><div class="logs-section-title">Recent actions</div>${operations || `<div class="logs-empty">No actions have run in this tab.</div>`}</section><section class="logs-section"><div class="logs-section-title">Server log · ${esc(store.state.logsFile || "logs/pi-ez-web.log")}</div><div class="logs-server-list">${serverLogs || `<div class="logs-empty">No server log entries yet.</div>`}</div></section></div><div class="logs-actions"><button class="settings-action quiet" data-act="refresh-logs" ${store.state.logsLoading ? "disabled" : ""}>Refresh</button><button class="settings-save" data-act="close-logs">Close</button></div></section></div>`;
+    this.innerHTML = `<div class="logs-scrim"><section class="logs-modal" role="dialog" aria-modal="true" aria-label="Logs"><div class="logs-head"><button class="ghost-btn session-picker-back" data-act="close-logs" aria-label="Back" title="Back">${icon("chevronLeft")}</button><div><div class="logs-title">Logs</div><div class="logs-subtitle">Live actions in this tab and the server log file.</div></div></div><div class="logs-body">${error}${loading}<section class="logs-section"><div class="logs-section-title">Recent actions</div>${operations || `<div class="logs-empty">No actions have run in this tab.</div>`}</section><section class="logs-section"><div class="logs-section-title">Server log · ${esc(store.state.logsFile || "logs/pi-ez-web.log")}</div><div class="logs-server-list">${serverLogs || `<div class="logs-empty">No server log entries yet.</div>`}</div></section></div><div class="logs-actions"><button class="settings-action quiet" data-act="refresh-logs" ${store.state.logsLoading ? "disabled" : ""}>Refresh</button></div></section></div>`;
   }
 }
 

@@ -13,4 +13,6 @@ test("without a web default, the Pi profile's default model wins over the first 
   assert.equal((await sup.modelState()).effectiveDefault, "openai-codex/luna");
   sup.piConfiguration = { resolve: async () => ({ settings: { defaultProvider: "openai-codex", defaultModel: "gone" } }) };
   assert.equal((await sup.modelState()).effectiveDefault, "openai-codex/spark");
+  sup.piConfiguration = { resolve: async () => ({ settings: { enabledModels: ["anthropic/missing", "openai-codex/luna:low"] } }) };
+  assert.equal((await sup.modelState()).effectiveDefault, "openai-codex/luna", "the first available enabled model, like the Pi CLI");
 });

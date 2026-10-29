@@ -3,7 +3,7 @@
 // The Chats menu is its sibling for plain chats: new chat, past chats, and the chats worker.
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { setHTML, store, toast } from "./store.js";
-import { esc, newChat, newProjectSession, restoreConversation, selectChat, selectSession } from "./shell.js";
+import { esc, icon, newChat, newProjectSession, restoreConversation, selectChat, selectSession } from "./shell.js";
 import { workerAction, workerCard } from "./workers.js";
 import { gitErrorMessage, launchSetup } from "./panel-utils.js";
 
@@ -167,7 +167,7 @@ class PiProjectMenu extends HTMLElement {
 
   /** The dialog frame, built once per opening so re-renders do not replay its entry animation. */
   frame(title, subtitle, body) {
-    const head = `<div><div class="modal-title">${esc(title)}</div>${subtitle ? `<div class="session-picker-subtitle">${esc(subtitle)}</div>` : ""}</div><button class="ghost-btn" data-act="close-project-menu" aria-label="Close">×</button>`;
+    const head = `<button class="ghost-btn session-picker-back" data-act="close-project-menu" aria-label="Back" title="Back">${icon("chevronLeft")}</button><div><div class="modal-title">${esc(title)}</div>${subtitle ? `<div class="session-picker-subtitle">${esc(subtitle)}</div>` : ""}</div>`;
     if (!this.querySelector(".session-picker")) {
       this.innerHTML = `<div class="session-picker-scrim"><section class="session-picker" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="session-picker-head"></div><div class="session-picker-body"></div></section></div>`;
       this.__html = null;

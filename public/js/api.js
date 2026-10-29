@@ -289,6 +289,9 @@ let recoveryTimer = null;
 let recoveryAttempt = 0;
 let recoveryInFlight = false;
 let reloadIssued = false;
+let lastFrameAt = Date.now();
+const STALE_STREAM_MS = 45_000; // three missed 15s server pings
+let watchdog = null;
 
 function stopRecovery() {
   if (recoveryTimer) clearTimeout(recoveryTimer);
@@ -352,10 +355,31 @@ export function resumeConnection() {
   void recoverConnection();
 }
 
+// The highest event seq any transcript has applied; a ping below it means the server restarted
+// and renumbered, so every later event would be dropped as already seen.
+function highestSeenSeq() {
+  return Math.max(-1, ...Object.values(store.state.transcripts).map(t => Number(t?.seq)).filter(Number.isFinite));
+}
+
+export function handlePing(evt) {
+  if (Number(evt.seq) >= highestSeenSeq()) return;
+  for (const t of Object.values(store.state.transcripts)) if (t) t.seq = -1;
+  const id = store.activeKey();
+  if (id) void openTranscript(id, { scrollToLatest: false });
+}
+
 export function connectSSE() {
   if (es) es.close();
+  lastFrameAt = Date.now();
+  // A stream can die without an error (proxies, sleeping radios); reconnecting reloads the open transcript.
+  watchdog ||= setInterval(() => {
+    if (globalThis.document?.visibilityState === "hidden" || reloadIssued) return;
+    if (Date.now() - lastFrameAt > STALE_STREAM_MS) connectSSE();
+  }, 10_000);
+  watchdog.unref?.();
   es = new EventSource(`${BASE}api/events?build=${encodeURIComponent(store.state.buildId || "")}`);
   es.onopen = () => {
+    lastFrameAt = Date.now();
     // The server keeps no event backlog: events sent while this stream was down are lost,
     // so reload the open transcript once the new stream is up.
     if (sseOpened && store.activeKey()) void openTranscript(store.activeKey(), { scrollToLatest: false });
@@ -367,12 +391,14 @@ export function connectSSE() {
     }
   };
   es.onmessage = (m) => {
+    lastFrameAt = Date.now();
     let evt;
     try { evt = JSON.parse(m.data); } catch { return; }
     if (evt.v !== CONTRACT_VERSION) {
       store.set({ fatalError: "This server sent an incompatible event contract. Reload the page." });
       return;
     }
+    if (evt.type === "ping") { handlePing(evt); return; }
     const buf = buffers.get(evt.sessionId);
     if (buf && shouldBufferEvent(evt.type)) { buf.push(evt); return; }
     applyEvent(evt);

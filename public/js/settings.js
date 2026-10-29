@@ -15,16 +15,19 @@ const CATEGORIES = [
   ["repositories", "Repositories"],
   ["defaults", "Defaults"],
   ["appearance", "Appearance"],
-  ["diagnostics", "Diagnostics"],
 ];
-const CATEGORY_IDS = new Set(CATEGORIES.map(([id]) => id));
+// Pages under a category: not in the list, and their Back returns to the parent.
+const SUBPAGES = { extensions: ["pi", "Extensions"], skills: ["pi", "Skills"] };
+const CATEGORY_IDS = new Set([...CATEGORIES.map(([id]) => id), ...Object.keys(SUBPAGES)]);
 const DEFAULT_CATEGORY = "providers";
 const WORKERS_POLL_MS = 5_000;
 
 // #settings is the category list; #settings/<category> is one page.
 export function settingsRoute(hash) {
   const match = /^#settings(?:\/([a-z]+))?$/.exec(hash);
-  return match ? { view: "settings", settingsCategory: CATEGORY_IDS.has(match[1]) ? match[1] : null } : null;
+  // Diagnostics moved into Pi; keep old links working.
+  const id = match?.[1] === "diagnostics" ? "pi" : match?.[1];
+  return match ? { view: "settings", settingsCategory: CATEGORY_IDS.has(id) ? id : null } : null;
 }
 const settingsHash = (open, category) => !open ? "" : category ? `#settings/${category}` : "#settings";
 
@@ -227,7 +230,7 @@ class PiSettings extends HTMLElement {
     const snapshot = this.snapshotDrafts(["defaultThinkingLevel"]);
     const previous = store.state.defaultThinkingLevel;
     try {
-      const result = await api.settingsPatch({ defaultThinkingLevel: level });
+      const result = await api.settingsPatch({ defaultThinkingLevel: level || null });
       store.set({ defaultThinkingLevel: result.defaultThinkingLevel || level });
       this.clearDrafts(snapshot);
       this.setFeedback("Default thinking mode saved.");
@@ -488,22 +491,13 @@ class PiSettings extends HTMLElement {
         : "Using the deployment's Pi settings";
     const loadedExtensions = Array.isArray(piState.runtime?.extensions) ? piState.runtime.extensions : [];
     const loadedSkills = Array.isArray(piState.runtime?.skills) ? piState.runtime.skills : [];
-    const resourceRows = (items, empty) => items.length
-      ? `<ul>${items.map(item => `<li><strong>${esc(item.name || "Unnamed resource")}</strong><span>${esc(item.path || "")}</span><small>${esc([item.source, item.scope, item.origin].filter(Boolean).join(" · "))}</small></li>`).join("")}</ul>`
-      : `<div class="pi-resource-empty">${esc(empty)}</div>`;
-    const extensionList = piState.runtime
-      ? `<details class="pi-loaded-list" data-settings-details="extensions"><summary>Extensions (${loadedExtensions.length})</summary><div class="pi-resource-scroll">${resourceRows(loadedExtensions, "No extensions loaded.")}</div></details>`
-      : "";
-    const skillList = piState.runtime
-      ? `<details class="pi-loaded-list" data-settings-details="skills"><summary>Skills (${loadedSkills.length})</summary><div class="pi-resource-scroll">${resourceRows(loadedSkills, "No skills loaded.")}</div></details>`
-      : "";
     const skillCount = Array.isArray(piState.runtime?.skills) ? loadedSkills.length : (piState.runtime?.skills || 0);
     const packageStatus = piState.runtime?.packageStatus;
     const packageSummary = packageStatus?.configured
-      ? ` ${packageStatus.loaded} of ${packageStatus.configured} configured package${packageStatus.configured === 1 ? "" : "s"} active${packageStatus.failed ? `; ${packageStatus.failed} skipped` : ""}.`
+      ? ` · ${packageStatus.loaded} of ${packageStatus.configured} package${packageStatus.configured === 1 ? "" : "s"} active${packageStatus.failed ? `, ${packageStatus.failed} skipped` : ""}`
       : "";
     const runtimeSummary = piState.runtime
-      ? `${loadedExtensions.length} extension${loadedExtensions.length === 1 ? "" : "s"}, ${skillCount} skill${skillCount === 1 ? "" : "s"}, and ${piState.runtime.prompts || 0} prompts loaded${piState.runtime.loadedAt ? ` at ${new Date(piState.runtime.loadedAt).toLocaleTimeString()}` : ""}.${packageSummary}`
+      ? `${piState.runtime.prompts || 0} prompts${piState.runtime.loadedAt ? ` · loaded ${new Date(piState.runtime.loadedAt).toLocaleTimeString()}` : ""}${packageSummary}`
       : "Resources load when a session runtime is attached.";
     const piProblems = [
       ...(piState.warnings || []),
@@ -511,7 +505,18 @@ class PiSettings extends HTMLElement {
       ...(piState.runtime?.skillDiagnostics || []).map(error => `${error.path || "skill"}: ${error.message}`),
     ];
     const piOperation = operationFeedback("pi-profile", "Applying Pi resources…");
+    const s = store.state;
+    const link = (id, title, value) => `<button class="settings-row settings-link" data-settings-category="${id}"><div class="sr-main"><div class="sr-title">${title}</div></div><span class="settings-mono">${value}</span><span class="settings-link-chevron" aria-hidden="true">${icon("chevronRight")}</span></button>`;
     return `<section class="settings-section">
+        <div class="settings-section-title">Loaded</div>
+        <div class="settings-card settings-card-spaced">
+          <div class="settings-row"><div class="sr-main"><div class="sr-title">${esc(profileStatus)}</div><div class="sr-sub">${esc(runtimeSummary)}</div></div></div>
+          ${piState.runtime ? link("extensions", "Extensions", loadedExtensions.length) + link("skills", "Skills", skillCount) : ""}
+          ${piProblems.length ? `<div class="settings-row"><div class="sr-main"><div class="sr-title">Problems</div><div class="provider-error">${piProblems.map(esc).join("<br>")}</div></div></div>` : ""}
+        </div>
+      </section>
+      <section class="settings-section">
+        <div class="settings-section-title">Profile</div>
         <div class="settings-card settings-card-spaced">
           <div class="settings-row settings-path-row">
             <div class="sr-main"><div class="sr-title">Dotfiles profile</div><div class="sr-sub">Optional: enter a local path or HTTPS URL. Leave blank to use only the deployment's Pi settings. GitHub profiles read <span class="settings-mono">.pi/agent/settings.json</span> and supported resources.</div></div>
@@ -525,12 +530,27 @@ class PiSettings extends HTMLElement {
             <div class="sr-main"><div class="sr-title">Local extension paths (advanced)</div><div class="sr-sub">Optional server-local extension files or directories, one path per line. These are not package names; relative paths resolve from <span class="settings-mono">PI_WEB_HOME</span>.</div></div>
             <textarea class="settings-inline-input pi-resource-list" data-setting="piExtensions" rows="4" placeholder="/data/extensions/my-extension.ts">${esc((piConfig.extensions || []).join("\n"))}</textarea>
           </div></details>
-          <div class="settings-row pi-resource-status"><div class="sr-main"><div class="sr-title">${esc(profileStatus)}</div><div class="sr-sub">${esc(runtimeSummary)}</div>
-            ${piState.runtime ? `<div class="settings-subhead">What's loaded</div>` : ""}${extensionList}${skillList}
-            ${piProblems.length ? `<div class="settings-subhead">Problems</div><div class="provider-error">${piProblems.map(esc).join(" · ")}</div>` : ""}</div></div>
-          <div class="settings-row settings-actions-row"><span class="settings-mono">Save &amp; reload fetches the profile, installs missing packages, and reloads idle sessions. It is refused while a session is running; stop it first. Remote extensions execute with the server user's full permissions.</span><div class="settings-actions"><button class="settings-save" data-act="save-pi-configuration">Save &amp; reload</button>${piOperation}</div></div>
+          <div class="settings-row settings-actions-row"><span class="sr-sub">Fetches the profile, installs missing packages and reloads idle sessions; refused while a session is running. Remote extensions run with the server user's full permissions.</span><div class="settings-actions"><button class="settings-save" data-act="save-pi-configuration">Save &amp; reload</button>${piOperation}</div></div>
+        </div>
+      </section>
+      <section class="settings-section">
+        <div class="settings-section-title">Server</div>
+        <div class="settings-card settings-card-spaced">
+          <div class="settings-row"><div class="sr-main"><div class="sr-title">Build</div><div class="sr-sub">Share it with any problem report.</div></div><span class="settings-mono">${esc(s.buildId || "unknown")}</span></div>
+          <div class="settings-row"><div class="sr-main"><div class="sr-title">Server logs</div><div class="sr-sub">Why a hook, push or merge failed.</div></div><button class="settings-action" data-act="open-logs">Open logs</button></div>
         </div>
       </section>`;
+  }
+  resourcesPage(kind) {
+    const items = store.state.piConfiguration?.runtime?.[kind];
+    const list = Array.isArray(items) ? items : [];
+    const rows = list.map(item => `<div class="settings-row pi-resource-row"><div class="sr-main">
+        <div class="sr-title">${esc(item.name || "Unnamed")}</div>
+        ${item.description ? `<div class="sr-sub">${esc(item.description)}</div>` : ""}
+        <div class="settings-mono pi-resource-path">${esc(item.path || "")}</div>
+        ${[item.source, item.scope, item.origin].some(Boolean) ? `<div class="sr-sub">${esc([item.source, item.scope, item.origin].filter(Boolean).join(" · "))}</div>` : ""}
+      </div></div>`).join("");
+    return `<section class="settings-section"><div class="settings-card settings-card-spaced">${rows || `<div class="settings-row"><div class="sr-sub">No ${kind} loaded.</div></div>`}</div></section>`;
   }
   workersPage() {
     const inventory = store.state.workers;
@@ -609,16 +629,17 @@ class PiSettings extends HTMLElement {
   }
   defaultsPage() {
     const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-    const defaultThinkingLevel = store.state.defaultThinkingLevel || "medium";
+    const defaultThinkingLevel = store.state.defaultThinkingLevel || "";
     return `<section class="settings-section">
       <div class="settings-card settings-card-spaced">
         <div class="settings-row">
-          <div class="sr-main"><div class="sr-title">Default model</div><div class="sr-sub">Automatic uses the first available authenticated model.${store.state.defaultModelStatus === "unavailable" ? " The configured model is currently unavailable." : ""}</div></div>
+          <div class="sr-main"><div class="sr-title">Default model</div><div class="sr-sub">Automatic follows your Pi profile (its default model, then its first enabled model), else the first available model.${store.state.defaultModelStatus === "unavailable" ? " The configured model is currently unavailable." : ""}</div></div>
           <pi-model-picker data-mode="default" data-variant="settings"></pi-model-picker>
         </div>
         <div class="settings-row settings-path-row">
           <div class="sr-main"><div class="sr-title">Default thinking mode</div><div class="sr-sub">Used for new chats; existing sessions keep their saved mode.</div></div>
           <select class="settings-select" data-setting="defaultThinkingLevel">
+            <option value="" ${defaultThinkingLevel ? "" : "selected"}>Follow Pi profile</option>
             ${thinkingLevels.map(level => `<option value="${level}" ${level === defaultThinkingLevel ? "selected" : ""}>${level}</option>`).join("")}
           </select>
         </div>
@@ -632,25 +653,11 @@ class PiSettings extends HTMLElement {
       </div>
       </section>`;
   }
-  diagnosticsPage() {
-    const s = store.state;
-    const runtime = s.piConfiguration?.runtime || {};
-    const facts = [
-      ["Build", s.buildId || "unknown", "The running server build. Reload the page after an update."],
-      ["Mode", s.mode || "unknown", "mock serves sample data without Pi or Git; real runs Pi sessions and Git."],
-      ["Pi extensions", `${(runtime.extensions || []).length} loaded`, "Extensions Pi loaded from its profile and local paths."],
-      ["Pi skills", `${(runtime.skills || []).length} loaded`, "Skills agents in this server can use."],
-      ["Pi load errors", `${(runtime.errors || []).length}`, "Problems Pi reported while loading. Fix them under Pi."],
-    ];
-    return `<section class="settings-section">
-        <p class="settings-intro">What this server is running and what Pi loaded. Share the build and any load errors when reporting a problem.</p>
-        <div class="settings-card settings-card-spaced">${facts.map(([title, value, sub]) => `<div class="settings-row"><div class="sr-main"><div class="sr-title">${esc(title)}</div><div class="sr-sub">${esc(sub)}</div></div><span class="settings-mono">${esc(value)}</span></div>`).join("")}</div>
-        <div class="settings-card settings-card-spaced"><div class="settings-row"><div class="sr-main"><div class="sr-title">Server logs</div><div class="sr-sub">Recent operations and server output, newest first. Use them to see why a hook, push or merge failed.</div></div><button class="settings-action" data-act="open-logs">Open logs</button></div></div>
-      </section>`;
-  }
   render() {
     const category = store.state.settingsCategory || DEFAULT_CATEGORY;
-    const label = CATEGORIES.find(([id]) => id === category)[1];
+    const [parent, subLabel] = SUBPAGES[category] || [];
+    const label = subLabel || CATEGORIES.find(([id]) => id === category)[1];
+    const navCategory = parent || category;
     const pages = {
       providers: () => this.providersPage(),
       pi: () => this.piPage(),
@@ -659,7 +666,8 @@ class PiSettings extends HTMLElement {
       repositories: () => this.repositoriesPage(),
       defaults: () => this.defaultsPage(),
       appearance: () => this.appearancePage(),
-      diagnostics: () => this.diagnosticsPage(),
+      extensions: () => this.resourcesPage("extensions"),
+      skills: () => this.resourcesPage("skills"),
     };
     const feedback = this.feedback
       ? `<div class="settings-feedback ${this.feedback.kind === "error" ? "error" : ""}" role="status">${esc(this.feedback.message)}</div>`
@@ -680,10 +688,12 @@ class PiSettings extends HTMLElement {
     const html = `<div class="settings-layout" data-view="${store.state.settingsCategory ? "category" : "list"}">
       <nav class="settings-nav" aria-label="Settings categories">
         <div class="settings-nav-head"><button class="ghost-btn settings-close" data-act="close-settings" title="Back to chat" aria-label="Back to chat">${icon("chevronLeft")}</button><div class="settings-nav-title">Settings</div></div>
-        <ul class="settings-nav-list">${CATEGORIES.map(([id, name]) => `<li><button class="settings-nav-item${id === category ? " active" : ""}" data-settings-category="${id}"${id === category ? ` aria-current="page"` : ""}><span class="settings-nav-label">${name}</span><span class="settings-nav-chevron" aria-hidden="true">${icon("chevronRight")}</span></button></li>`).join("")}</ul>
+        <ul class="settings-nav-list">${CATEGORIES.map(([id, name]) => `<li><button class="settings-nav-item${id === navCategory ? " active" : ""}" data-settings-category="${id}"${id === navCategory ? ` aria-current="page"` : ""}><span class="settings-nav-label">${name}</span><span class="settings-nav-chevron" aria-hidden="true">${icon("chevronRight")}</span></button></li>`).join("")}</ul>
       </nav>
       <div class="settings-pane">
-        <div class="settings-pane-head"><button class="ghost-btn settings-close settings-pane-back" data-act="settings-list" title="All settings" aria-label="All settings">${icon("chevronLeft")}</button><div class="screen-title">${label}</div></div>
+        <div class="settings-pane-head">${parent
+          ? `<button class="ghost-btn settings-close settings-sub-back" data-settings-category="${parent}" title="Back" aria-label="Back">${icon("chevronLeft")}</button>`
+          : `<button class="ghost-btn settings-close settings-pane-back" data-act="settings-list" title="All settings" aria-label="All settings">${icon("chevronLeft")}</button>`}<div class="screen-title">${label}</div></div>
         ${feedback}
         ${pages[category]()}
       </div>

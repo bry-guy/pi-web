@@ -70,7 +70,7 @@ export function register(api, deps) {
       cfg.defaultModel = body.defaultModel;
     }
     if (body.defaultThinkingLevel !== undefined) {
-      try { cfg.defaultThinkingLevel = normalizeThinkingLevel(body.defaultThinkingLevel, { strict: true }); }
+      try { cfg.defaultThinkingLevel = body.defaultThinkingLevel === null || body.defaultThinkingLevel === "" ? null : normalizeThinkingLevel(body.defaultThinkingLevel, { strict: true }); }
       catch (e) {
         if (e.code === "invalid_thinking_level") return err(c, 400, e.code, { message: e.message });
         throw e;

@@ -22,7 +22,7 @@ const DEFAULTS = {
   reposRoot: null, // null -> ~/src; env PI_WEB_REPOS_ROOT still overrides
   port: 3141,
   defaultModel: null,
-  defaultThinkingLevel: "medium",
+  defaultThinkingLevel: null, // null follows the Pi profile (defaultThinkingLevel, per-model levels), then Pi's medium
   sync: {
     serverUrl: null,
     // null follows the pi-sync settings file (dotfiles); a value overrides it.
@@ -258,7 +258,7 @@ export function loadConfig() {
     projects,
     projectHooks: normalizeHooks(raw.projectHooks),
     projectHookSets: normalizeHookSets(raw.projectHookSets),
-    defaultThinkingLevel: normalizeThinkingLevel(raw.defaultThinkingLevel),
+    defaultThinkingLevel: raw.defaultThinkingLevel == null || raw.defaultThinkingLevel === "" ? null : normalizeThinkingLevel(raw.defaultThinkingLevel),
     sync: normalizeSyncConfig(raw.sync),
     pi: normalizePiConfig(raw.pi),
     repositorySources: {

@@ -360,29 +360,20 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   const send = root.querySelector(".send-btn");
   assert.equal(send.disabled, false);
   const composerTextarea = root.querySelector(".composer textarea");
-  Object.defineProperty(composerTextarea, "scrollHeight", {
+  const composerMeasure = root.querySelector(".composer-measure");
+  Object.defineProperty(composerMeasure, "scrollHeight", {
     configurable: true,
-    get: () => composerTextarea.value.length > 20 ? 180 : 50,
+    get: () => composerMeasure.value.length > 20 ? 180 : 50,
   });
   composerTextarea.value = "A long message that wraps in the composer.";
   composerTextarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  const composerExpand = root.querySelector(".composer-expand-btn");
   assert.equal(Number.parseInt(composerTextarea.style.height, 10), 180, "the editor grows with its draft, no button needed");
-  assert.equal(composerExpand.classList.contains("hidden"), true, "desktop has no expand control");
-  Object.defineProperty(composerTextarea, "scrollHeight", { configurable: true, get: () => composerTextarea.value.length > 20 ? 2000 : 50 });
+  assert.equal(root.querySelector(".composer-expand-btn"), null, "there is no expand control");
+  Object.defineProperty(composerMeasure, "scrollHeight", { configurable: true, get: () => composerMeasure.value.length > 20 ? 2000 : 50 });
   composerTextarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   const capped = Number.parseInt(composerTextarea.style.height, 10);
   assert.ok(capped < 2000 && capped >= 180, "growth stops at the cap, then the editor scrolls");
   assert.equal(composerTextarea.style.overflowY, "auto");
-  dom.setNarrowViewport(true);
-  composerTextarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-  assert.equal(composerExpand.classList.contains("hidden"), false, "phones offer the full editor past the cap");
-  composerExpand.click();
-  assert.equal(composerExpand.getAttribute("aria-expanded"), "true");
-  assert.ok(Number.parseInt(composerTextarea.style.height, 10) >= capped, "the full editor is at least as tall as the capped one");
-  composerTextarea.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  assert.equal(composerExpand.getAttribute("aria-expanded"), "false", "Escape collapses the expanded editor");
-  dom.setNarrowViewport(false);
   composerTextarea.value = "";
   composerTextarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   assert.ok(Number.parseInt(composerTextarea.style.height, 10) < 180, "an empty draft shrinks back");
@@ -597,6 +588,11 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.match(store.state.operations.find(operation => operation.kind === "switch-session").events.at(-1).message, /Switched session s1 to develop/);
   store.state.transcripts.sibling.streaming = false;
   store.notify("transcript");
+  store.state.transcripts.sibling.records = [{ id: "om", role: "activity", key: "om", title: "Observational memory", status: "completed" }];
+  store.notify("transcript");
+  assert.ok(root.querySelector("pi-thread .empty-pi"), "extension activity before the first prompt keeps the greeting");
+  store.state.transcripts.sibling.records = [];
+  store.notify("transcript");
 
   store.state.openTree.p1 = false;
   store.notify("state");
@@ -621,7 +617,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   search.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   assert.equal(dom.window.document.activeElement, search);
 
-  const newChat = root.querySelector(".chats-head [data-act='new-chat']");
+  const newChat = root.querySelector(".rail [data-act='new-chat']");
   assert.ok(newChat);
   newChat.click();
   await new Promise(resolve => setTimeout(resolve, 10));
@@ -722,7 +718,6 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.match(root.querySelector("pi-settings").textContent, /Anthropic/);
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Default model/, "only the active category renders");
   store.set({ settingsCategory: "pi" });
-  assert.match(root.querySelector("pi-settings").textContent, /todo-discipline/);
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Pi profile & extensions/);
   assert.match(root.querySelector("pi-settings").textContent, /Dotfiles profile/);
   assert.match(root.querySelector("pi-settings").textContent, /Optional: enter a local path or HTTPS URL/);
@@ -732,8 +727,10 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(root.querySelector("[data-onepassword-token]"), null);
   assert.equal(root.querySelector("[data-act='connect-onepassword']"), null);
   assert.equal(root.querySelector("[data-act='disconnect-onepassword']"), null);
-  assert.equal(root.querySelectorAll("pi-settings .pi-loaded-list").length, 2);
-  assert.match(root.querySelector("pi-settings .pi-resource-scroll").textContent, /context-mode|todo-discipline/);
+  root.querySelector("pi-settings .settings-link[data-settings-category='skills']").click();
+  assert.match(root.querySelector("pi-settings").textContent, /todo-discipline/, "Skills opens a page listing each skill");
+  root.querySelector("pi-settings .settings-sub-back").click();
+  assert.equal(store.state.settingsCategory, "pi", "Back returns to the Pi page");
   assert.equal(root.querySelector("[data-setting='piProfile']").value, "https://github.com/bry-guy/dotfiles");
   assert.match(root.querySelector("[data-setting='piPackages']").value, /npm:context-mode/);
   const applyProfile = root.querySelector("pi-settings [data-act='save-pi-configuration']");
@@ -1340,7 +1337,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(store.state.confirm, null, "Closing a session does not open a warning modal");
   assert.equal(root.querySelector(".confirm-modal"), null);
   assert.equal(root.querySelector(".operation-modal"), null, "closing a session does not open a terminal modal");
-  store.set({ settingsCategory: "diagnostics" });
+  store.set({ settingsCategory: "pi" });
   root.querySelector("pi-settings [data-act='open-logs']").click();
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.match(root.querySelector(".logs-modal").textContent, /Session closed/);
@@ -1488,6 +1485,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     applyEvent({ v: 1, seq: 2, sessionId: "s1", type: "turn_end", reason: "done" }, true);
     assert.equal(thread.querySelector(".busy-row"), null);
     assert.equal(thread.querySelector(".turn-done-row").textContent.trim(), "Worked 43s · 2 steps›");
+    store.state.transcripts.s1.records.push({ id: "sum2", role: "summary", text: "Read files.js", continues: true, toolCallIds: ["t2"], at: T + 43000 });
+    store.notify("transcript");
 
     thread.querySelector(".turn-done-row").click();
     assert.equal(location.hash, "#steps=u1");
@@ -1497,6 +1496,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     assert.equal(thread.querySelector(".step-group-body"), null, "summaries start collapsed");
     thread.querySelector(".step-summary").click();
     assert.match(thread.querySelector(".step-group-body").textContent, /src\/files\.js/);
+    assert.equal(thread.querySelectorAll(".step-summary").length, 1, "a merged step joins its breadcrumb instead of adding a line");
+    assert.match(thread.querySelector(".step-group-body").textContent, /npm test/, "the merged step's tools are grouped under it");
     thread.querySelector('[data-toggle="think:a:u1"]').click();
     assert.match(thread.querySelector(".step-thinking").textContent, /Read the file first\./);
 

@@ -358,7 +358,8 @@ export class RealSupervisor {
         resourceLoader,
         customTools: [bash],
         ...(model ? { model } : {}),
-        ...(!hasThinkingLevel ? { thinkingLevel: loadConfig().defaultThinkingLevel } : {}),
+        // Without a web setting, Pi applies the profile's defaultThinkingLevel / per-model levels itself.
+        ...(!hasThinkingLevel && loadConfig().defaultThinkingLevel ? { thinkingLevel: loadConfig().defaultThinkingLevel } : {}),
         ...(sessionStartEvent ? { sessionStartEvent } : {}),
       });
       await result.session.bindExtensions(this.extensionUi.extensionBindings(result.session.sessionId));
@@ -1231,12 +1232,14 @@ export class RealSupervisor {
     const configuredDefault = loadConfig().defaultModel || null;
     const models = await this.listModels();
     const configuredAvailable = configuredDefault && models.some(m => m.id === configuredDefault);
-    // Without a web default, honor the Pi profile's (dotfiles') default before the first listed model.
+    // Without a web default, follow the Pi CLI: the profile's default model, then its first enabled model.
     let profileDefault = null;
     if (!configuredDefault) {
       const settings = (await this.piConfiguration.resolve().catch(() => null))?.settings || {};
       const id = settings.defaultProvider && settings.defaultModel ? `${settings.defaultProvider}/${settings.defaultModel}` : null;
-      if (id && models.some(m => m.id === id)) profileDefault = id;
+      // shortcut: enabledModels entries match exactly (a ":level" suffix is dropped); globs are skipped.
+      const enabled = (Array.isArray(settings.enabledModels) ? settings.enabledModels : []).map(entry => String(entry).replace(/:[a-z]+$/, ""));
+      profileDefault = [id, ...enabled].find(candidate => candidate && models.some(m => m.id === candidate)) || null;
     }
     return {
       models,
@@ -1614,6 +1617,7 @@ function summaryRecord(entry) {
     id: entry.id, role: "summary", text: String(data.text || ""),
     at: timeOf(data.at) || entryTime(entry),
     toolCallIds: Array.isArray(data.toolCallIds) ? data.toolCallIds.map(String) : [],
+    ...(data.continues ? { continues: true } : {}),
   };
 }
 

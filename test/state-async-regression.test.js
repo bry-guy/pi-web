@@ -132,7 +132,7 @@ test("projectState snapshots Git facts once and matches synchronous helpers", as
         assert.equal(state.defaultBranch, "default");
         assert.deepEqual(state.branches, expectedBranches);
         assert.deepEqual(state.contexts, expectedContextSnapshot);
-        assert.deepEqual(state.remoteBranches, ["origin", "origin/alpha", "origin/default", "origin/zeta"]);
+        assert.deepEqual(state.remoteBranches, ["origin/alpha", "origin/default", "origin/zeta"]);
         assert.deepEqual(state.remoteBranches, expectedRemoteBranches);
         assert.deepEqual(state.worktrees, Object.fromEntries(expectedContexts.filter(context => context.branch).map(context => [context.branch, context.path])));
         assert.deepEqual(state.workspaceStatus, Object.fromEntries(expectedContextSnapshot.map(context => [context.branch || context.id, context])));
@@ -142,7 +142,7 @@ test("projectState snapshots Git facts once and matches synchronous helpers", as
           "branch --format=%(refname:short)",
           "symbolic-ref --quiet --short HEAD",
           "symbolic-ref --quiet --short refs/remotes/origin/HEAD",
-          "branch --remotes --format=%(refname:short)",
+          "branch --remotes --format=%(refname)",
         ]) assert.equal(trace.filter(item => item.args === command).length, 1, command);
         assert.deepEqual(
           trace.filter(item => item.args === "status --porcelain=v2 --branch").map(item => item.cwd).sort(),

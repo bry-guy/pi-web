@@ -341,8 +341,10 @@ class PiThread extends HTMLElement {
       if (index >= 0) this.historyLimit = Math.max(this.historyLimit || HISTORY_PAGE_SIZE, visibleRecords.length - index + 1);
     }
     const history = this.historyRecords(visibleRecords);
-    if (visibleRecords.length === 0 && !activity && !notice && !busy) {
-      setHTML(this, EMPTY_STATE);
+    // Before the first prompt, extension activity (observational memory, advisor, …) and notices
+    // sit under the greeting instead of replacing it.
+    if (!busy && visibleRecords.every(record => record.role === "activity")) {
+      setHTML(this, EMPTY_STATE + visibleRecords.map(m => this.renderRecordCached(m)).join("") + activity + notice);
       return;
     }
     const turns = turnsOf(visibleRecords);
@@ -422,10 +424,17 @@ class PiThread extends HTMLElement {
 
   renderSteps(turn) {
     const { steps, duration } = turnStats(turn);
-    const summaries = turn.records.filter(record => record.role === "summary");
+    // A pi-summarize "continues" entry is a step merged into the breadcrumb before it: its tools join that group.
+    const summaries = [];
+    for (const record of turn.records) {
+      if (record.role !== "summary") continue;
+      const previous = summaries.at(-1);
+      if (record.continues && previous) previous.toolCallIds = [...previous.toolCallIds, ...(record.toolCallIds || [])];
+      else summaries.push({ ...record, toolCallIds: [...(record.toolCallIds || [])] });
+    }
     const claimed = new Set();
     const groups = summaries.map(summary => {
-      const ids = new Set(summary.toolCallIds || []);
+      const ids = new Set(summary.toolCallIds);
       const members = turn.records.filter(record => (record.role === "tool" && ids.has(record.id))
         || (record.role === "assistant" && record.thinking && (record.toolIds || []).some(id => ids.has(id))));
       members.forEach(record => claimed.add(record));
@@ -933,6 +942,7 @@ class PiContextMeter extends HTMLElement {
 }
 
 /* ---------------- thinking effort ---------------- */
+const THINKING_HINTS = { off: "no reasoning", minimal: "fastest", low: "quick", medium: "balanced", high: "thorough", xhigh: "deeper", max: "most thorough" };
 class PiThinkingPicker extends HTMLElement {
   connectedCallback() {
     this.open = false;
@@ -943,10 +953,18 @@ class PiThinkingPicker extends HTMLElement {
       const option = e.target.closest("[data-thinking-level]");
       if (option) void this.choose(option.dataset.thinkingLevel);
     });
+    this.addEventListener("keydown", e => {
+      if (e.key === "Escape" && this.open) { e.preventDefault(); this.open = false; this.render(); this.querySelector("[data-thinking-toggle]")?.focus(); }
+    });
+    this.onDocumentPointer = e => { if (this.open && !this.contains(e.target)) { this.open = false; this.render(); } };
+    document.addEventListener("pointerdown", this.onDocumentPointer);
     this.unsub = store.subscribe(w => { if (w === "state") this.sync(); });
     this.sync();
   }
-  disconnectedCallback() { this.unsub?.(); }
+  disconnectedCallback() {
+    this.unsub?.();
+    document.removeEventListener("pointerdown", this.onDocumentPointer);
+  }
   async sync() {
     const id = store.activeKey();
     if (!id || id === this.sessionId) return;
@@ -980,9 +998,15 @@ class PiThinkingPicker extends HTMLElement {
     const level = info.level || "off";
     this.innerHTML = `<div class="thinking-picker">
       <button class="thinking-chip" data-thinking-toggle aria-haspopup="listbox" aria-expanded="${this.open}" title="Thinking effort">${esc(level)}</button>
-      ${this.open ? `<div class="thinking-popover" role="listbox" aria-label="Thinking effort">
-        <div class="thinking-popover-head">Thinking effort</div>
-        ${info.levels.map(item => `<button class="thinking-option ${item === level ? "current" : ""}" role="option" aria-selected="${item === level}" data-thinking-level="${esc(item)}">${esc(item)}${item === level ? " <span>✓</span>" : ""}</button>`).join("")}
+      ${this.open ? `<div class="model-popover thinking-popover" role="dialog" aria-label="Thinking effort">
+        <div class="model-popover-head">Thinking effort</div>
+        <div class="model-list" role="listbox"><div class="model-group">
+        ${info.levels.map(item => `<button class="model-option ${item === level ? "current" : ""}" role="option" aria-selected="${item === level}" data-thinking-level="${esc(item)}">
+          <span class="model-option-main">${esc(item)}</span>
+          <span class="model-option-meta">${esc(THINKING_HINTS[item] || "")}</span>
+          ${item === level ? `<span class="model-option-check">✓</span>` : ""}
+        </button>`).join("")}
+        </div></div>
       </div>` : ""}
     </div>`;
   }
@@ -991,21 +1015,19 @@ class PiThinkingPicker extends HTMLElement {
 /* ---------------- composer ---------------- */
 class PiComposer extends HTMLElement {
   connectedCallback() {
-    this.expanded = false;
     this.innerHTML = `<div class="composer-outer"><div class="composer-pad"><div class="composer">
       <div class="command-popover hidden" role="listbox" aria-label="Pi commands"></div>
       <div class="composer-attachments"></div>
       <textarea rows="2"></textarea>
       <div class="composer-foot">
         <div class="attachment-picker">
-          <input class="image-input" type="file" accept="image/*" multiple hidden>
-          <button class="attach-btn" type="button" title="Attach images" aria-label="Attach images">＋</button>
+          <span class="attach-btn" aria-hidden="true">＋</span>
+          <input class="image-input" type="file" accept="image/*" multiple title="Attach images" aria-label="Attach images">
         </div>
         <pi-context-meter></pi-context-meter>
         <pi-model-picker data-mode="session" data-variant="composer"></pi-model-picker>
         <pi-thinking-picker></pi-thinking-picker>
         <button class="stop-btn hidden" type="button" aria-label="Stop" title="Stop"><span class="sq" aria-hidden="true"></span>Stop</button>
-        <button class="composer-expand-btn hidden" type="button" title="Expand message editor" aria-label="Expand message editor" aria-expanded="false">↑</button>
         <button class="send-btn" type="button" title="Send" aria-label="Send message">↑</button>
       </div>
     </div></div></div>`;
@@ -1014,9 +1036,13 @@ class PiComposer extends HTMLElement {
     this.sendingIds = new Set();
     this.attachmentsEl = this.querySelector(".composer-attachments");
     this.imageInput = this.querySelector(".image-input");
-    this.attachBtn = this.querySelector(".attach-btn");
     this.stopBtn = this.querySelector(".stop-btn");
-    this.expandBtn = this.querySelector(".composer-expand-btn");
+    // An off-screen copy measures the draft, so the visible editor never collapses mid-typing (which flickered and lost its scroll).
+    this.measure = this.ta.cloneNode();
+    this.measure.className = "composer-measure";
+    this.measure.setAttribute("aria-hidden", "true");
+    this.measure.tabIndex = -1;
+    this.ta.after(this.measure);
     this.sendBtn = this.querySelector(".send-btn");
 
     this.ta.addEventListener("input", () => {
@@ -1025,25 +1051,21 @@ class PiComposer extends HTMLElement {
       this.resizeEditor();
       void this.syncCommands();
     });
-    this.expandBtn.addEventListener("click", () => {
-      this.expanded = !this.expanded;
-      this.resizeEditor();
-      if (this.expanded) {
-        this.ta.focus();
-        this.scrollToLatest();
-      }
+    // Coming back to a long draft shows its end, where typing continues.
+    this.ta.addEventListener("focus", () => {
+      if (this.ta.selectionEnd === this.ta.value.length) this.ta.scrollTop = this.ta.scrollHeight;
     });
     this.onViewportResize = () => this.resizeEditor();
     const view = this.ownerDocument?.defaultView;
     view?.addEventListener("resize", this.onViewportResize);
     view?.visualViewport?.addEventListener("resize", this.onViewportResize);
-    this.attachBtn.addEventListener("click", () => this.imageInput.click());
     this.imageInput.addEventListener("change", () => {
       void this.addFiles(this.imageInput.files);
       this.imageInput.value = "";
     });
     this.ta.addEventListener("paste", e => {
-      const files = [...(e.clipboardData?.files || [])].filter(file => file.type.startsWith("image/"));
+      // Safari and some Chromium builds expose pasted screenshots only through items.
+      const files = [...(e.clipboardData?.items || [])].filter(item => item.kind === "file" && item.type.startsWith("image/")).map(item => item.getAsFile()).filter(Boolean);
       if (files.length) { e.preventDefault(); void this.addFiles(files); }
     });
     this.addEventListener("click", e => {
@@ -1067,12 +1089,6 @@ class PiComposer extends HTMLElement {
         if (e.key === "Escape") { e.preventDefault(); this.closeCommands(); return; }
         if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); this.moveCommand(e.key === "ArrowDown" ? 1 : -1); return; }
         if (e.key === "Tab") { e.preventDefault(); this.chooseCommand(); return; }
-      }
-      if (e.key === "Escape" && this.expanded) {
-        e.preventDefault();
-        this.expanded = false;
-        this.resizeEditor();
-        return;
       }
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !mobile()) {
         e.preventDefault();
@@ -1153,32 +1169,19 @@ class PiComposer extends HTMLElement {
   }
 
   resizeEditor() {
-    if (!this.ta || !this.expandBtn) return;
+    if (!this.ta) return;
     const collapsed = this.collapsedEditorHeight();
-    const lineHeight = this.lineHeight();
-    const composer = this.querySelector(".composer");
     const scroller = this.closest("pi-app")?.querySelector(".scrollable");
     const pinned = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
     const before = this.ta.style.height;
-    this.ta.style.height = "auto";
-    const contentHeight = Math.max(this.ta.scrollHeight || 0, collapsed);
-    const maxHeight = this.maxEditorHeight(collapsed);
-    const autoHeight = this.autoEditorHeight(collapsed, maxHeight);
-    // Only phones get the full-height editor; on desktop the auto-grown box is enough.
-    const overflowing = mobile() && contentHeight > autoHeight + Math.max(4, lineHeight * 0.35);
-    if (!overflowing) this.expanded = false;
-    const height = this.expanded ? maxHeight : Math.min(contentHeight, autoHeight);
-    this.ta.style.height = `${Math.ceil(height)}px`;
-    this.ta.style.maxHeight = `${Math.ceil(maxHeight)}px`;
-    this.ta.style.overflowY = contentHeight > height ? "auto" : "hidden";
+    this.measure.value = this.ta.value;
+    const contentHeight = Math.max(this.measure.scrollHeight || 0, collapsed);
+    const maxHeight = this.autoEditorHeight(collapsed, this.maxEditorHeight(collapsed));
+    const height = `${Math.ceil(Math.min(contentHeight, maxHeight))}px`;
+    if (height !== before) this.ta.style.height = height;
+    this.ta.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
     // A taller editor shrinks the transcript; keep the latest reply in view if it was.
-    if (pinned && this.ta.style.height !== before) scroller.scrollTop = scroller.scrollHeight;
-    composer?.classList.toggle("expanded", this.expanded);
-    this.expandBtn.classList.toggle("hidden", !overflowing && !this.expanded);
-    this.expandBtn.textContent = this.expanded ? "↓" : "↑";
-    this.expandBtn.title = this.expanded ? "Collapse message editor" : "Expand message editor";
-    this.expandBtn.setAttribute("aria-label", this.expandBtn.title);
-    this.expandBtn.setAttribute("aria-expanded", String(this.expanded));
+    if (pinned && height !== before) scroller.scrollTop = scroller.scrollHeight;
   }
 
   scrollToLatest() {
@@ -1396,7 +1399,6 @@ class PiComposer extends HTMLElement {
     store.setDraftSending(true, id);
     this.scrollToLatest();
     this.ta.value = "";
-    this.expanded = false;
     this.resizeEditor();
     this.attachments = [];
     this.renderAttachments();
@@ -1453,7 +1455,6 @@ class PiComposer extends HTMLElement {
     const activeId = store.activeKey();
     const draft = store.draft(activeId);
     if (activeId !== this.draftSessionId) {
-      this.expanded = false;
       this.attachments = store.draftAttachments(activeId).slice();
       this.renderAttachments();
     }
@@ -1477,7 +1478,6 @@ class PiComposer extends HTMLElement {
     this.stopBtn.classList.toggle("hidden", !t.streaming);
     const draftState = store.draftData(activeId);
     this.ta.disabled = !!draftState?.sending;
-    this.attachBtn.disabled = !!draftState?.sending;
     this.imageInput.disabled = !!draftState?.sending;
     this.sendBtn.disabled = compacting || !!draftState?.sending || !!draftState?.pendingAttachments;
     // While Pi waits for a typed answer, the message box answers it.
