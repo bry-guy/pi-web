@@ -3,6 +3,7 @@ FROM node:22-bookworm-slim
 ENV NODE_ENV=production \
     PORT=3141 \
     PI_WEB_MODE=real \
+    PI_KEEPALIVE=off \
     HOME=/data/pi-ez-operator-home \
     XDG_CONFIG_HOME=/data/pi-ez-operator-home/.config \
     XDG_DATA_HOME=/data/pi-ez-operator-home/.local/share \
