@@ -64,13 +64,15 @@ export function piSyncState(cfg = loadConfig()) {
 }
 
 /** Shared conversations for this repository that are not on this host yet, newest first. */
-export async function remoteConversationsForRepository(cwd, localIds) {
+export async function remoteConversationsForRepository(cwd, localIds, { project = null } = {}) {
   const module = await loadPiSyncModule();
   const repository = await module.deriveRepositoryIdentity(cwd);
-  if (!repository) return [];
+  if (!repository && !project) return [];
   const client = await createSyncClient(syncConfig(loadConfig()).serverUrl);
+  // A pi project's conversations carry its name (pi-sync `project`); they may sit in any of its repositories or its folder.
+  const belongs = item => (project && item.project === project) || (repository && module.repositoryIdentity(item.workspace) === repository);
   return (await client.list()).sessions
-    .filter(item => module.repositoryIdentity(item.workspace) === repository && !localIds.has(item.sessionId))
+    .filter(item => belongs(item) && !localIds.has(item.sessionId))
     .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
     .map(item => ({
       sessionId: item.sessionId,

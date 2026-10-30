@@ -735,6 +735,10 @@ main.col.settings-open > pi-header { display: none; }
 }
 .file-target { min-width: 88px; padding: 5px 7px; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: 11px var(--mono); outline: none; }
 .file-target:focus { box-shadow: 0 0 0 2px var(--accent-soft); }
+.file-scope-row { justify-content: flex-start; padding: 8px 12px 0 14px; margin-bottom: 0; }
+.file-repo, .file-branch, .group-repo-select { min-width: 0; max-width: 50%; padding: 5px 7px; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: 11px var(--mono); outline: none; }
+.file-repo:focus, .file-branch:focus, .group-repo-select:focus { box-shadow: 0 0 0 2px var(--accent-soft); }
+.group-repo-select { max-width: 140px; margin-right: 8px; }
 .file-section { overflow: hidden; background: var(--code-bg); }
 .file-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 9px 14px; color: var(--text); font: 500 11px var(--mono); border-bottom: 1px solid var(--code-rule); }
 .file-section-head span:last-child { color: var(--faint); font-size: 10px; font-weight: 400; }

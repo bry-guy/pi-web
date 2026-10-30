@@ -49,7 +49,7 @@ class PiRepoPicker extends HTMLElement {
   }
   async dismiss() {
     await this.cancelGithubLogin();
-    store.set({ repoPickerOpen: false, repoPickerSource: null });
+    store.set({ repoPickerOpen: false, repoPickerSource: null, repoPickerGroup: null });
   }
   availableSources() {
     const configured = store.state.repositorySources?.sources || [];
@@ -95,12 +95,14 @@ class PiRepoPicker extends HTMLElement {
     const operation = beginOperation("create-project", "Create project", "", "Request started.");
     try {
       const grant = this.querySelector(".grant-select")?.value || undefined;
-      const body = source === "github" ? { source, fullName, grant, operationId: operation.id } : { source, url: value, grant, operationId: operation.id };
+      // Opened from a pi project's menu: the repository joins that project instead of becoming its own.
+      const group = store.state.repoPickerGroup || undefined;
+      const body = source === "github" ? { source, fullName, grant, group, operationId: operation.id } : { source, url: value, grant, group, operationId: operation.id };
       const result = await api.newProject(body);
       this.connecting = false;
       operation.sessionId = result.sessionId || null;
-      store.set({ repoPickerOpen: false, repoPickerSource: null });
-      store.state.openTree[result.id] = true;
+      store.set({ repoPickerOpen: false, repoPickerSource: null, repoPickerGroup: null });
+      store.state.openTree[group ? `group:${group}` : result.id] = true;
       selectSession(result.id, result.sessionId, { showOperation: true });
       completeOperation(operation, result);
       launchSetup(result.sessionId, result);
@@ -241,7 +243,7 @@ class PiRepoPicker extends HTMLElement {
           <div class="modal-head">
             <div class="modal-title-row">
               <button class="ghost-btn session-picker-back" data-act="close" aria-label="Back" title="Back">${icon("chevronLeft")}</button>
-              <div class="modal-title">Select a repository</div>
+              <div class="modal-title">${store.state.repoPickerGroup ? `Add a repository to ${esc(store.state.repoPickerGroup)}` : "Select a repository"}</div>
             </div>
             <div class="modal-filter-row">
               <div class="source-picker">

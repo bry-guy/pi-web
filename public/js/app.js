@@ -1,7 +1,7 @@
 import { api, refreshState } from "./api.js";
 import { setHTML, store, toastActions } from "./store.js";
 import { esc, mobile } from "./shell.js";
-import { closeFileView } from "./files.js";
+import { closeFileView, fileScope } from "./files.js";
 import { installHints } from "./hints.js";
 
 
@@ -118,10 +118,9 @@ class PiApp extends HTMLElement {
   }
 
   filesKey() {
-    const p = store.project();
-    if (!p || !store.inProject()) return null;
-    const node = store.findSession(store.state.sessionId);
-    return `${p.id}:${node?.contextId || node?.workspacePath || p.contexts?.[0]?.id || ""}:${store.state.fileTarget}`;
+    if (!store.project() || !store.inProject()) return null;
+    const { project, contextId } = fileScope();
+    return `${project.id}:${contextId || ""}:${store.state.fileTarget}`;
   }
 
   sameFileData(left, right) {
@@ -152,9 +151,9 @@ class PiApp extends HTMLElement {
       store.state.filesLoading = true;
       store.notify("files");
     }
-    const node = store.findSession(store.state.sessionId);
+    const scope = fileScope();
     try {
-      const result = await api.files(store.state.projectId, node?.contextId || store.project()?.contexts?.[0]?.id, store.state.fileTarget);
+      const result = await api.files(scope.project.id, scope.contextId, store.state.fileTarget);
       if (this.filesKey() === key) {
         const nextFiles = Array.isArray(result.tree) ? result.tree : [];
         const nextTargets = Array.isArray(result.targets) ? result.targets : store.state.fileTargets;

@@ -155,7 +155,7 @@ export function register(api, deps) {
     if (!syncConfig(loadConfig()).serverUrl) return c.json({ sessions: [] });
     try {
       const localIds = new Set((await sup.allSessions()).map(session => session.id));
-      return c.json({ sessions: await remoteConversationsForRepository(project.repoPath, localIds) });
+      return c.json({ sessions: await remoteConversationsForRepository(project.repoPath, localIds, { project: project.group || null }) });
     } catch { return c.json({ sessions: [], unavailable: true }); }
   });
 

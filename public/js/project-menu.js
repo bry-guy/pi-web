@@ -3,7 +3,7 @@
 // The Chats menu is its sibling for plain chats: new chat, past chats, and the chats worker.
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { setHTML, store, toast } from "./store.js";
-import { esc, icon, newChat, newProjectSession, restoreConversation, selectChat, selectSession } from "./shell.js";
+import { esc, groupMembers, icon, newChat, newProjectSession, restoreConversation, selectChat, selectSession } from "./shell.js";
 import { workerAction, workerCard } from "./workers.js";
 import { gitErrorMessage, launchSetup } from "./panel-utils.js";
 
@@ -28,6 +28,13 @@ class PiProjectMenu extends HTMLElement {
   disconnectedCallback() { this.unsub?.(); }
   menu() { return store.state.projectMenu; }
   project() { return store.state.projects.find(project => project.id === this.menu()?.projectId) || null; }
+  /** A pi project: its name and repositories (web projects sharing a group), or null. */
+  group() {
+    const id = this.menu()?.projectId;
+    if (!id?.startsWith("group:")) return null;
+    const members = groupMembers(id);
+    return members.length ? { name: id.slice(6), members } : null;
+  }
   close() { store.set({ projectMenu: null }); }
   fail(message) { const menu = this.menu(); if (menu) { menu.error = message; this.render(); } }
 
@@ -42,12 +49,12 @@ class PiProjectMenu extends HTMLElement {
   }
 
   /** Loads a conversation preview once: a past session's transcript, or a shared one from the sync server. */
-  loadPreview(menu, key) {
+  loadPreview(menu, key, projectId = menu.projectId) {
     const previews = menu.previews ||= {};
     if (previews[key]) return;
     previews[key] = { loading: true };
     const [kind, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
-    const request = kind === "past" ? api.transcript(id) : api.syncedPreview(menu.projectId, id);
+    const request = kind === "past" ? api.transcript(id) : api.syncedPreview(projectId, id);
     request
       .then(result => { previews[key] = { records: (result.records || []).filter(record => ["user", "assistant"].includes(record.role) && record.text) }; })
       .catch(err => { previews[key] = { error: err.message || err.error || "The conversation could not be loaded." }; })
@@ -65,6 +72,7 @@ class PiProjectMenu extends HTMLElement {
 
   async onClick(e) {
     if (this.menu()?.chats) return this.onChatsClick(e);
+    if (this.group()) return this.onGroupClick(e);
     const project = this.project();
     if (!project) return;
     if (e.target.matches(".session-picker-scrim") || e.target.closest("[data-act='close-project-menu']")) { this.close(); return; }
@@ -116,6 +124,122 @@ class PiProjectMenu extends HTMLElement {
       if (["restart-worker", "reset-worker"].includes(worker.dataset.act)) this.close();
       await workerAction(worker.dataset.act, worker.dataset.name, worker.dataset.pinned === "1", (message, kind) => kind === "error" ? this.fail(message) : toast(message));
     }
+  }
+
+  async onGroupClick(e) {
+    const group = this.group();
+    if (e.target.matches(".session-picker-scrim") || e.target.closest("[data-act='close-project-menu']")) { this.close(); return; }
+    const t = e.target.closest("[data-act]");
+    const act = t?.dataset.act;
+    const member = id => group.members.find(m => m.id === id) || group.members[0];
+    if (act === "new-session") {
+      const repo = this.querySelector(".group-repo-select")?.value;
+      this.close();
+      await newProjectSession(member(repo).id);
+      return;
+    }
+    if (act === "add-repo") { this.close(); store.set({ repoPickerOpen: true, repoPickerGroup: group.name }); return; }
+    if (act === "remove-repo") {
+      const repo = member(t.dataset.id);
+      await this.run(`Removing ${repo.name}…`, async () => {
+        await api.removeProject(repo.id);
+        toast(`Removed ${repo.name} from ${group.name}. Its checkout stays on disk.`);
+        await refreshState();
+      });
+      return;
+    }
+    if (act === "open-session") { this.close(); selectSession(t.dataset.pid, t.dataset.id); return; }
+    if (act === "toggle-preview") {
+      const menu = this.menu();
+      menu.preview = menu.preview === t.dataset.key ? null : t.dataset.key;
+      if (menu.preview) this.loadPreview(menu, menu.preview, group.members[0].id);
+      this.render();
+      return;
+    }
+    if (act === "open-past") {
+      this.close();
+      await restoreConversation(t.dataset.id);
+      selectSession(t.dataset.pid, t.dataset.id);
+      return;
+    }
+    if (act === "open-synced") {
+      const repo = member(t.dataset.pid);
+      await this.run("Opening conversation…", async () => {
+        const primary = repo.defaultBranch || repo.primaryBranch || "main";
+        const result = await api.newProjectSession(repo.id, { mode: "synced", syncSessionId: t.dataset.syncId, branch: t.dataset.branch || primary, baseBranch: primary });
+        this.close();
+        store.state.openTree[`group:${group.name}`] = true;
+        await refreshState().catch(() => undefined);
+        selectSession(repo.id, result.id);
+        launchSetup(result.id, result);
+      });
+      return;
+    }
+    if (act === "remove-project") {
+      this.close();
+      const first = group.members[0];
+      store.set({ confirm: { type: "removeProject", id: first.id, projectId: first.id, name: group.name, workspace: first.workspace || null, purge: false, error: null } });
+      return;
+    }
+    const worker = e.target.closest("[data-act$='-worker']");
+    if (worker) {
+      if (["restart-worker", "reset-worker"].includes(worker.dataset.act)) this.close();
+      await workerAction(worker.dataset.act, worker.dataset.name, worker.dataset.pinned === "1", (message, kind) => kind === "error" ? this.fail(message) : toast(message));
+    }
+  }
+
+  renderGroup(menu, group) {
+    const first = group.members[0];
+    // Other devices' conversations come from the first repository's worker, filtered to this pi project.
+    if (menu.synced === undefined) {
+      menu.synced = null;
+      api.syncedSessions(first.id)
+        .then(result => { menu.synced = result.sessions || []; })
+        .catch(() => { menu.synced = []; })
+        .finally(() => { if (this.menu() === menu) this.render(); });
+    }
+    if (first.workspace && !menu.workersLoaded) { menu.workersLoaded = true; void refreshWorkers(); }
+    const busy = !!menu.busy;
+    const row = (title, hint, button) => `<div class="panel-row"><div class="panel-row-text"><strong>${esc(title)}</strong><small>${esc(hint)}</small></div>${button}</div>`;
+    const listRow = (...args) => this.listRow(menu, ...args);
+    const options = group.members.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
+    const actions = `<section class="session-picker-actions" aria-label="Project"><div class="panel-rows">
+      ${row("New session", "Starts a conversation in a repository's main checkout.", `<select class="group-repo-select" aria-label="Repository">${options}</select><button class="btn btn-secondary" data-act="new-session" ${busy ? "disabled" : ""}>New</button>`)}
+    </div></section>`;
+
+    const repoRows = group.members.map(m => {
+      const worktrees = (m.contexts || []).filter(c => c.kind === "worktree" && c.branch).map(c => c.branch);
+      const hint = [m.branch || m.defaultBranch, worktrees.length ? `worktrees: ${worktrees.join(", ")}` : "no worktrees"].filter(Boolean).join(" · ");
+      return row(m.name, hint, `<button class="btn btn-caution" data-act="remove-repo" data-id="${esc(m.id)}" ${busy ? "disabled" : ""}>Remove</button>`);
+    }).join("");
+    const repos = `<section><div class="session-context-heading session-history-heading"><span>Repositories</span><span>${group.members.length}</span></div>
+      <div class="panel-rows">${repoRows}${row("Add repository", "Clones it into this project and records it in project.json.", `<button class="btn btn-secondary" data-act="add-repo" ${busy ? "disabled" : ""}>Add…</button>`)}</div></section>`;
+
+    const flat = [];
+    const walk = (nodes, pid) => { for (const n of nodes || []) { if (!n.draft) flat.push({ ...n, pid }); walk(n.children, pid); } };
+    for (const m of group.members) walk(m.sessions, m.id);
+    flat.sort((a, b) => String(b.activityAt || b.updatedAt || "").localeCompare(String(a.activityAt || a.updatedAt || "")));
+    const sessions = `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Sessions</span><span>${flat.length}</span></div>
+      ${flat.length ? `<div class="history-list">${flat.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" data-act="open-session" data-id="${esc(n.id)}" data-pid="${esc(n.pid)}"><span class="history-main"><strong>${esc(n.title)}</strong><small>${esc([group.members.find(m => m.id === n.pid)?.name, n.branch, n.when].filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("")}</div>`
+        : `<div class="session-history-empty">No sessions yet.</div>`}</section>`;
+
+    const past = group.members.flatMap(m => (m.ended || []).map(item => ({ ...item, pid: m.id })));
+    const pastSection = past.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Past sessions</span><span>${past.length}</span></div>
+      <div class="history-list">${past.map(item => listRow(`past:${item.id}`, item.title, `Ended ${item.when}`, `data-act="open-past" data-id="${esc(item.id)}" data-pid="${esc(item.pid)}"`)).join("")}</div></section>` : "";
+
+    const synced = menu.synced || [];
+    const syncedSection = synced.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>From other devices</span><span>${synced.length}</span></div>
+      <div class="history-list">${synced.map(item => listRow(`synced:${item.sessionId}`, item.title || "Untitled conversation", `${item.branch || "project"}${item.leaseHolder ? ` · running on ${item.leaseHolder}` : ""}`, `data-act="open-synced" data-sync-id="${esc(item.sessionId)}" data-branch="${esc(item.branch || "")}" data-pid="${esc(first.id)}"`)).join("")}</div></section>` : "";
+
+    const worker = first.workspace && (store.state.workers?.workspaces || []).find(item => item.name === first.workspace);
+    const workerSection = !first.workspace ? "" : `<section><div class="session-context-heading"><span>Worker</span></div>${worker
+      ? workerCard(worker, store.state.workers.usageAvailable, { canDelete: false })
+      : `<div class="session-history-empty">${esc(store.state.workersError || "Loading worker…")}</div>`}</section>`;
+    const dangerSection = first.workspace ? `<section class="session-danger-row">${row("Remove project", "Deletes its worker; its sessions leave the list. The disk is kept unless you choose otherwise.", `<button class="btn btn-caution" data-act="remove-project" ${busy ? "disabled" : ""}>Remove…</button>`)}</section>` : "";
+
+    const progress = busy ? `<div class="session-picker-progress" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>${esc(menu.busy)}</span></div>` : "";
+    const error = menu.error ? `<div class="session-picker-error">${esc(menu.error)}</div>` : "";
+    this.frame("Project", group.name, `${progress}${error}${actions}${repos}${sessions}${pastSection}${syncedSection}${workerSection}${dangerSection}`);
   }
 
   /** The last few messages of a previewed conversation, then its Open button. */
@@ -209,6 +333,8 @@ class PiProjectMenu extends HTMLElement {
   render() {
     const menu = this.menu();
     if (menu?.chats) { this.renderChats(menu); return; }
+    const group = menu ? this.group() : null;
+    if (group) { this.renderGroup(menu, group); return; }
     const project = menu ? this.project() : null;
     if (!menu || !project) { setHTML(this, ""); return; }
     this.loadSynced(menu);

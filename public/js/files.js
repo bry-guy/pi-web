@@ -18,6 +18,26 @@ export function closeFileView() {
   else clearFile();
 }
 
+/**
+ * What the file tree shows: the current session's repository and checkout, unless the repository or
+ * branch switcher picked another of the same pi project for this session. Switching never runs git.
+ */
+export function fileScope() {
+  const s = store.state;
+  const project = store.project();
+  const checkout = p => p?.contexts?.find(context => context.kind === "checkout")?.id || p?.contexts?.[0]?.id || null;
+  const picked = s.fileScope;
+  if (picked && picked.sessionId === s.sessionId) {
+    const other = s.projects.find(p => p.id === picked.projectId);
+    if (other && (other.id === project?.id || (other.group && other.group === project?.group))) {
+      const contextId = other.contexts?.some(c => c.id === picked.contextId) ? picked.contextId : checkout(other);
+      return { project: other, contextId };
+    }
+  }
+  const node = store.findSession(s.sessionId);
+  return { project, contextId: node?.contextId || checkout(project) };
+}
+
 /* ---------------- file tree (right column) ---------------- */
 class PiFiles extends HTMLElement {
   connectedCallback() {
@@ -43,6 +63,8 @@ class PiFiles extends HTMLElement {
     });
     this.addEventListener("change", e => {
       if (e.target.matches(".file-target")) this.changeTarget(e.target.value);
+      else if (e.target.matches(".file-repo")) this.changeScope(e.target.value, null);
+      else if (e.target.matches(".file-branch")) this.changeScope(fileScope().project?.id, e.target.value);
     });
     this.addEventListener("scroll", e => {
       if (e.target.matches(".files-scroll")) this.treeScroll.set(this.treeScrollKey(), e.target.scrollTop);
@@ -61,15 +83,30 @@ class PiFiles extends HTMLElement {
   }
 
   currentContextId() {
-    const project = store.project();
-    const node = store.findSession(store.state.sessionId);
-    return node?.contextId || project?.contexts?.find(context => context.kind === "checkout")?.id || project?.contexts?.[0]?.id || null;
+    return fileScope().contextId;
   }
 
   treeScrollKey() {
-    const project = store.project();
-    const node = store.findSession(store.state.sessionId);
-    return `${project?.id || ""}:${node?.workspacePath || node?.branch || project?.branch || ""}`;
+    const { project, contextId } = fileScope();
+    return `${project?.id || ""}:${contextId || ""}`;
+  }
+
+  changeScope(projectId, contextId) {
+    closeFileView();
+    requestId++;
+    store.set({ fileScope: { sessionId: store.state.sessionId, projectId, contextId }, files: [], filesLoadedKey: null, filesLoading: true, fileError: null });
+  }
+
+  /** Repository and branch switchers: the pi project's repositories, and the chosen one's checkout and worktrees. */
+  scopeSwitchers() {
+    const { project, contextId } = fileScope();
+    if (!project) return "";
+    const repos = project.group ? store.state.projects.filter(p => p.group === project.group) : [project];
+    const contexts = (project.contexts || []).filter(c => c.kind !== "unavailable");
+    if (repos.length < 2 && contexts.length < 2) return "";
+    const repoSelect = repos.length > 1 ? `<select class="file-repo" aria-label="Repository">${repos.map(p => `<option value="${esc(p.id)}" ${p.id === project.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>` : "";
+    const branchSelect = contexts.length > 1 ? `<select class="file-branch" aria-label="Branch">${contexts.map(c => `<option value="${esc(c.id)}" ${c.id === contextId ? "selected" : ""}>${esc(c.branch || c.path)}${c.kind === "worktree" ? " (worktree)" : ""}</option>`).join("")}</select>` : "";
+    return `<div class="file-target-row file-scope-row" role="group" aria-label="Repository and branch">${repoSelect}${branchSelect}</div>`;
   }
 
   captureScroll() {
@@ -92,6 +129,8 @@ class PiFiles extends HTMLElement {
     return [
       s.filesOpen,
       store.inProject(),
+      s.fileScope,
+      s.projects,
       this.closest("pi-app")?.filesKey?.() || null,
       s.files,
       s.fileTargets,
@@ -116,8 +155,8 @@ class PiFiles extends HTMLElement {
 
   // Main checkout vs worktree is shown here, not in the header.
   workspaceSummary() {
-    const project = store.project();
-    const context = project?.contexts?.find(item => item.id === this.currentContextId());
+    const { project, contextId } = fileScope();
+    const context = project?.contexts?.find(item => item.id === contextId);
     if (!context) return "";
     const place = context.kind === "checkout" ? "Main checkout" : `Worktree of ${project.name}`;
     return [place, context.branch, context.head?.slice(0, 8), gitStatusText(context)].filter(Boolean).join(" · ");
@@ -125,7 +164,7 @@ class PiFiles extends HTMLElement {
 
   targetLabel(target) {
     if (target === "origin") return "vs origin";
-    const project = store.project();
+    const { project } = fileScope();
     return `vs ${project?.defaultBranch || project?.primaryBranch || "main"}`;
   }
 
@@ -141,8 +180,8 @@ class PiFiles extends HTMLElement {
   }
 
   async openFile(filePath, target = store.state.fileTarget || "origin") {
-    const projectId = store.state.projectId;
-    const contextId = this.currentContextId();
+    const { project, contextId } = fileScope();
+    const projectId = project?.id;
     if (!projectId || !contextId || !filePath) return;
     if (!this.availableTargets().includes(target)) target = "origin";
     // A file opened from another file replaces its history entry, so one Back returns to chat.
@@ -205,6 +244,7 @@ class PiFiles extends HTMLElement {
         <div class="sec-label">Files</div>
         <button class="ghost-btn" data-act="close" title="Collapse files" aria-label="Collapse files">${icon("chevronRight")}</button>
       </div>
+      ${this.scopeSwitchers()}
       ${summary ? `<div class="file-git">${esc(summary)}</div>` : ""}
       <div class="file-target-row file-tree-target" role="group" aria-label="Diff target"><label for="file-target">Diff target</label><select id="file-target" class="file-target" aria-label="Diff target">${this.targetOptions(selectedTarget)}</select></div>
       ${store.state.fileError ? `<div class="file-error">${esc(store.state.fileError)}</div>` : ""}

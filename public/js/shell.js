@@ -65,6 +65,36 @@ export function openSessionPicker(projectId, { mode = "switch", sourceSessionId 
 
 // Start a sleeping worker as soon as the user shows interest, so its ~3s
 // startup overlaps with reading and typing instead of the first request.
+/**
+ * Sidebar entries: a pi project's repositories (projects sharing a `group`) show as one entry named after it,
+ * listing all their sessions; each session node keeps its own project id in `pid`.
+ */
+export function sidebarProjects(projects = store.state.projects) {
+  const out = [];
+  const groups = new Map();
+  for (const p of projects) {
+    if (!p.group) { out.push(p); continue; }
+    let g = groups.get(p.group);
+    if (!g) {
+      g = { id: groupId(p.group), name: p.group, group: p.group, members: [], sessions: [], workspace: p.workspace, workspaceState: p.workspaceState };
+      groups.set(p.group, g);
+      out.push(g);
+    }
+    g.members.push(p);
+    for (const n of p.sessions || []) g.sessions.push({ ...n, pid: p.id });
+  }
+  for (const g of groups.values()) g.sessions.sort((a, b) => String(b.activityAt || "").localeCompare(String(a.activityAt || "")));
+  return out;
+}
+
+export const groupId = name => `group:${name}`;
+
+/** The repositories (projects) of the pi project `id` names, or the one project it is. */
+export function groupMembers(id) {
+  const entry = sidebarProjects().find(p => p.id === id);
+  return entry?.members || (entry ? [entry] : []);
+}
+
 function wakeEarly(project) {
   if (project?.workspace && project.workspaceState === "sleeping") void api.wakeWorkspace(project.workspace);
 }
@@ -313,7 +343,8 @@ class PiSidebar extends HTMLElement {
     const act = t.dataset.act;
     if (act === "project-new-session") {
       e.stopPropagation();
-      newProjectSession(t.dataset.id);
+      // A pi project's new session from the sidebar starts in its first repository; the Project menu offers the others.
+      newProjectSession(groupMembers(t.dataset.id)[0]?.id || t.dataset.id);
       return;
     }
     if (act === "clear-search") { this.clearSearch(); return; }
@@ -342,7 +373,7 @@ class PiSidebar extends HTMLElement {
       const id = t.dataset.treeId;
       if (!id) return;
       store.state.openTree[id] = !store.state.openTree[id];
-      if (store.state.openTree[id]) wakeEarly(store.state.projects.find(p => p.id === id));
+      if (store.state.openTree[id]) wakeEarly(groupMembers(id)[0] || store.state.projects.find(p => p.id === id));
       store.notify("state");
     } else if (act === "project-row") openProjectMenu(t.dataset.id);
     else if (act === "session-row") {
@@ -372,14 +403,15 @@ class PiSidebar extends HTMLElement {
       const streaming = store.transcript(n.id).streaming;
       const unread = !!store.state.unread[n.id];
       out.push(`<div class="row-wrap nested" style="margin-left:${20 + depth * 14}px">
-        <div class="row ${sel ? "active " : ""}${streaming ? "streaming " : ""}${unread ? "unread" : ""}" role="button" tabindex="0" ${kids ? `aria-expanded="${open || !!q}"` : ""} data-act="session-row" data-id="${esc(n.id)}" data-pid="${esc(p.id)}" data-kids="${kids ? 1 : 0}">
+        <div class="row ${sel ? "active " : ""}${streaming ? "streaming " : ""}${unread ? "unread" : ""}" role="button" tabindex="0" ${kids ? `aria-expanded="${open || !!q}"` : ""} data-act="session-row" data-id="${esc(n.id)}" data-pid="${esc(n.pid || p.id)}" data-kids="${kids ? 1 : 0}">
           <span class="caret" ${kids ? `data-act="toggle-tree" data-tree-id="${esc(n.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(n.title)}"` : ""}>${kids ? icon("chevronRight") : ""}</span>
           <span class="lbl">${esc(n.title)}</span>
           <span class="live-dot" aria-label="${unread ? "Unread reply" : "Streaming"}"></span>
-          <button class="row-close" data-act="close-row" data-kind="session" data-pid="${esc(p.id)}" data-id="${esc(n.id)}"
+          <button class="row-close" data-act="close-row" data-kind="session" data-pid="${esc(n.pid || p.id)}" data-id="${esc(n.id)}"
             data-label="${esc(n.title)}" data-branch="${esc(n.branch || "")}" title="End session" aria-label="End session ${esc(n.title)}">${icon("close")}</button>
         </div></div>`);
-      if (kids && (open || q || forceAll)) this.sessionRows(p, n.children, depth + 1, forceAll ? "" : q, out, forceAll);
+      // Children belong to the same repository as their parent.
+      if (kids && (open || q || forceAll)) this.sessionRows(p, n.pid ? n.children.map(c => ({ ...c, pid: n.pid })) : n.children, depth + 1, forceAll ? "" : q, out, forceAll);
     }
   }
 
@@ -437,11 +469,11 @@ class PiSidebar extends HTMLElement {
     const clear = this.querySelector(".rail-search-clear");
     if (clear) clear.hidden = !s.query;
     const projRows = [];
-    for (const p of s.projects) {
+    for (const p of sidebarProjects(s.projects)) {
       const nameMatch = !q || fuzzyMatch(p.name, q);
       if (q && !nameMatch && !p.sessions.some(n => nodeMatches(n, q))) continue;
       const open = !!s.openTree[p.id] || !!q;
-      const active = s.view === "chat" && s.projectId === p.id && !s.chatId;
+      const active = s.view === "chat" && (s.projectId === p.id || (p.members || []).some(m => m.id === s.projectId)) && !s.chatId;
       projRows.push(`<div class="row-wrap" style="margin-top:1px">
         <div class="row mono ${active && !open ? "active" : ""}" role="button" tabindex="0" aria-expanded="${open}" data-act="project-row" data-id="${esc(p.id)}">
           <span class="caret" data-act="toggle-tree" data-tree-id="${esc(p.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(p.name)}">${icon("chevronRight")}</span>
