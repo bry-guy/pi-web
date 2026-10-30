@@ -865,3 +865,19 @@ test("ending a forked session routes to its worker and drops it from the cached 
     assert.equal(JSON.parse(readFileSync(cachePath, "utf8")).app, undefined, "its snapshot is dropped");
   } finally { remote.stop(); }
 });
+
+test("a pi project's worker is named after it and serves PI_PROJECTS_DIR from its volume", async () => {
+  const created = [];
+  const app = createWorkspaced({ provider: { list: async () => [], create: async w => { created.push(w); } }, token: TOKEN });
+  const res = await app.request("/v1/workspaces", json({ project: "eco" }));
+  assert.equal(res.status, 201);
+  assert.deepEqual(await res.json(), { name: "eco" });
+  assert.equal(created[0].repository, "project:eco");
+  assert.equal((await app.request("/v1/workspaces", json({ project: "Bad Name" }))).status, 400);
+  const env = Object.fromEntries(deploymentManifest({ name: "eco", repository: "project:eco", image: "img" }).spec.template.spec.containers[0].env.map(e => [e.name, e.value]));
+  assert.equal(env.PI_PROJECTS_DIR, "/data/projects");
+  assert.equal(env.PI_WEB_PROJECT, "eco");
+  assert.equal(env.PI_WEB_REPOS_ROOT, "/data/projects/eco/repos");
+  const plain = Object.fromEntries(deploymentManifest({ name: "x", repository: "a/x", image: "img" }).spec.template.spec.containers[0].env.map(e => [e.name, e.value]));
+  assert.equal(plain.PI_PROJECTS_DIR, undefined);
+});

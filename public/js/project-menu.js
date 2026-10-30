@@ -3,7 +3,7 @@
 // The Chats menu is its sibling for plain chats: new chat, past chats, and the chats worker.
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { setHTML, store, toast } from "./store.js";
-import { esc, groupMembers, icon, newChat, newProjectSession, restoreConversation, selectChat, selectSession } from "./shell.js";
+import { esc, groupMembers, icon, sidebarEntry, newChat, newProjectSession, restoreConversation, selectChat, selectSession } from "./shell.js";
 import { workerAction, workerCard } from "./workers.js";
 import { gitErrorMessage, launchSetup } from "./panel-utils.js";
 
@@ -32,8 +32,8 @@ class PiProjectMenu extends HTMLElement {
   group() {
     const id = this.menu()?.projectId;
     if (!id?.startsWith("group:")) return null;
-    const members = groupMembers(id);
-    return members.length ? { name: id.slice(6), members } : null;
+    const entry = sidebarEntry(id);
+    return entry ? { name: id.slice(6), members: groupMembers(id), workspace: entry.workspace || null } : null;
   }
   close() { store.set({ projectMenu: null }); }
   fail(message) { const menu = this.menu(); if (menu) { menu.error = message; this.render(); } }
@@ -178,7 +178,7 @@ class PiProjectMenu extends HTMLElement {
     if (act === "remove-project") {
       this.close();
       const first = group.members[0];
-      store.set({ confirm: { type: "removeProject", id: first.id, projectId: first.id, name: group.name, workspace: first.workspace || null, purge: false, error: null } });
+      store.set({ confirm: { type: "removeProject", id: first?.id || group.name, projectId: first?.id || null, name: group.name, workspace: first?.workspace || group.workspace || null, purge: false, error: null } });
       return;
     }
     const worker = e.target.closest("[data-act$='-worker']");
@@ -189,8 +189,9 @@ class PiProjectMenu extends HTMLElement {
   }
 
   renderGroup(menu, group) {
-    const first = group.members[0];
+    const first = group.members[0] || { id: null, workspace: group.workspace };
     // Other devices' conversations come from the first repository's worker, filtered to this pi project.
+    if (menu.synced === undefined && !first.id) menu.synced = [];
     if (menu.synced === undefined) {
       menu.synced = null;
       api.syncedSessions(first.id)
@@ -203,9 +204,9 @@ class PiProjectMenu extends HTMLElement {
     const row = (title, hint, button) => `<div class="panel-row"><div class="panel-row-text"><strong>${esc(title)}</strong><small>${esc(hint)}</small></div>${button}</div>`;
     const listRow = (...args) => this.listRow(menu, ...args);
     const options = group.members.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
-    const actions = `<section class="session-picker-actions" aria-label="Project"><div class="panel-rows">
+    const actions = group.members.length ? `<section class="session-picker-actions" aria-label="Project"><div class="panel-rows">
       ${row("New session", "Starts a conversation in a repository's main checkout.", `<select class="group-repo-select" aria-label="Repository">${options}</select><button class="btn btn-secondary" data-act="new-session" ${busy ? "disabled" : ""}>New</button>`)}
-    </div></section>`;
+    </div></section>` : "";
 
     const repoRows = group.members.map(m => {
       const worktrees = (m.contexts || []).filter(c => c.kind === "worktree" && c.branch).map(c => c.branch);

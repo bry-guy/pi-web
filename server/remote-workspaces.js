@@ -150,7 +150,9 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       let fresh = null;
       if (running) {
         subscribe(w.name);
-        fresh = (await workerState(w.name).catch(() => null))?.projects || null;
+        const state = await workerState(w.name).catch(() => null);
+        fresh = state?.projects || null;
+        if (state?.piProjects) piProjectsByWorker[w.name] = state.piProjects;
       } else unsubscribe(w.name);
       if (fresh) {
         remember(w.name, fresh);
@@ -161,7 +163,12 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       return [tag(w, { id: `workspace:${w.name}`, name: w.name, pending: true, branches: [], sessions: [], contexts: [], worktrees: {}, workspaceStatus: {} })];
     }));
     if (changed) saveSnapshots();
-    return { projects: lists.flat(), chats: await chats, ended: chatsEnded, piConfiguration: chatsPi };
+    // A project worker names its pi project even before it has repositories (sleeping workers: from the worker name).
+    const piProjects = workspaces.filter(w => w.repository?.startsWith("project:")).map(w => {
+      const known = (piProjectsByWorker[w.name] || []).find(p => `project:${p.name}` === w.repository);
+      return { name: w.repository.slice(8), repos: known?.repos || [], ...tag(w, {}) };
+    });
+    return { projects: lists.flat(), piProjects, chats: await chats, ended: chatsEnded, piConfiguration: chatsPi };
   }
   const projects = async () => (await refresh()).projects;
 
@@ -444,7 +451,35 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   if (modelAuthTimer) syncAuth();
 
   // Adding a repository creates its workspace, then the worker connects it.
+  const piProjectsByWorker = {};
+
+  /** The worker serving pi project `name`, from the workers list. */
+  async function projectWorker(name) {
+    return (await list()).find(w => w.repository === `project:${name}`)?.name || null;
+  }
+
   async function createProject(c, body) {
+    // A new pi project: its own worker, named after it; it starts with no repositories.
+    if (typeof body.project === "string" && body.project) {
+      await pushGitHubAuth();
+      await pushModelAuth();
+      const res = await call("/workspaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project: body.project, ...(body.grant ? { grant: String(body.grant) } : {}) }) });
+      const created = await res.json().catch(() => ({}));
+      if (!res.ok) return c.json({ error: created.error || "workspaced_unavailable" }, res.status);
+      await waitReady(created.name);
+      subscribe(created.name);
+      return c.json({ project: body.project, workspace: created.name }, 201);
+    }
+    // Adding a repository to a pi project goes to that project's worker.
+    if (typeof body.group === "string" && body.group) {
+      const name = await projectWorker(body.group);
+      if (!name) return c.json({ error: "no_such_pi_project" }, 404);
+      await waitReady(name);
+      const forwarded = await call(workerPath(name, "/projects"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const result = await forwarded.json().catch(() => ({}));
+      if (forwarded.ok) { owners.project.set(result.id, name); if (result.sessionId) owners.session.set(result.sessionId, name); }
+      return c.json({ ...result, workspace: name }, forwarded.status);
+    }
     const repository = body.source === "github" ? body.fullName : body.url;
     if (typeof repository !== "string" || !repository.trim()) return c.json({ error: "invalid_repository" }, 400);
     await pushGitHubAuth();
@@ -525,6 +560,7 @@ export function registerRemoteRoutes(api, remote) {
   api.post("/chats", c => remote.createChat(c));
   api.post("/projects", async c => {
     const body = await c.req.json().catch(() => ({}));
+    if (body.project && !body.source) return remote.createProject(c, body);
     if (body.source !== "github" && body.source !== "git-url") return c.json({ error: "unsupported_repository_source" }, 400);
     return remote.createProject(c, body);
   });

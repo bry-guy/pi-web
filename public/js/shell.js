@@ -83,6 +83,13 @@ export function sidebarProjects(projects = store.state.projects) {
     g.members.push(p);
     for (const n of p.sessions || []) g.sessions.push({ ...n, pid: p.id });
   }
+  // A pi project without repositories yet still gets an entry (its menu adds the first one).
+  for (const pp of store.state.piProjects || []) {
+    if (groups.has(pp.name)) continue;
+    const g = { id: groupId(pp.name), name: pp.name, group: pp.name, members: [], sessions: [], workspace: pp.workspace, workspaceState: pp.workspaceState };
+    groups.set(pp.name, g);
+    out.push(g);
+  }
   for (const g of groups.values()) g.sessions.sort((a, b) => String(b.activityAt || "").localeCompare(String(a.activityAt || "")));
   return out;
 }
@@ -93,6 +100,25 @@ export const groupId = name => `group:${name}`;
 export function groupMembers(id) {
   const entry = sidebarProjects().find(p => p.id === id);
   return entry?.members || (entry ? [entry] : []);
+}
+
+/** The sidebar entry for `id` (a project or a pi project). */
+export function sidebarEntry(id) {
+  return sidebarProjects().find(p => p.id === id) || null;
+}
+
+/** New pi project: a name; its repositories are added from its menu. */
+export async function newPiProject() {
+  const name = (prompt("New project name (lowercase letters, digits, - . _)") || "").trim();
+  if (!name) return;
+  try {
+    await api.newProject({ project: name });
+    await refreshState();
+    store.state.openTree[groupId(name)] = true;
+    openProjectMenu(groupId(name));
+  } catch (err) {
+    store.setError(`Could not create project ${name}: ${err.error || err.message || err}`);
+  }
 }
 
 function wakeEarly(project) {
@@ -344,7 +370,9 @@ class PiSidebar extends HTMLElement {
     if (act === "project-new-session") {
       e.stopPropagation();
       // A pi project's new session from the sidebar starts in its first repository; the Project menu offers the others.
-      newProjectSession(groupMembers(t.dataset.id)[0]?.id || t.dataset.id);
+      const first = groupMembers(t.dataset.id)[0];
+      if (first) newProjectSession(first.id);
+      else openProjectMenu(t.dataset.id); // no repository yet: add one first
       return;
     }
     if (act === "clear-search") { this.clearSearch(); return; }
@@ -366,14 +394,17 @@ class PiSidebar extends HTMLElement {
     }
     else if (act === "chats-menu") openChatsMenu();
     else if (act === "new-chat") newChat().catch(err => store.setError(`Could not create chat: ${err.message || err}`));
-    else if (act === "repo-picker") store.set({ repoPickerOpen: true, drawerOpen: false });
+    else if (act === "repo-picker") {
+      if (store.state.piProjectsEnabled) void newPiProject();
+      else store.set({ repoPickerOpen: true, drawerOpen: false });
+    }
     else if (act === "settings") store.set({ view: "settings", drawerOpen: false });
     else if (act === "toggle-tree") {
       e.stopPropagation();
       const id = t.dataset.treeId;
       if (!id) return;
       store.state.openTree[id] = !store.state.openTree[id];
-      if (store.state.openTree[id]) wakeEarly(groupMembers(id)[0] || store.state.projects.find(p => p.id === id));
+      if (store.state.openTree[id]) wakeEarly(groupMembers(id)[0] || sidebarEntry(id) || store.state.projects.find(p => p.id === id));
       store.notify("state");
     } else if (act === "project-row") openProjectMenu(t.dataset.id);
     else if (act === "session-row") {

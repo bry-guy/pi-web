@@ -1,6 +1,6 @@
 import { piSyncState } from "../pi-sync.js";
 import { saveConfig } from "../config.js";
-import { listPiProjects, reconcile } from "../pi-projects.js";
+import { listPiProjects, piProjectsDir, reconcile } from "../pi-projects.js";
 
 export function register(api, deps) {
   const { remote, loadBindings, loadConfig, reposRoot, chatsListing, projectState, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID, readLogs, logFileName, safe, repositorySourceState, settingsState, github, sup } = deps;
@@ -69,7 +69,9 @@ export function register(api, deps) {
       reposRootSource: process.env.PI_WEB_REPOS_ROOT ? "environment" : cfg.reposRoot ? "config" : "default",
       projects: remoteState ? remoteState.projects : projects,
       // pi projects this server serves (none behind workspaced: each worker reports its own projects' groups).
-      piProjects: remoteState ? [] : listPiProjects().map(({ name, path, repos }) => ({ name, path, repos })),
+      // Behind workspaced every new project gets its own worker; locally only with PI_PROJECTS_DIR.
+      piProjectsEnabled: !!remoteState || !!piProjectsDir(),
+      piProjects: remoteState ? remoteState.piProjects || [] : listPiProjects().map(({ name, path, repos }) => ({ name, path, repos })),
       chats,
       endedChats: endedChats || [],
     });

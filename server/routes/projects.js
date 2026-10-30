@@ -1,7 +1,7 @@
 import { syncConfig } from "../config.js";
 import { remoteConversationPreview, remoteConversationsForRepository } from "../pi-sync.js";
 import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
-import { forgetRepo, piProject, pushState, recordRepo, repoEntry } from "../pi-projects.js";
+import { createPiProject, forgetRepo, piProject, pushState, recordRepo, repoEntry } from "../pi-projects.js";
 
 const IDLE_MS = 24 * 60 * 60 * 1000;
 
@@ -27,6 +27,16 @@ export function register(api, deps) {
 
   api.post("/projects", async c => {
     const body = await c.req.json();
+    // A new pi project: a named folder; repositories are added to it afterwards.
+    if (typeof body.project === "string" && !body.source) {
+      try { await createPiProject(body.project); }
+      catch (e) {
+        const statuses = { pi_projects_disabled: 409, invalid_project_name: 400, project_exists: 409 };
+        if (statuses[e.code]) return err(c, statuses[e.code], e.code);
+        throw e;
+      }
+      return c.json({ project: body.project }, 201);
+    }
     const cfg = loadConfig();
     const source = body.source || repositorySource(cfg);
     // Adding a repository to a pi project clones it into that project's repos/.

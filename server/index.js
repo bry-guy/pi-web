@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureHome, exportSyncEnvironment, loadConfig } from "./config.js";
+import { ensureProjectFolder } from "./pi-projects.js";
 import { hub } from "./events.js";
 import { buildApi } from "./routes.js";
 import { createSupervisor } from "./supervisor/index.js";
@@ -156,6 +157,8 @@ export function createApp({ uiOnly = uiOnlyEnabled() } = {}) {
 
 export function startServer(port, options = {}) {
   runPrestartCommand();
+  // A project worker fetches its project folder in the background; /api/state lists its repositories once they land.
+  if (!(options.uiOnly ?? uiOnlyEnabled())) ensureProjectFolder().catch(error => console.error(`pi-projects: could not prepare ${process.env.PI_WEB_PROJECT}: ${error.message}`));
   const uiOnly = options.uiOnly ?? uiOnlyEnabled();
   const cfg = uiOnly ? null : loadConfig();
   // Git is observed live; startup must not prune worktrees or inspect/mutate

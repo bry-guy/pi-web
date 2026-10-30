@@ -6,6 +6,8 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { gitCredentialEnvironment } from "./git-credentials.js";
 
 const NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 const cloning = new Set();
@@ -105,9 +107,42 @@ function cloneInBackground(repo, dest) {
   execFile("git", args, { timeout: 15 * 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }, () => cloning.delete(dest));
 }
 
-function git(cwd, args) {
-  return new Promise((resolve, reject) => execFile("git", args, { cwd, timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }, (error, stdout, stderr) =>
+// GitHub HTTPS remotes authenticate through web's credential helper (the login web shares with workers).
+function git(cwd, args, timeout = 60_000) {
+  return new Promise((resolve, reject) => execFile("git", args, { cwd, timeout, env: gitCredentialEnvironment() }, (error, stdout, stderr) =>
     error ? reject(new Error(stderr.trim().split("\n").at(-1) || error.message)) : resolve(stdout.trim())));
+}
+
+/**
+ * On a project worker (PI_WEB_PROJECT): make sure its folder exists under PI_PROJECTS_DIR.
+ * With PI_PROJECTS_STATE_REMOTE, PI_PROJECTS_DIR is a sparse clone of pi-projects' state repo holding only
+ * this project (pulled on every start); otherwise a new project folder is created locally.
+ */
+export async function ensureProjectFolder(env = process.env, log = console.log) {
+  const name = env.PI_WEB_PROJECT;
+  const root = piProjectsDir(env);
+  if (!name || !root || !NAME.test(name)) return null;
+  const dir = path.join(root, name);
+  const remote = env.PI_PROJECTS_STATE_REMOTE || "";
+  if (remote) {
+    if (!fs.existsSync(path.join(root, ".git"))) {
+      fs.mkdirSync(path.dirname(root), { recursive: true });
+      await git(path.dirname(root), ["clone", "-q", "--filter=blob:none", "--no-checkout", remote, root], 10 * 60_000);
+      await git(root, ["sparse-checkout", "set", "--no-cone", `/${name}/`, "/.gitignore", "/.gitattributes"]);
+      await git(root, ["checkout", "-q"]);
+    } else {
+      await git(root, ["pull", "-q", "--rebase"]).catch(error => log(`pi-projects: could not pull ${name}: ${error.message}`));
+    }
+  }
+  if (!fs.existsSync(path.join(dir, "project.json"))) {
+    // A project new to the state repo (or without one): create it the way pi-projects does.
+    for (const sub of ["repos", "worktrees", "artifacts"]) fs.mkdirSync(path.join(dir, sub), { recursive: true });
+    fs.writeFileSync(path.join(dir, "memory.md"), `# ${name} memory\n`);
+    writeProject(dir, { id: randomUUID(), name, state: "active", created: new Date().toISOString(), memory: { enabled: true }, repos: [] });
+    if (remote) await pushState(`${name}: new`, env).catch(error => log(`pi-projects: could not push ${name}: ${error.message}`));
+  }
+  for (const sub of ["repos", "worktrees", "artifacts"]) fs.mkdirSync(path.join(dir, sub), { recursive: true });
+  return dir;
 }
 
 let chain = Promise.resolve();
@@ -134,6 +169,18 @@ function writeProject(dir, data) {
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(data, null, "\t")}\n`);
   fs.renameSync(tmp, file);
+}
+
+/** Create a pi project folder (as pi-projects does) and sync it when PI_PROJECTS_DIR is a state repo. */
+export async function createPiProject(name, env = process.env) {
+  const root = piProjectsDir(env);
+  if (!root) throw Object.assign(new Error("pi_projects_disabled"), { code: "pi_projects_disabled" });
+  if (!NAME.test(name)) throw Object.assign(new Error("invalid_project_name"), { code: "invalid_project_name" });
+  const dir = path.join(root, name);
+  if (fs.existsSync(dir)) throw Object.assign(new Error("project_exists"), { code: "project_exists" });
+  await ensureProjectFolder({ ...env, PI_WEB_PROJECT: name, PI_PROJECTS_STATE_REMOTE: "" });
+  await pushState(`${name}: new`, env).catch(error => console.warn(`pi-projects: could not sync ${name}: ${error.message}`));
+  return dir;
 }
 
 /** Record a repository in a pi project's project.json (replacing one with the same name). */

@@ -60,13 +60,16 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
       await provider.create({ name: CHATS_WORKSPACE, repository: null, grant, score: null });
       return c.json({ name: CHATS_WORKSPACE }, 201);
     }
-    const repository = typeof body?.repository === "string" ? body.repository.trim() : "";
+    // A pi project's worker: named after the project, it serves that project's repositories.
+    const project = typeof body?.project === "string" ? body.project.trim() : "";
+    if (project && !validName(project)) return c.json({ error: "invalid_project" }, 400);
+    const repository = project ? `project:${project}` : typeof body?.repository === "string" ? body.repository.trim() : "";
     if (!repository || repository.length > 300 || /\s/.test(repository)) return c.json({ error: "invalid_repository" }, 400);
-    const name = body.name ?? slugFromRepository(repository);
+    const name = project || (body.name ?? slugFromRepository(repository));
     if (!validName(name)) return c.json({ error: "invalid_name" }, 400);
     const grant = resolveGrant(grants, body.grant, repository);
     // Read before anything is created, so a bad score.yaml fails the add cleanly.
-    const score = scores ? scoreFromFile(await scores.read(repository)) : null;
+    const score = scores && !project ? scoreFromFile(await scores.read(repository)) : null;
     if (score && !provider.setScore) throw grantError("score.yaml declares resources, which need WORKSPACED_PROVIDER=kubernetes", 501, "score_unsupported");
     await lifecycle.makeRoom(name, 1).catch(() => {}); // best effort; never blocks adding a project
     await provider.create({ name, repository, grant, score });

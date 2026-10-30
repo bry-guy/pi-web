@@ -64,3 +64,40 @@ test("an archived pi project's repositories are not served", async () => {
   assert.equal(state.projects.length, 0);
   assert.deepEqual(state.piProjects, []);
 });
+
+test("a project worker sparse-clones only its project from the state repo, and creates new projects there", async () => {
+  const { ensureProjectFolder } = await import("../server/pi-projects.js");
+  const base = fs.mkdtempSync(path.join(process.env.TMPDIR || "/tmp", "piweb-state-"));
+  const remote = path.join(base, "state.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+  const seed = path.join(base, "seed");
+  execFileSync("git", ["clone", "-q", remote, seed]);
+  for (const name of ["eco", "other"]) {
+    fs.mkdirSync(path.join(seed, name), { recursive: true });
+    fs.writeFileSync(path.join(seed, name, "project.json"), JSON.stringify({ id: name, name, state: "active", repos: [] }));
+    fs.writeFileSync(path.join(seed, name, "memory.md"), `# ${name}\n`);
+  }
+  const g = (...args) => execFileSync("git", ["-C", seed, "-c", "user.name=t", "-c", "user.email=t@t", ...args]);
+  g("add", "-A"); g("commit", "-q", "-m", "seed"); g("push", "-q", "origin", "main");
+
+  const dir = path.join(base, "worker", "projects");
+  const env = { ...process.env, PI_PROJECTS_DIR: dir, PI_WEB_PROJECT: "eco", PI_PROJECTS_STATE_REMOTE: remote };
+  assert.equal(await ensureProjectFolder(env), path.join(dir, "eco"));
+  assert.ok(fs.existsSync(path.join(dir, "eco", "project.json")));
+  assert.equal(fs.existsSync(path.join(dir, "other")), false, "other projects stay out of this worker");
+
+  const fresh = { ...env, PI_WEB_PROJECT: "brand-new", PI_PROJECTS_DIR: path.join(base, "worker2", "projects") };
+  await ensureProjectFolder(fresh);
+  execFileSync("git", ["-C", seed, "pull", "-q"]);
+  assert.ok(fs.existsSync(path.join(seed, "brand-new", "project.json")), "a new project is pushed to the state repo");
+});
+
+test("web creates a named pi project when PI_PROJECTS_DIR is set", async () => {
+  const res = await fixture.post("/api/projects", { project: "fresh" });
+  assert.equal(res.status, 201);
+  assert.ok(fs.existsSync(path.join(projectsDir, "fresh", "project.json")));
+  const state = await fixture.state();
+  assert.equal(state.piProjectsEnabled, true);
+  assert.ok(state.piProjects.some(p => p.name === "fresh"));
+  assert.equal((await fixture.post("/api/projects", { project: "fresh" })).status, 409);
+});

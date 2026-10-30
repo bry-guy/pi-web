@@ -28,6 +28,16 @@ export function validName(name) {
   return typeof name === "string" && NAME_RE.test(name);
 }
 
+// A pi project's worker records "project:<name>" where others record a repository.
+export const projectOf = repository => typeof repository === "string" && repository.startsWith("project:") ? repository.slice(8) : null;
+
+/** Environment that makes a worker serve one pi project from PI_PROJECTS_DIR on its volume. */
+export function projectEnvironment(project, dataDir) {
+  if (!project) return {};
+  const projects = `${dataDir}/projects`;
+  return { PI_PROJECTS_DIR: projects, PI_WEB_PROJECT: project, PI_WEB_REPOS_ROOT: `${projects}/${project}/repos` };
+}
+
 export function slugFromRepository(repository) {
   const last = String(repository || "").trim().replace(/\.git$/, "").replace(/\/+$/, "").split(/[/:]/).pop() || "";
   const slug = last.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
@@ -74,6 +84,11 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
     ["PI_WEB_GITHUB_AUTH_FILE", `${GITHUB_DIR}/github-auth.json`],
     ["PI_WEB_MODEL_AUTH_FILE", `${MODEL_DIR}/auth.json`],
   ].map(([n, value]) => ({ name: n, value }));
+  for (const [n, value] of Object.entries(projectEnvironment(projectOf(repository), DATA))) {
+    const existing = env.find(e => e.name === n);
+    if (existing) existing.value = value;
+    else env.push({ name: n, value });
+  }
   const taken = new Set(env.map(e => e.name));
   for (const e of score?.env || []) {
     if (taken.has(e.name)) throw Object.assign(new Error(`score variable ${e.name} collides with a workspace setting`), { status: 422, code: "invalid_score" });

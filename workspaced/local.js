@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync, renameSync } from "node
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { projectEnvironment, projectOf } from "./manifests.js";
 
 const SERVER = fileURLToPath(new URL("../server/index.js", import.meta.url));
 
@@ -72,7 +73,7 @@ export function localProvider({ root, env: extraEnv = {}, spawnImpl = spawn, ser
       env: { ...process.env, PORT: String(port), PI_WEB_MODE: process.env.PI_WEB_MODE || "real",
         PI_WEB_HOME: path.join(dir, "pi-ez-web"), PI_CODING_AGENT_DIR: path.join(dir, "pi-ez-agent"),
         PI_WEB_REPOS_ROOT: path.join(dir, "repos"), PI_WEB_GITHUB_AUTH_FILE: authFile, PI_WEB_MODEL_AUTH_FILE: modelAuthFile,
-        WORKSPACED_TOKEN: "", PI_WEB_WORKSPACED_URL: "", ...extraEnv },
+        WORKSPACED_TOKEN: "", PI_WEB_WORKSPACED_URL: "", ...projectEnvironment(projectOf(repository), dir), ...extraEnv },
     });
     child.port = port;
     procs.set(name, child);

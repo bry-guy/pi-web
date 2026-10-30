@@ -72,7 +72,7 @@ test("web lists chats from the chats worker, creates them there, and routes thei
     const api = new Hono();
     registerRemoteRoutes(api, remote);
     api.all("*", c => c.json({ local: true }));
-    assert.deepEqual(await remote.refresh(), { projects: [], chats: [], ended: [], piConfiguration: null }, "no chats worker until the first chat");
+    assert.deepEqual(await remote.refresh(), { projects: [], piProjects: [], chats: [], ended: [], piConfiguration: null }, "no chats worker until the first chat");
     const created = await api.request("/chats", { method: "POST", body: "{}" });
     assert.deepEqual(await created.json(), { id: "c2" });
     assert.deepEqual(workers.map(w => [w.name, w.repository]), [["chats", null]]);

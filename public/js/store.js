@@ -123,6 +123,8 @@ export const store = {
     filesLoadedKey: null,
     // server data
     projects: [],
+    piProjects: [],
+    piProjectsEnabled: false,
     chats: [],
     buildId: null,
     reconnecting: false,

@@ -169,6 +169,8 @@ function applyState(s) {
   const active = findSessionInState(s, store.activeKey());
   store.set({
     projects: s.projects,
+    piProjects: s.piProjects || [],
+    piProjectsEnabled: !!s.piProjectsEnabled,
     chats: s.chats,
     endedChats: s.endedChats || [],
     buildId: s.buildId || null,
