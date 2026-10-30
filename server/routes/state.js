@@ -3,7 +3,7 @@ import { saveConfig } from "../config.js";
 import { listPiProjects, piProjectsDir, reconcile } from "../pi-projects.js";
 
 export function register(api, deps) {
-  const { remote, loadBindings, loadConfig, reposRoot, chatsListing, projectState, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID, readLogs, logFileName, safe, repositorySourceState, settingsState, github, sup } = deps;
+  const { remote, loadBindings, loadConfig, reposRoot, chatsListing, projectState, folderState, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID, readLogs, logFileName, safe, repositorySourceState, settingsState, github, sup } = deps;
 
 
   // ---------- state ----------
@@ -48,6 +48,8 @@ export function register(api, deps) {
       try { projects.push(await projectState(p, sup)); }
       catch (e) { projects.push({ id: p.id, name: p.name, repoPath: p.repoPath, defaultBranch: await ws.defaultBranchAsync(p.repoPath), error: String(e.message || e), branches: [], sessions: [], contexts: [], worktrees: {}, workspaceStatus: {} }); }
     }
+    // Each pi project's own folder is listed like a repository, so its sessions need no repository.
+    if (!remoteState) for (const group of listPiProjects()) projects.push(await folderState(group, sup));
     const { chats, ended: endedChats } = remoteState || await chatsListing(sup);
     return c.json({
       apiContractVersion: API_CONTRACT_VERSION,

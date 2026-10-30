@@ -33,26 +33,29 @@ class PiProjectMenu extends HTMLElement {
     const id = this.menu()?.projectId;
     if (!id?.startsWith("group:")) return null;
     const entry = sidebarEntry(id);
-    return entry ? { name: id.slice(6), members: groupMembers(id), workspace: entry.workspace || null } : null;
+    if (!entry) return null;
+    // Members are web project entries: the project folder (kind "folder") and one per repository.
+    const all = groupMembers(id);
+    return { name: id.slice(6), members: all.filter(m => m.kind !== "folder"), folder: all.find(m => m.kind === "folder") || null, workspace: entry.workspace || null };
   }
 
   /**
-   * A pi project known only from other devices gets its worker here; the worker copies the
-   * project from the state repo and clones its repositories, which then show up as members.
+   * A pi project known only from other devices gets its worker here; the worker copies the project
+   * from the state repo. Resolves once web lists the project's folder, where its own sessions open.
    */
-  async ensureOnWeb(group, { needRepo = false } = {}) {
+  async ensureOnWeb(group) {
     if (!group.workspace) {
       await api.newProject({ project: group.name });
       await refreshState();
     }
-    const deadline = Date.now() + 180_000;
+    const deadline = Date.now() + 60_000;
     let current = this.group() || group;
-    while (needRepo && !current.members.length && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 3_000));
+    while (!current.folder && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 2_000));
       await refreshState().catch(() => undefined);
       current = this.group() || current;
     }
-    if (needRepo && !current.members.length) throw new Error(`${group.name} has no repository on the web yet. Add one, or wait for its clone to finish.`);
+    if (!current.folder) throw new Error(`${group.name} is still starting on the web. Try again in a moment.`);
     return current;
   }
   close() { store.set({ projectMenu: null }); }
@@ -154,9 +157,13 @@ class PiProjectMenu extends HTMLElement {
     const act = t?.dataset.act;
     const member = id => group.members.find(m => m.id === id) || group.members[0];
     if (act === "new-session") {
-      const repo = this.querySelector(".group-repo-select")?.value;
-      this.close();
-      await newProjectSession(member(repo).id);
+      // The project folder is the default; a repository starts in its main checkout.
+      const picked = this.querySelector(".group-repo-select")?.value || "";
+      await this.run("Starting session…", async () => {
+        const ready = picked ? group : await this.ensureOnWeb(group);
+        this.close();
+        await newProjectSession(picked ? member(picked).id : ready.folder.id);
+      });
       return;
     }
     if (act === "add-repo") { this.close(); store.set({ repoPickerOpen: true, repoPickerGroup: group.name }); return; }
@@ -173,7 +180,7 @@ class PiProjectMenu extends HTMLElement {
     if (act === "toggle-preview") {
       const menu = this.menu();
       menu.preview = menu.preview === t.dataset.key ? null : t.dataset.key;
-      if (menu.preview) this.loadPreview(menu, menu.preview, group.members[0]?.id || null);
+      if (menu.preview) this.loadPreview(menu, menu.preview, (group.folder || group.members[0])?.id || null);
       this.render();
       return;
     }
@@ -185,16 +192,16 @@ class PiProjectMenu extends HTMLElement {
     }
     if (act === "open-synced") {
       await this.run("Opening conversation…", async () => {
-        const ready = await this.ensureOnWeb(group, { needRepo: true });
-        const repo = ready.members.find(m => m.id === t.dataset.pid) || ready.members[0];
-        const primary = repo.defaultBranch || repo.primaryBranch || "main";
-        // No branch: the conversation lives in the project folder, not in a repository.
-        const where = t.dataset.branch ? { branch: t.dataset.branch, baseBranch: primary } : { projectRoot: true };
-        const result = await api.newProjectSession(repo.id, { mode: "synced", syncSessionId: t.dataset.syncId, ...where });
+        const ready = await this.ensureOnWeb(group);
+        // With a branch it opens in that repository's checkout; without one, in the project folder.
+        const repo = t.dataset.branch ? ready.members.find(m => m.id === t.dataset.pid) || ready.members[0] : null;
+        const target = repo || ready.folder;
+        const primary = repo?.defaultBranch || repo?.primaryBranch || "main";
+        const result = await api.newProjectSession(target.id, { mode: "synced", syncSessionId: t.dataset.syncId, ...(repo ? { branch: t.dataset.branch, baseBranch: primary } : {}) });
         this.close();
         store.state.openTree[`group:${group.name}`] = true;
         await refreshState().catch(() => undefined);
-        selectSession(repo.id, result.id);
+        selectSession(target.id, result.id);
         launchSetup(result.id, result);
       });
       return;
@@ -213,8 +220,8 @@ class PiProjectMenu extends HTMLElement {
   }
 
   renderGroup(menu, group) {
-    const first = group.members[0] || { id: null, workspace: group.workspace };
-    // Other devices' conversations: from web itself behind workspaced (no worker needed), else the first repository's server.
+    const first = group.folder || group.members[0] || { id: null, workspace: group.workspace };
+    // Other devices' conversations: from web itself behind workspaced (no worker needed), else this server.
     const viaWeb = store.state.piProjectsSyncedRoute;
     if (menu.synced === undefined && !viaWeb && !first.id) menu.synced = [];
     if (menu.synced === undefined) {
@@ -235,10 +242,10 @@ class PiProjectMenu extends HTMLElement {
     const busy = !!menu.busy;
     const row = (title, hint, button) => `<div class="panel-row"><div class="panel-row-text"><strong>${esc(title)}</strong><small>${esc(hint)}</small></div>${button}</div>`;
     const listRow = (...args) => this.listRow(menu, ...args);
-    const options = group.members.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
-    const actions = group.members.length ? `<section class="session-picker-actions" aria-label="Project"><div class="panel-rows">
-      ${row("New session", "Starts a conversation in a repository's main checkout.", `<select class="group-repo-select" aria-label="Repository">${options}</select><button class="btn btn-secondary" data-act="new-session" ${busy ? "disabled" : ""}>New</button>`)}
-    </div></section>` : "";
+    const options = [`<option value="">Project folder</option>`, ...group.members.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`)].join("");
+    const actions = `<section class="session-picker-actions" aria-label="Project"><div class="panel-rows">
+      ${row("New session", "Starts in the project folder, or in a repository's main checkout.", `<select class="group-repo-select" aria-label="Where">${options}</select><button class="btn btn-secondary" data-act="new-session" ${busy ? "disabled" : ""}>New</button>`)}
+    </div></section>`;
 
     const repoRows = group.members.map(m => {
       const worktrees = (m.contexts || []).filter(c => c.kind === "worktree" && c.branch).map(c => c.branch);
@@ -246,25 +253,25 @@ class PiProjectMenu extends HTMLElement {
       return row(m.name, hint, `<button class="btn btn-caution" data-act="remove-repo" data-id="${esc(m.id)}" ${busy ? "disabled" : ""}>Remove</button>`);
     }).join("");
     const repos = `<section><div class="session-context-heading session-history-heading"><span>Repositories</span><span>${group.members.length}</span></div>
-      ${group.members.length ? "" : `<div class="session-history-empty">${group.workspace ? "Repositories appear here as they finish cloning." : "Starting this project…"}</div>`}
+      ${group.members.length ? "" : `<div class="session-history-empty">${group.workspace ? "No repositories yet, or still cloning." : "Starting this project…"}</div>`}
       <div class="panel-rows">${repoRows}${row("Add repository", "Clones it into this project and records it in project.json.", `<button class="btn btn-secondary" data-act="add-repo" ${busy ? "disabled" : ""}>Add…</button>`)}</div></section>`;
 
     const flat = [];
     const walk = (nodes, pid) => { for (const n of nodes || []) { if (!n.draft) flat.push({ ...n, pid }); walk(n.children, pid); } };
-    for (const m of group.members) walk(m.sessions, m.id);
+    for (const m of [group.folder, ...group.members].filter(Boolean)) walk(m.sessions, m.id);
     // Other devices' sessions sit in the same list, labelled with the device that last wrote them.
     for (const item of menu.synced || []) flat.push({ synced: item.sessionId, title: item.title || "Untitled conversation", branch: item.branch, when: item.when, updatedAt: item.updatedAt, where: item.leaseHolder ? `running on ${item.leaseHolder}` : item.device });
     flat.sort((a, b) => String(b.activityAt || b.updatedAt || "").localeCompare(String(a.activityAt || a.updatedAt || "")));
     const head = n => n.synced
       ? `data-act="open-synced" data-sync-id="${esc(n.synced)}" data-branch="${esc(n.branch || "")}" data-pid="${esc(first.id || "")}"`
       : `data-act="open-session" data-id="${esc(n.id)}" data-pid="${esc(n.pid)}"`;
-    const meta = n => n.synced ? [n.where, n.branch, n.when] : [group.members.find(m => m.id === n.pid)?.name, n.branch, n.when];
+    const meta = n => n.synced ? [n.where, n.branch || "project", n.when] : [group.members.find(m => m.id === n.pid)?.name || "project", n.branch, n.when];
     const empty = menu.synced === null ? "Loading sessions…" : "No sessions yet.";
     const sessions = `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Sessions</span><span>${flat.length}</span></div>
       ${flat.length ? `<div class="history-list">${flat.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" ${head(n)}><span class="history-main"><strong>${esc(n.title)}</strong><small>${esc(meta(n).filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("")}</div>`
         : `<div class="session-history-empty">${empty}</div>`}</section>`;
 
-    const past = group.members.flatMap(m => (m.ended || []).map(item => ({ ...item, pid: m.id })));
+    const past = [group.folder, ...group.members].filter(Boolean).flatMap(m => (m.ended || []).map(item => ({ ...item, pid: m.id })));
     const pastSection = past.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Past sessions</span><span>${past.length}</span></div>
       <div class="history-list">${past.map(item => listRow(`past:${item.id}`, item.title, `Ended ${item.when}`, `data-act="open-past" data-id="${esc(item.id)}" data-pid="${esc(item.pid)}"`)).join("")}</div></section>` : "";
 

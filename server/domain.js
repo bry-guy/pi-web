@@ -6,7 +6,7 @@ import path from "node:path";
 import { chatsDir, loadBindings, loadClosed, loadConfig } from "./config.js";
 import * as ws from "./workspaces.js";
 import { publicHooks } from "./hooks.js";
-import { piProject, primaryOfGroup } from "./pi-projects.js";
+import { piProject } from "./pi-projects.js";
 
 export async function sessionWorkspace(sessionId, sup) {
   const bindings = loadBindings();
@@ -54,7 +54,7 @@ function projectContexts(project, bindings, primaryBranch) {
   return projectContextsFromLive(project, bindings, ws.listContexts(project.repoPath, primaryBranch));
 }
 
-async function discoverProjectSessions(contexts, bindings, closed, sup, projectId = null, extraPaths = []) {
+async function discoverProjectSessions(contexts, bindings, closed, sup, projectId = null) {
   const workspacePaths = contexts.map(context => context.path);
   const discovered = new Map();
   const add = session => {
@@ -70,11 +70,6 @@ async function discoverProjectSessions(contexts, bindings, closed, sup, projectI
     try {
       for (const session of await sup.listSessions(context.path)) add(session);
     } catch { /* a context may disappear between Git discovery and session listing */ }
-  }
-  for (const extra of extraPaths) {
-    try {
-      for (const session of await sup.listSessions(extra)) add(session);
-    } catch { /* the folder may be gone */ }
   }
   for (const [id, binding] of Object.entries(bindings)) {
     const liveContext = binding?.workspacePath && workspacePaths.some(workspacePath => pathKey(workspacePath) === pathKey(binding.workspacePath));
@@ -125,16 +120,52 @@ export async function projectState(project, sup) {
   const worktrees = Object.fromEntries(contexts.filter(context => context.branch).map(context => [context.branch, context.path]));
 
   const closed = loadClosed();
-  // A pi project's own folder has no repository; its sessions show under the project's first repository.
-  const group = project.group ? piProject(project.group) : null;
-  const rootPaths = group && primaryOfGroup(cfg, project.group)?.id === project.id ? [group.path] : [];
-  const discovered = (await discoverProjectSessions(contexts, bindings, closed, sup, project.id, rootPaths))
-    // Like chats: an unprompted, unnamed session nothing has open is hidden, not deleted.
-    .map(s => s.closed || hasPrompt(s) || promptText(s.name) || sup.isStreaming(s.id) || sup.isOpen?.(s.id) ? s : { ...s, closed: true });
-  const all = discovered.filter(s => !s.closed);
+  const discovered = await discoverProjectSessions(contexts, bindings, closed, sup, project.id);
+  const { all, sessions, ended, updatedAt } = sessionTree(discovered, closed, sup, pathToContext);
 
-  // Session tree from fork lineage. Walk through closed ancestors so visible
-  // descendants occupy the closed node's former position.
+  const contextSessions = context => all
+    .filter(session => pathKey(session.cwd) === pathKey(context.path))
+    .map(session => ({
+      id: session.id,
+      title: titleOf(session),
+      streaming: sup.isStreaming(session.id),
+      updatedAt: isoTime(session.modified),
+      when: rel(session.modified),
+    }));
+  const publicContexts = contexts.map(context => ({ ...context, sessions: contextSessions(context) }));
+  const workspaceStatus = Object.fromEntries(publicContexts.map(context => [
+    context.branch || context.id,
+    { ...context, sessions: context.sessions },
+  ]));
+
+  return {
+    id: project.id,
+    name: project.name,
+    repoPath: project.repoPath,
+    group: project.group || null,
+    groupPath: project.group ? piProject(project.group)?.path || null : null,
+    source: project.source || { type: "local" },
+    defaultBranch,
+    branch: currentBranch,
+    branches,
+    remoteBranches: await ws.listRemoteBranchesAsync(project.repoPath),
+    contexts: publicContexts,
+    worktrees,
+    workspaceStatus,
+    sessions,
+    ended,
+    updated: updatedAt ? rel(updatedAt) : "—",
+    updatedAt,
+    hooks: publicHooks(cfg, project),
+  };
+}
+
+/** Visible session trees (fork lineage), ended roots and last activity for discovered sessions. */
+function sessionTree(found, closed, sup, pathToContext = {}) {
+  // Like chats: an unprompted, unnamed session nothing has open is hidden, not deleted.
+  const discovered = found.map(s => s.closed || hasPrompt(s) || promptText(s.name) || sup.isStreaming(s.id) || sup.isOpen?.(s.id) ? s : { ...s, closed: true });
+  const all = discovered.filter(s => !s.closed);
+  // Walk through closed ancestors so visible descendants occupy the closed node's former position.
   const byId = new Map(discovered.map(s => [s.id, { ...s, children: [] }]));
   const roots = [];
   for (const node of byId.values()) {
@@ -167,7 +198,6 @@ export async function projectState(project, sup) {
       children,
     };
   };
-
   // Ended (archived) sessions for the sidebar's Ended list: tree roots only, newest first.
   const ended = discovered
     .filter(s => closed.has(s.id) && !closed.has(s.parentSessionId) && (hasPrompt(s) || promptText(s.name)))
@@ -176,41 +206,43 @@ export async function projectState(project, sup) {
     .map(s => ({ id: s.id, title: titleOf(s), when: rel(s.modified), updatedAt: isoTime(s.modified) }));
   const sessions = roots.sort((a, b) => compareTimestamp(treeActivity(b), treeActivity(a))).map(toNode);
   const updatedAt = all.reduce((latest, session) => newerTimestamp(latest, isoTime(session.modified)), null);
+  return { all, sessions, ended, updatedAt };
+}
 
-  const contextSessions = context => all
-    .filter(session => pathKey(session.cwd) === pathKey(context.path))
-    .map(session => ({
-      id: session.id,
-      title: titleOf(session),
-      streaming: sup.isStreaming(session.id),
-      updatedAt: isoTime(session.modified),
-      when: rel(session.modified),
-    }));
-  const publicContexts = contexts.map(context => ({ ...context, sessions: contextSessions(context) }));
-  const workspaceStatus = Object.fromEntries(publicContexts.map(context => [
-    context.branch || context.id,
-    { ...context, sessions: context.sessions },
-  ]));
+/** Web's id for a pi project's own folder (no repository). */
+export function folderId(name) { return `pp-${name}`; }
 
+/**
+ * A pi project's own folder as a project entry in /api/state, so its sessions list, open and route like
+ * a repository's. It is never in config.projects and has no Git: the folder sits in pi-projects' state repo.
+ */
+export async function folderState(group, sup) {
+  const closed = loadClosed();
+  let found = [];
+  try { found = (await sup.listSessions(group.path)).filter(s => pathKey(s.cwd) === pathKey(group.path)).map(s => ({ ...s, closed: closed.has(s.id) })); }
+  catch { /* the folder may be new */ }
+  const context = { id: "folder", kind: "folder", branch: null, path: group.path };
+  const { sessions, ended, updatedAt } = sessionTree(found, closed, sup, { [pathKey(group.path)]: context });
   return {
-    id: project.id,
-    name: project.name,
-    repoPath: project.repoPath,
-    group: project.group || null,
-    groupPath: group?.path || null,
-    source: project.source || { type: "local" },
-    defaultBranch,
-    branch: currentBranch,
-    branches,
-    remoteBranches: await ws.listRemoteBranchesAsync(project.repoPath),
-    contexts: publicContexts,
-    worktrees,
-    workspaceStatus,
+    id: folderId(group.name),
+    name: group.name,
+    kind: "folder",
+    repoPath: null,
+    group: group.name,
+    groupPath: group.path,
+    source: { type: "local" },
+    defaultBranch: null,
+    branch: null,
+    branches: [],
+    remoteBranches: [],
+    contexts: [context],
+    worktrees: {},
+    workspaceStatus: {},
     sessions,
     ended,
-    updated: updatedAt ? rel(updatedAt) : "—",
+    updated: updatedAt ? rel(updatedAt) : "\u2014",
     updatedAt,
-    hooks: publicHooks(cfg, project),
+    hooks: {},
   };
 }
 

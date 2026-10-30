@@ -247,7 +247,7 @@ export async function newProjectSession(projectId) {
     if (result.notice) toast(result.notice, "info");
     if (!findNode(project.sessions, result.id)) {
       const now = new Date().toISOString();
-      project.sessions.unshift({ id: result.id, title: "New session", draft: true, contextId: result.contextId || null, branch: result.branch || branch, workspacePath: result.workspacePath || null, model: store.state.effectiveDefaultModel, when: "now", updatedAt: now, activityAt: now, streaming: false, children: [] });
+      project.sessions.unshift({ id: result.id, title: "New session", draft: true, contextId: result.contextId || null, branch: "branch" in result ? result.branch : branch, workspacePath: result.workspacePath || null, model: store.state.effectiveDefaultModel, when: "now", updatedAt: now, activityAt: now, streaming: false, children: [] });
     }
     store.state.openTree[projectId] = true;
     selectSession(projectId, result.id);
@@ -568,7 +568,9 @@ class PiHeader extends HTMLElement {
       store.set({ view: "settings" });
     } else if (act === "session-panel") {
       const p = store.project();
-      if (p) openSessionPicker(p.id, { mode: "switch", sourceSessionId: store.state.sessionId });
+      // The project folder has no branches to switch between: its project menu instead.
+      if (p?.kind === "folder") openProjectMenu(groupId(p.group));
+      else if (p) openSessionPicker(p.id, { mode: "switch", sourceSessionId: store.state.sessionId });
       void refreshState().catch(() => {});
     } else if (act === "files") {
       e.stopPropagation();
@@ -593,6 +595,7 @@ class PiHeader extends HTMLElement {
 
   contextLabel(context) {
     if (context?.kind === "unavailable") return "Unavailable context";
+    if (context?.kind === "folder") return "project folder";
     return context?.branch || "detached HEAD";
   }
 

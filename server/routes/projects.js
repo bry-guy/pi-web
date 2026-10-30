@@ -1,12 +1,15 @@
 import { syncConfig } from "../config.js";
-import { remoteConversationPreview, remoteConversationsForRepository } from "../pi-sync.js";
+import { remoteConversationPreview, remoteConversationsForProject, remoteConversationsForRepository } from "../pi-sync.js";
 import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
-import { createPiProject, forgetRepo, piProject, pushState, recordRepo, repoEntry } from "../pi-projects.js";
+import { createPiProject, forgetRepo, listPiProjects, piProject, pushState, recordRepo, repoEntry } from "../pi-projects.js";
+import { folderId } from "../domain.js";
 
 const IDLE_MS = 24 * 60 * 60 * 1000;
 
 export function register(api, deps) {
   const { path, loadConfig, newId, sessionWorkspace, normalizeHooks, repositorySource, reposRoot, resolvePath, saveConfig, hub, ws, cloneRepository, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, projectContext, projectContextAsync, bindSessionToContext, branchContextAsync, ensureBranchContext, sessionBelongsToProject, github, sup, projectState, closeSession, sessionsUsingWorkspaceAsync } = deps;
+  // A pi project's own folder (web id pp-<name>): sessions there need no repository.
+  const folderOf = id => listPiProjects().find(group => folderId(group.name) === id) || null;
 
   // A new session on main opens at once; main is fetched and fast-forwarded afterwards.
   // Skipped (and logged to History) when main is dirty, diverged, busy or a turn is running.
@@ -161,22 +164,59 @@ export function register(api, deps) {
 
   api.get("/projects/:id/synced-sessions", async c => {
     const project = loadConfig().projects.find(p => p.id === c.req.param("id"));
-    if (!project) return err(c, 404, "no_such_project");
+    const folder = project ? null : folderOf(c.req.param("id"));
+    if (!project && !folder) return err(c, 404, "no_such_project");
     if (!syncConfig(loadConfig()).serverUrl) return c.json({ sessions: [] });
     try {
       const localIds = new Set((await sup.allSessions()).map(session => session.id));
+      if (folder) return c.json({ sessions: await remoteConversationsForProject(folder.name, id => localIds.has(id)) });
       return c.json({ sessions: await remoteConversationsForRepository(project.repoPath, localIds, { project: project.group || null }) });
     } catch { return c.json({ sessions: [], unavailable: true }); }
   });
 
   api.get("/projects/:id/synced-sessions/:syncId", async c => {
-    if (!loadConfig().projects.some(p => p.id === c.req.param("id"))) return err(c, 404, "no_such_project");
+    if (!loadConfig().projects.some(p => p.id === c.req.param("id")) && !folderOf(c.req.param("id"))) return err(c, 404, "no_such_project");
     if (!syncConfig(loadConfig()).serverUrl) return err(c, 409, "sync_not_configured");
     try { return c.json({ records: await remoteConversationPreview(c.req.param("syncId")) }); }
     catch (error) { return err(c, 502, "sync_preview_failed", { message: error.message }); }
   });
 
+  // Open another device's conversation by replacing a fresh session at `cwd` in place (pi-sync's /sync open).
+  async function openSynced(c, syncSessionId, cwd, reporter) {
+    if (!syncConfig(loadConfig()).serverUrl) return { error: err(c, 409, "sync_not_configured") };
+    if (typeof syncSessionId !== "string" || !syncSessionId) return { error: err(c, 400, "bad_sync_session") };
+    reporter.log({ type: "phase", phase: "open-synced", message: `Opening synchronized conversation ${syncSessionId}.` });
+    const { id: createdId } = await sup.createSession({ cwd });
+    try { await sup.command(createdId, `/sync open ${syncSessionId}`, "prompt"); }
+    catch (error) {
+      const operation = reporter.finish({ status: "error", httpStatus: 409, message: error.message || "The conversation could not be opened." });
+      return { error: err(c, 409, "sync_open_failed", { message: error.message, operation }) };
+    }
+    if (!sup.isLive(syncSessionId)) {
+      const operation = reporter.finish({ status: "error", httpStatus: 409, message: "The conversation could not be opened." });
+      return { error: err(c, 409, "sync_open_failed", { operation }) };
+    }
+    return { sessionId: syncSessionId };
+  }
+
   api.post("/projects/:id/sessions", async c => {
+    const folder = folderOf(c.req.param("id"));
+    if (folder && !loadConfig().projects.some(p => p.id === c.req.param("id"))) {
+      const body = (await c.req.json().catch(() => ({}))) || {};
+      const name = typeof body.name === "string" ? body.name.trim() || null : null;
+      const reporter = createOperationReporter({ id: operationRequestId(c, body), kind: "create-session", title: "Create session" });
+      reporter.log({ type: "request", phase: "request", message: `POST /api/projects/${folder.name}/sessions` });
+      const base = { projectId: folderId(folder.name), contextId: "folder", branch: null, workspacePath: folder.path, setup: null, setupNeeded: false };
+      if (body.mode === "synced") {
+        const opened = await openSynced(c, body.syncSessionId, folder.path, reporter);
+        if (opened.error) return opened.error;
+        hub.emit(opened.sessionId, "session_created", { session: { id: opened.sessionId, projectId: base.projectId, contextId: "folder", branch: null } });
+        return c.json({ id: opened.sessionId, ...base, operation: reporter.finish({ httpStatus: 200, message: "Opened synchronized conversation in the project folder." }) });
+      }
+      const { id: sessionId } = await sup.createSession({ cwd: folder.path, name });
+      hub.emit(sessionId, "session_created", { session: { id: sessionId, projectId: base.projectId, contextId: "folder", branch: null } });
+      return c.json({ id: sessionId, ...base, operation: reporter.finish({ httpStatus: 200, message: `Created session ${sessionId} in the project folder.` }) });
+    }
     const initialProject = loadConfig().projects.find(p => p.id === c.req.param("id"));
     if (!initialProject) return err(c, 404, "no_such_project");
     const body = (await c.req.json().catch(() => ({}))) || {};
@@ -208,13 +248,10 @@ export function register(api, deps) {
           return err(c, 400, "bad_fork_record", { operation });
         }
       }
-      // A pi project's own sessions (no branch) open in the project folder; no checkout is touched.
-      const root = mode === "synced" && body.projectRoot && project.group ? piProject(project.group) : null;
-      const existed = root ? true : !!(await branchContextAsync(project, branch));
+      const existed = !!(await branchContextAsync(project, branch));
       let notice = null;
       let context;
-      if (root) context = { id: null, branch: null, path: root.path, kind: "project" };
-      else try {
+      try {
         context = await ensureBranchContext(project, branch, body.baseBranch || mainBranch, { syncMain: true, report: reporter.log, sup, except: sourceSessionId });
       } catch (error) {
         // A new session never moves a checkout others are working in: it starts where the checkout is.
@@ -233,24 +270,12 @@ export function register(api, deps) {
         return c.json({ id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch, workspacePath: context.path, forkedFrom: sourceSessionId, setup: null, setupNeeded, operation });
       }
       if (mode === "synced") {
-        if (!syncConfig(loadConfig()).serverUrl) return err(c, 409, "sync_not_configured");
-        if (typeof body.syncSessionId !== "string" || !body.syncSessionId) return err(c, 400, "bad_sync_session");
-        reporter.log({ type: "phase", phase: "open-synced", message: `Opening synchronized conversation ${body.syncSessionId}.` });
-        const { id: createdId } = await sup.createSession({ cwd: context.path });
-        // The pi-sync extension's /sync open replaces this session in place with the shared one.
-        try { await sup.command(createdId, `/sync open ${body.syncSessionId}`, "prompt"); }
-        catch (error) {
-          const operation = reporter.finish({ status: "error", httpStatus: 409, message: error.message || "The conversation could not be opened." });
-          return err(c, 409, "sync_open_failed", { message: error.message, operation });
-        }
-        const sessionId = sup.isLive(body.syncSessionId) ? body.syncSessionId : createdId;
-        if (sessionId === createdId) {
-          const operation = reporter.finish({ status: "error", httpStatus: 409, message: "The conversation could not be opened." });
-          return err(c, 409, "sync_open_failed", { operation });
-        }
+        const opened = await openSynced(c, body.syncSessionId, context.path, reporter);
+        if (opened.error) return opened.error;
+        const sessionId = opened.sessionId;
         // No binding write: without a binding the session's workspace is its cwd (server/domain.js).
         hub.emit(sessionId, "session_created", { session: { id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch } });
-        const operation = reporter.finish({ httpStatus: 200, message: `Opened synchronized conversation on ${context.branch || "the project folder"}.` });
+        const operation = reporter.finish({ httpStatus: 200, message: `Opened synchronized conversation on ${context.branch}.` });
         return c.json({ id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch, workspacePath: context.path, setup: null, setupNeeded, operation });
       }
       reporter.log({ type: "phase", phase: "create-session", message: `Creating the Pi session in ${context.path}.` });

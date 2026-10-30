@@ -215,8 +215,3 @@ export function forgetRepo(groupName, repoName, env = process.env) {
   writeProject(group.path, data);
   return group;
 }
-
-/** Root-level sessions (cwd = the project folder) belong to the group's first repository's entry. */
-export function primaryOfGroup(cfg, groupName) {
-  return cfg.projects.find(p => p.group === groupName) || null;
-}

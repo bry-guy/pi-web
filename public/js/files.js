@@ -24,18 +24,20 @@ export function closeFileView() {
  */
 export function fileScope() {
   const s = store.state;
-  const project = store.project();
+  const current = store.project();
+  // The project folder has no repository of its own: browse the pi project's first repository.
+  const project = current?.kind === "folder" ? s.projects.find(p => p.group === current.group && p.kind !== "folder") || current : current;
   const checkout = p => p?.contexts?.find(context => context.kind === "checkout")?.id || p?.contexts?.[0]?.id || null;
   const picked = s.fileScope;
   if (picked && picked.sessionId === s.sessionId) {
     const other = s.projects.find(p => p.id === picked.projectId);
-    if (other && (other.id === project?.id || (other.group && other.group === project?.group))) {
+    if (other && (other.id === current?.id || (other.group && other.group === current?.group))) {
       const contextId = other.contexts?.some(c => c.id === picked.contextId) ? picked.contextId : checkout(other);
       return { project: other, contextId };
     }
   }
   const node = store.findSession(s.sessionId);
-  return { project, contextId: node?.contextId || checkout(project) };
+  return { project, contextId: project === current ? node?.contextId || checkout(project) : checkout(project) };
 }
 
 /* ---------------- file tree (right column) ---------------- */

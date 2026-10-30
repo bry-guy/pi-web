@@ -28,7 +28,7 @@ afterEach(async () => {
   else process.env.PI_PROJECTS_DIR = previous;
 });
 
-test("a pi project's repositories become projects grouped under it, with its root sessions", async () => {
+test("a pi project's repositories become projects grouped under it, its folder sessions under its folder", async () => {
   const first = await fixture.state();
   const project = first.projects.find(p => p.id === "pp-eco-code");
   assert.ok(project, "repository listed in project.json is a project");
@@ -42,12 +42,12 @@ test("a pi project's repositories become projects grouped under it, with its roo
   const { worktreeTarget } = await import("../server/config.js");
   assert.deepEqual(worktreeTarget(loadConfig(), entry), { worktreeRoot: entry.worktreeRoot, projectId: "" });
 
-  // A session started at the project folder (laptop default) lists under the project's first repository.
+  // A session started at the project folder (laptop default) lists under the project's folder entry, not a repository.
   const root = await fixture.supervisor.createSession({ cwd: path.join(projectsDir, "eco") });
   await fixture.post(`/api/sessions/${root.id}/message`, { text: "hello" });
   const second = await fixture.state();
-  const ids = second.projects.find(p => p.id === "pp-eco-code").sessions.map(s => s.id);
-  assert.ok(ids.includes(root.id), "root session belongs to the pi project");
+  assert.ok(second.projects.find(p => p.id === "pp-eco").sessions.some(s => s.id === root.id), "root session belongs to the project folder");
+  assert.equal(second.projects.find(p => p.id === "pp-eco-code").sessions.some(s => s.id === root.id), false);
 
   // Removing the repository drops it from project.json too.
   const removed = await fixture.remove("/api/projects/pp-eco-code");
@@ -125,4 +125,26 @@ test("GitHub SSH remotes clone over HTTPS on web", async () => {
   assert.equal(cloneUrl("ssh://git@github.com/bry-guy/pi-worktree-include"), "https://github.com/bry-guy/pi-worktree-include.git");
   assert.equal(cloneUrl("git@github.com:bry-guy/pi-sync.git"), "https://github.com/bry-guy/pi-sync.git");
   assert.equal(cloneUrl("https://gitlab.com/a/b.git"), "https://gitlab.com/a/b.git");
+});
+
+test("a pi project with no repositories lists, creates and opens sessions in its folder, without Git", async () => {
+  const bare = path.join(projectsDir, "bare");
+  fs.mkdirSync(bare, { recursive: true });
+  fs.writeFileSync(path.join(bare, "project.json"), JSON.stringify({ id: "y", name: "bare", state: "active", repos: [] }));
+  const folder = (await fixture.state()).projects.find(p => p.id === "pp-bare");
+  assert.ok(folder, "the project folder is listed");
+  assert.equal(folder.kind, "folder");
+  assert.equal(folder.group, "bare");
+  assert.deepEqual(folder.sessions, []);
+
+  const res = await fixture.post("/api/projects/pp-bare/sessions", { branch: "main" });
+  assert.equal(res.status, 200);
+  const created = await res.json();
+  assert.equal(created.workspacePath, bare);
+  assert.equal(created.branch, null);
+  await fixture.post(`/api/sessions/${created.id}/message`, { text: "hello" });
+  const listed = (await fixture.state()).projects.find(p => p.id === "pp-bare");
+  assert.deepEqual(listed.sessions.map(s => [s.id, s.contextId, s.branch]), [[created.id, "folder", null]]);
+  // Git routes do not apply to the folder (it sits in the projects state repo).
+  assert.equal((await fixture.post("/api/projects/pp-bare/fetch", {})).status, 404);
 });
