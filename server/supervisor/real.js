@@ -577,10 +577,7 @@ export class RealSupervisor {
         hub.emit(id, "session_meta", { name: st.session.sessionName });
         break;
       case "queue_update":
-        hub.emit(id, "queue_update", {
-          steering: evt.steering?.length ?? 0,
-          followUp: evt.followUp?.length ?? 0,
-        });
+        hub.emit(id, "queue_update", { steering: [...(evt.steering || [])], followUp: [...(evt.followUp || [])] });
         break;
       default: break;
     }
@@ -1075,6 +1072,21 @@ export class RealSupervisor {
     const file = this.paths.get(id) || this.info.get(id)?.path;
     if (!file) throw new Error("unknown session " + id);
     return this._attach(id, this._boundCwd(id), await this._preferredModel(id));
+  }
+
+  /** Messages waiting for the running turn: steering goes in at the next tool boundary, follow-ups after it ends. */
+  queue(id) {
+    const session = this.live.get(id)?.session;
+    return { steering: [...(session?.getSteeringMessages?.() || [])], followUp: [...(session?.getFollowUpMessages?.() || [])] };
+  }
+
+  clearQueue(id) {
+    const st = this.live.get(id);
+    if (!st) return { steering: [], followUp: [] };
+    const cleared = st.session.clearQueue();
+    const texts = new Set([...cleared.steering, ...cleared.followUp]);
+    st.pendingMessages = st.pendingMessages.filter(item => !texts.has(item.text));
+    return cleared;
   }
 
   async stop(id) {

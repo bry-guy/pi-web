@@ -278,6 +278,9 @@ export class MockSupervisor {
     this.live.clear();
   }
 
+  queue() { return { steering: [], followUp: [] }; }
+  clearQueue() { return { steering: [], followUp: [] }; }
+
   async stop(id) {
     const st = this.live.get(id);
     if (!st || !st.streaming) return;

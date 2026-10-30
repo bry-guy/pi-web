@@ -162,6 +162,10 @@ class PiThread extends HTMLElement {
       this.querySelectorAll(".msg.show-actions").forEach(el => { if (el !== row) el.classList.remove("show-actions"); });
       row?.classList.toggle("show-actions");
     }
+    if (e.target.closest("[data-act='clear-queue']")) {
+      api.clearQueue(store.activeKey()).catch(err => store.setError(`Cancel failed: ${err.message || err}`));
+      return;
+    }
     const stepsOpen = e.target.closest("[data-steps-open]");
     if (stepsOpen) { this.openSteps(stepsOpen.dataset.stepsOpen); return; }
     if (e.target.closest("[data-steps-back]")) { this.closeSteps(); return; }
@@ -355,7 +359,7 @@ class PiThread extends HTMLElement {
       const row = m.id ? doneRows.get(m.id) || "" : "";
       return (m.id && html.startsWith("<div ") ? `<div data-rec="${esc(m.id)}" ${html.slice(5)}` : html) + row;
     }).join("");
-    setHTML(this, records + busy + activity + notice);
+    setHTML(this, records + busy + this.renderQueue(activeKey) + activity + notice);
     if (this.pendingScroll != null) {
       // Back from the steps view: return to where the chat was, not the bottom.
       const top = this.pendingScroll;
@@ -377,6 +381,16 @@ class PiThread extends HTMLElement {
     this.autoscroll(forceScroll);
     delete t.scrollToLatest;
     this.scrollOnNextRender = false;
+  }
+
+  /** Messages waiting for the running turn, dimmed, with one control that drops them all. */
+  renderQueue(sessionId) {
+    const queue = store.state.queued[sessionId];
+    if (!queue) return "";
+    const bubble = (text, label) => `<div class="msg queued-msg"><div class="msg-user-row"><div class="user-message-content"><div class="queued-label"><span class="queued-tag">Queued</span> ${label}</div><div class="bubble"><div>${esc(text)}</div></div></div></div></div>`;
+    return queue.steering.map(text => bubble(text, "steering · sent at the next step")).join("")
+      + queue.followUp.map(text => bubble(text, "follow-up · sent after this turn")).join("")
+      + `<div class="msg queued-actions"><button type="button" class="queued-cancel" data-act="clear-queue">Clear queue</button></div>`;
   }
 
   /** The live line while a turn runs: pi-summarize's working message, else pi's default "Working…". */
@@ -1392,7 +1406,9 @@ class PiComposer extends HTMLElement {
     if (!id || (!text && !attachments.length) || store.transcript(id).compacting
       || draft?.pendingAttachments || this.sendingIds.has(id)) return;
     const images = attachments.map(({ type, data, mimeType }) => ({ type, data, mimeType }));
-    const pendingId = !text.startsWith("/") && !text.startsWith("!")
+    // While a turn runs the message is queued; the server's queue shows it until Pi delivers it.
+    const queuedSend = store.transcript(id).streaming && !text.startsWith("/") && !text.startsWith("!");
+    const pendingId = !text.startsWith("/") && !text.startsWith("!") && !queuedSend
       ? this.addPendingMessage(id, text, images)
       : null;
     this.sendingIds.add(id);
