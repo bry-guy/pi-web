@@ -15,6 +15,8 @@ data:
   PI_SYNC_SERVER_URL: http://pi-syncd.pi-sync.svc:8080
   # pi-projects' state repo (project.json + memory.md per project); project workers sparse-clone their project from it.
   PI_PROJECTS_STATE_REMOTE: https://github.com/bry-guy/pi-projects-state.git
+  # Laptop-only packages from the dotfiles profile; workers never sleep or switch sessions mid-turn.
+  PI_WEB_SKIP_PACKAGES: git:github.com/bry-guy/pi-background,git:github.com/bry-guy/pi-keepalive
   PI_WEB_PRESTART_COMMAND: |
     set -eu
     : "${DOTFILES_REPOSITORY:?DOTFILES_REPOSITORY is required}"

@@ -307,3 +307,22 @@ test("profile refresh replaces stale skills and materializes declared extensions
   assert.equal(second.settings.skills.some(value => value.endsWith("first/SKILL.md")), false);
   assert.equal(fs.existsSync(stalePath), false);
 });
+
+test("PI_WEB_SKIP_PACKAGES leaves the listed profile packages out", async () => {
+  const configuration = new PiConfiguration({
+    fetchImpl: async url => {
+      if (url === "https://api.github.com/repos/bry-guy/dotfiles") return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: [] }), { status: 200 });
+      return new Response(JSON.stringify({ packages: ["npm:keep", "git:github.com/bry-guy/pi-background", { source: "git:github.com/bry-guy/pi-keepalive" }] }), { status: 200 });
+    },
+  });
+  const previous = process.env.PI_WEB_SKIP_PACKAGES;
+  process.env.PI_WEB_SKIP_PACKAGES = "git:github.com/bry-guy/pi-background, git:github.com/bry-guy/pi-keepalive";
+  try {
+    const resolved = await configuration.resolve({ profile: "https://github.com/bry-guy/dotfiles", packages: [], extensions: [] });
+    assert.deepEqual(resolved.settings.packages, ["npm:keep"]);
+  } finally {
+    if (previous === undefined) delete process.env.PI_WEB_SKIP_PACKAGES;
+    else process.env.PI_WEB_SKIP_PACKAGES = previous;
+  }
+});

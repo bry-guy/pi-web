@@ -84,6 +84,11 @@ function resolveEntry(entry, baseDir, remote, warnings, kind) {
   return typeof entry === "string" ? resolved : { ...entry, source: resolved };
 }
 
+/** Profile packages this deployment leaves out (PI_WEB_SKIP_PACKAGES, comma-separated sources), e.g. laptop-only ones on workers. */
+function skippedPackages(env = process.env) {
+  return new Set(String(env.PI_WEB_SKIP_PACKAGES || "").split(",").map(item => item.trim()).filter(Boolean));
+}
+
 function prepareProfileSettings(value, { baseDir, remote, warnings }) {
   const settings = clone(value);
   // Session and credential storage always remain owned by the deployment's
@@ -91,9 +96,10 @@ function prepareProfileSettings(value, { baseDir, remote, warnings }) {
   delete settings.sessionDir;
 
   if (Array.isArray(settings.packages)) {
+    const skip = skippedPackages();
     settings.packages = settings.packages
       .map(entry => resolveEntry(entry, baseDir, remote, warnings, "package"))
-      .filter(Boolean);
+      .filter(entry => entry && !skip.has(sourceOf(entry)));
   }
   for (const key of RESOURCE_KEYS) {
     if (!Array.isArray(settings[key])) continue;

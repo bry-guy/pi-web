@@ -32,6 +32,8 @@ Use `config.json` when you want to predefine projects or change settings that ar
 | `repositorySources` | Default project-picker source and GitHub options |
 | `sync` | Optional pi-sync server and conversation setting |
 
+`PI_WEB_SKIP_PACKAGES` (comma-separated package sources) leaves those packages out of the Pi profile, for example laptop-only extensions on always-on workers.
+
 Without `worktreeRoot`, Compose uses `/data/pi-ez-operator-home/.pi/worktrees`; the example config uses `/data/pi-ez-worktrees`. Git records absolute worktree paths, so keep this location stable.
 
 <details>
