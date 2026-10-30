@@ -125,6 +125,7 @@ export const store = {
     projects: [],
     piProjects: [],
     piProjectsEnabled: false,
+    piProjectsSyncedRoute: false,
     chats: [],
     buildId: null,
     reconnecting: false,

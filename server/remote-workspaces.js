@@ -10,6 +10,7 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { chatTransfer } from "./chat-transfer.js";
+import { remoteConversationPreview, remoteConversationsForProject, syncedProjects as syncedProjectsFromServer } from "./pi-sync.js";
 
 // workspaced's CHATS_WORKSPACE: the worker without a repository.
 const CHATS = "chats";
@@ -34,7 +35,7 @@ export function remoteWorkspacesFromEnv(env, deps) {
   }
   const modelAuthPath = path.join(env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"), "auth.json");
   const cachePath = env.PI_WEB_HOME ? path.join(env.PI_WEB_HOME, "remote-projects.json") : null;
-  return createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), ...(fetchImpl ? { fetchImpl } : {}), ...deps });
+  return createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, ...(fetchImpl ? { fetchImpl } : {}), ...deps });
 }
 
 // workspaced with the local provider, answering web's calls in-process (no port, no network).
@@ -57,8 +58,16 @@ export function embeddedWorkspaced(env, { log = console.log } = {}) {
 }
 
 // transfer: web's own earlier chats to copy into the chats worker (chat-transfer.js), or null.
-export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, log = console.log }) {
+export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, syncedProjects = async () => [], syncedTtlMs = 30_000, log = console.log }) {
   const owners = { project: new Map(), session: new Map() };
+
+  // pi projects with synced conversations (pi-sync), so a project not on web yet is still listed.
+  let synced = { at: -Infinity, projects: [] };
+  async function syncedList() {
+    if (Date.now() - synced.at < syncedTtlMs) return synced.projects;
+    try { synced = { at: Date.now(), projects: await syncedProjects() }; } catch { synced.at = Date.now(); }
+    return synced.projects;
+  }
   const streams = new Map();
   const auth = token ? { authorization: `Bearer ${token}` } : {};
   let stopped = false;
@@ -168,6 +177,11 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       const known = (piProjectsByWorker[w.name] || []).find(p => `project:${p.name}` === w.repository);
       return { name: w.repository.slice(8), repos: known?.repos || [], ...tag(w, {}) };
     });
+    // Projects other devices synced but web has no worker for yet: opening one creates it.
+    const served = new Set(piProjects.map(p => p.name));
+    for (const p of await syncedList()) {
+      if (!served.has(p.name)) piProjects.push({ name: p.name, repos: [], workspace: null, workspaceState: null, synced: { sessions: p.sessions || 0, lastActive: p.lastActive || null } });
+    }
     return { projects: lists.flat(), piProjects, chats: await chats, ended: chatsEnded, piConfiguration: chatsPi };
   }
   const projects = async () => (await refresh()).projects;
@@ -503,8 +517,12 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     return c.json({ ...result, workspace: created.name }, forwarded.status);
   }
 
+  // Other devices' conversations of a pi project, straight from pi-sync, so the menu needs no worker.
+  const projectSynced = name => remoteConversationsForProject(name, id => owners.session.has(id));
+  const syncedPreview = id => remoteConversationPreview(id);
+
   return {
-    wake,
+    wake, projectSynced, syncedPreview,
     projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };
@@ -524,6 +542,14 @@ export function registerRemoteRoutes(api, remote) {
       return name ? remote.forward(c, name) : c.json({ error: kind === "session" ? "no_such_session" : "no_such_project" }, 404);
     });
   }
+  api.get("/pi-projects/:name/synced", async c => {
+    try { return c.json({ sessions: await remote.projectSynced(c.req.param("name")) }); }
+    catch (error) { return c.json({ error: "sync_unavailable", message: error.message }, 502); }
+  });
+  api.get("/pi-projects/synced/:syncId", async c => {
+    try { return c.json({ records: await remote.syncedPreview(c.req.param("syncId")) }); }
+    catch (error) { return c.json({ error: "sync_unavailable", message: error.message }, 502); }
+  });
   api.post("/pi/reload", async c => {
     const { status, body } = await remote.chatsPost("/pi/reload", {});
     return c.json(body, status);

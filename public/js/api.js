@@ -59,6 +59,8 @@ export const api = {
     return fetch("/api/projects", { method: "POST", headers: JH, body: JSON.stringify(body) }).then(j);
   },
   syncedSessions: (projectId) => fetch(`/api/projects/${projectId}/synced-sessions`).then(j),
+  piProjectSynced: name => fetch(`/api/pi-projects/${encodeURIComponent(name)}/synced`).then(j),
+  piProjectSyncedPreview: syncId => fetch(`/api/pi-projects/synced/${encodeURIComponent(syncId)}`).then(j),
   syncedPreview: (projectId, syncId) => fetch(`/api/projects/${projectId}/synced-sessions/${encodeURIComponent(syncId)}`).then(j),
   newProjectSession: (projectId, options = {}) => fetch(`/api/projects/${projectId}/sessions`, { method: "POST", headers: { ...JH, ...(options?.operationId ? { "x-pi-operation-id": options.operationId } : {}) }, body: JSON.stringify(options || {}) }).then(j),
   forkSession: (id, name = null) => fetch(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", headers: JH, body: JSON.stringify({ name }) }).then(j),
@@ -171,6 +173,7 @@ function applyState(s) {
     projects: s.projects,
     piProjects: s.piProjects || [],
     piProjectsEnabled: !!s.piProjectsEnabled,
+    piProjectsSyncedRoute: !!s.piProjectsSyncedRoute,
     chats: s.chats,
     endedChats: s.endedChats || [],
     buildId: s.buildId || null,

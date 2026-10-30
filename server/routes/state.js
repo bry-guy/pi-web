@@ -71,6 +71,8 @@ export function register(api, deps) {
       // pi projects this server serves (none behind workspaced: each worker reports its own projects' groups).
       // Behind workspaced every new project gets its own worker; locally only with PI_PROJECTS_DIR.
       piProjectsEnabled: !!remoteState || !!piProjectsDir(),
+      // Behind workspaced, web lists a pi project's other-device conversations itself (no worker needed).
+      piProjectsSyncedRoute: !!remoteState,
       piProjects: remoteState ? remoteState.piProjects || [] : listPiProjects().map(({ name, path, repos }) => ({ name, path, repos })),
       chats,
       endedChats: endedChats || [],
