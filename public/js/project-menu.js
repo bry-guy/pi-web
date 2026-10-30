@@ -35,6 +35,26 @@ class PiProjectMenu extends HTMLElement {
     const entry = sidebarEntry(id);
     return entry ? { name: id.slice(6), members: groupMembers(id), workspace: entry.workspace || null } : null;
   }
+
+  /**
+   * A pi project known only from other devices gets its worker here; the worker copies the
+   * project from the state repo and clones its repositories, which then show up as members.
+   */
+  async ensureOnWeb(group, { needRepo = false } = {}) {
+    if (!group.workspace) {
+      await api.newProject({ project: group.name });
+      await refreshState();
+    }
+    const deadline = Date.now() + 180_000;
+    let current = this.group() || group;
+    while (needRepo && !current.members.length && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 3_000));
+      await refreshState().catch(() => undefined);
+      current = this.group() || current;
+    }
+    if (needRepo && !current.members.length) throw new Error(`${group.name} has no repository on the web yet. Add one, or wait for its clone to finish.`);
+    return current;
+  }
   close() { store.set({ projectMenu: null }); }
   fail(message) { const menu = this.menu(); if (menu) { menu.error = message; this.render(); } }
 
@@ -54,7 +74,8 @@ class PiProjectMenu extends HTMLElement {
     if (previews[key]) return;
     previews[key] = { loading: true };
     const [kind, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
-    const request = kind === "past" ? api.transcript(id) : api.syncedPreview(projectId, id);
+    const viaWeb = store.state.piProjectsSyncedRoute && this.group();
+    const request = kind === "past" ? api.transcript(id) : viaWeb ? api.piProjectSyncedPreview(id) : api.syncedPreview(projectId, id);
     request
       .then(result => { previews[key] = { records: (result.records || []).filter(record => ["user", "assistant"].includes(record.role) && record.text) }; })
       .catch(err => { previews[key] = { error: err.message || err.error || "The conversation could not be loaded." }; })
@@ -138,6 +159,14 @@ class PiProjectMenu extends HTMLElement {
       await newProjectSession(member(repo).id);
       return;
     }
+    if (act === "open-here") {
+      await this.run(`Opening ${group.name} on the web…`, async () => {
+        await this.ensureOnWeb(group);
+        store.state.openTree[`group:${group.name}`] = true;
+        toast(`${group.name} is on the web now. Its repositories appear as they finish cloning.`);
+      });
+      return;
+    }
     if (act === "add-repo") { this.close(); store.set({ repoPickerOpen: true, repoPickerGroup: group.name }); return; }
     if (act === "remove-repo") {
       const repo = member(t.dataset.id);
@@ -152,7 +181,7 @@ class PiProjectMenu extends HTMLElement {
     if (act === "toggle-preview") {
       const menu = this.menu();
       menu.preview = menu.preview === t.dataset.key ? null : t.dataset.key;
-      if (menu.preview) this.loadPreview(menu, menu.preview, group.members[0].id);
+      if (menu.preview) this.loadPreview(menu, menu.preview, group.members[0]?.id || null);
       this.render();
       return;
     }
@@ -163,8 +192,9 @@ class PiProjectMenu extends HTMLElement {
       return;
     }
     if (act === "open-synced") {
-      const repo = member(t.dataset.pid);
       await this.run("Opening conversation…", async () => {
+        const ready = await this.ensureOnWeb(group, { needRepo: true });
+        const repo = ready.members.find(m => m.id === t.dataset.pid) || ready.members[0];
         const primary = repo.defaultBranch || repo.primaryBranch || "main";
         const result = await api.newProjectSession(repo.id, { mode: "synced", syncSessionId: t.dataset.syncId, branch: t.dataset.branch || primary, baseBranch: primary });
         this.close();
@@ -190,11 +220,12 @@ class PiProjectMenu extends HTMLElement {
 
   renderGroup(menu, group) {
     const first = group.members[0] || { id: null, workspace: group.workspace };
-    // Other devices' conversations come from the first repository's worker, filtered to this pi project.
-    if (menu.synced === undefined && !first.id) menu.synced = [];
+    // Other devices' conversations: from web itself behind workspaced (no worker needed), else the first repository's server.
+    const viaWeb = store.state.piProjectsSyncedRoute;
+    if (menu.synced === undefined && !viaWeb && !first.id) menu.synced = [];
     if (menu.synced === undefined) {
       menu.synced = null;
-      api.syncedSessions(first.id)
+      (viaWeb ? api.piProjectSynced(group.name) : api.syncedSessions(first.id))
         .then(result => { menu.synced = result.sessions || []; })
         .catch(() => { menu.synced = []; })
         .finally(() => { if (this.menu() === menu) this.render(); });
@@ -240,6 +271,15 @@ class PiProjectMenu extends HTMLElement {
 
     const progress = busy ? `<div class="session-picker-progress" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>${esc(menu.busy)}</span></div>` : "";
     const error = menu.error ? `<div class="session-picker-error">${esc(menu.error)}</div>` : "";
+    // Not on the web yet: only other devices' conversations, and a way to bring it here.
+    if (!group.workspace && !group.members.length && viaWeb) {
+      const openHere = `<section class="session-picker-actions" aria-label="Project"><div class="panel-rows">
+        ${row("Open on the web", "Starts this project's worker, which copies it from your projects state repo and clones its repositories.", `<button class="btn btn-secondary" data-act="open-here" ${busy ? "disabled" : ""}>Open</button>`)}
+      </div></section>`;
+      const loading = menu.synced === null ? `<div class="session-history-empty">Loading conversations…</div>` : "";
+      this.frame("Project", group.name, `${progress}${error}${openHere}${loading}${syncedSection}`);
+      return;
+    }
     this.frame("Project", group.name, `${progress}${error}${actions}${repos}${sessions}${pastSection}${syncedSection}${workerSection}${dangerSection}`);
   }
 

@@ -71,8 +71,17 @@ export async function remoteConversationsForRepository(cwd, localIds, { project 
   const client = await createSyncClient(syncConfig(loadConfig()).serverUrl);
   // A pi project's conversations carry its name (pi-sync `project`); they may sit in any of its repositories or its folder.
   const belongs = item => (project && item.project === project) || (repository && module.repositoryIdentity(item.workspace) === repository);
-  return (await client.list()).sessions
-    .filter(item => belongs(item) && !localIds.has(item.sessionId))
+  return listItems((await client.list()).sessions.filter(item => belongs(item) && !localIds.has(item.sessionId)));
+}
+
+/** Shared conversations of pi project `project` that `isHere(sessionId)` does not already hold, newest first. */
+export async function remoteConversationsForProject(project, isHere = () => false) {
+  const client = await createSyncClient(syncConfig(loadConfig()).serverUrl);
+  return listItems((await client.list()).sessions.filter(item => item.project === project && !isHere(item.sessionId)));
+}
+
+function listItems(sessions) {
+  return sessions
     .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
     .map(item => ({
       sessionId: item.sessionId,
@@ -81,6 +90,16 @@ export async function remoteConversationsForRepository(cwd, localIds, { project 
       updatedAt: item.updatedAt || item.createdAt,
       leaseHolder: item.leaseHolder || null,
     }));
+}
+
+/** pi projects that have synced conversations (pi-sync GET /v1/projects): [{name, sessions, lastActive}]. */
+export async function syncedProjects({ fetchImpl = globalThis.fetch, timeoutMs = 1_500 } = {}) {
+  const base = syncConfig(loadConfig()).serverUrl;
+  if (!base) return [];
+  const res = await fetchImpl(`${base.replace(/\/+$/, "")}/v1/projects`, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`pi-sync projects answered ${res.status}`);
+  const body = await res.json();
+  return (body.projects || []).filter(p => typeof p?.name === "string" && p.name);
 }
 
 /**

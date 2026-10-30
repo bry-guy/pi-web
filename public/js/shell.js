@@ -86,7 +86,7 @@ export function sidebarProjects(projects = store.state.projects) {
   // A pi project without repositories yet still gets an entry (its menu adds the first one).
   for (const pp of store.state.piProjects || []) {
     if (groups.has(pp.name)) continue;
-    const g = { id: groupId(pp.name), name: pp.name, group: pp.name, members: [], sessions: [], workspace: pp.workspace, workspaceState: pp.workspaceState };
+    const g = { id: groupId(pp.name), name: pp.name, group: pp.name, members: [], sessions: [], workspace: pp.workspace, workspaceState: pp.workspaceState, synced: pp.synced || null };
     groups.set(pp.name, g);
     out.push(g);
   }
@@ -406,7 +406,11 @@ class PiSidebar extends HTMLElement {
       store.state.openTree[id] = !store.state.openTree[id];
       if (store.state.openTree[id]) wakeEarly(groupMembers(id)[0] || sidebarEntry(id) || store.state.projects.find(p => p.id === id));
       store.notify("state");
-    } else if (act === "project-row") openProjectMenu(t.dataset.id);
+    } else if (act === "project-row") {
+      // Wake the worker while the menu (shown from cached state) is read.
+      wakeEarly(groupMembers(t.dataset.id)[0] || sidebarEntry(t.dataset.id) || store.state.projects.find(p => p.id === t.dataset.id));
+      openProjectMenu(t.dataset.id);
+    }
     else if (act === "session-row") {
       selectSession(t.dataset.pid, t.dataset.id, { showOperation: true });
     } else if (act === "chat-row") selectChat(t.dataset.id);
