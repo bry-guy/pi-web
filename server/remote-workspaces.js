@@ -475,6 +475,9 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   async function createProject(c, body) {
     // A new pi project: its own worker, named after it; it starts with no repositories.
     if (typeof body.project === "string" && body.project) {
+      // Opening a project creates its worker; a second open (another tab, a double click) finds it.
+      const existing = await projectWorker(body.project);
+      if (existing) return c.json({ project: body.project, workspace: existing }, 200);
       await pushGitHubAuth();
       await pushModelAuth();
       const res = await call("/workspaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project: body.project, ...(body.grant ? { grant: String(body.grant) } : {}) }) });

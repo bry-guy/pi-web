@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadConfig, syncConfig } from "./config.js";
+import { rel } from "./domain.js";
 
 const DEFAULT_MODULE = "@bry-guy/pi-sync";
 const modulePromises = new Map();
@@ -88,6 +89,8 @@ function listItems(sessions) {
       title: typeof item.title === "string" && item.title.trim() ? item.title.trim() : null,
       branch: item.workspace?.branch || null,
       updatedAt: item.updatedAt || item.createdAt,
+      when: rel(item.updatedAt || item.createdAt),
+      device: item.devices?.[0]?.label || null,
       leaseHolder: item.leaseHolder || null,
     }));
 }
