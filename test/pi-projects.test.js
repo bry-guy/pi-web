@@ -118,3 +118,11 @@ test("a repository being cloned is not served until its clone is complete", asyn
   reconcile(cfg, { env: { PI_PROJECTS_DIR: projectsDir } });
   assert.ok(cfg.projects.some(p => p.name === "clone-me" && p.group === "cl"));
 });
+
+test("GitHub SSH remotes clone over HTTPS on web", async () => {
+  const { cloneUrl } = await import("../server/pi-projects.js");
+  assert.equal(cloneUrl("ssh://git@github.com/bry-guy/pi-web.git"), "https://github.com/bry-guy/pi-web.git");
+  assert.equal(cloneUrl("ssh://git@github.com/bry-guy/pi-worktree-include"), "https://github.com/bry-guy/pi-worktree-include.git");
+  assert.equal(cloneUrl("git@github.com:bry-guy/pi-sync.git"), "https://github.com/bry-guy/pi-sync.git");
+  assert.equal(cloneUrl("https://gitlab.com/a/b.git"), "https://gitlab.com/a/b.git");
+});

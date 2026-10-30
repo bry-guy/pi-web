@@ -106,11 +106,18 @@ function cloneInBackground(repo, dest) {
   // Clone beside the destination and move it in when done, so a half-cloned repository never looks cloned.
   const tmp = `${dest}.cloning`;
   fs.rmSync(tmp, { recursive: true, force: true });
-  const args = ["clone", ...(repo.branch ? ["--branch", repo.branch] : []), repo.url, tmp];
-  execFile("git", args, { timeout: 15 * 60_000, env: { ...gitCredentialEnvironment(), GIT_TERMINAL_PROMPT: "0" } }, error => {
+  const args = ["clone", ...(repo.branch ? ["--branch", repo.branch] : []), cloneUrl(repo.url), tmp];
+  execFile("git", args, { timeout: 15 * 60_000, env: { ...gitCredentialEnvironment(), GIT_TERMINAL_PROMPT: "0" } }, (error, _stdout, stderr) => {
+    if (error) console.warn(`pi-projects: could not clone ${repo.url}: ${String(stderr || error.message).trim().split("\n").at(-1)}`);
     try { if (!error && !fs.existsSync(dest)) fs.renameSync(tmp, dest); else fs.rmSync(tmp, { recursive: true, force: true }); }
     finally { cloning.delete(dest); }
   });
+}
+
+/** GitHub SSH remotes (as cloned on a laptop) as HTTPS: web authenticates to GitHub over HTTPS only. */
+export function cloneUrl(url) {
+  const m = /^(?:ssh:\/\/)?git@github\.com[:/](.+?)(?:\.git)?\/?$/.exec(url);
+  return m ? `https://github.com/${m[1]}.git` : url;
 }
 
 // GitHub HTTPS remotes authenticate through web's credential helper (the login web shares with workers).
