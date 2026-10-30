@@ -2,6 +2,10 @@
 
 One per project, plus one named `chats` for plain chats. A worker is the same server as [web](web.md), running the Pi SDK in-process against a single cloned repository, with that project's tools and secrets. The `chats` worker has no repository and always uses a grant any project may use; it gets the same environment and dotfiles as project workers. workspaced starts it; you never deploy one by hand.
 
+## Project workers
+
+A [pi project](https://github.com/bry-guy/pi-projects) (a named folder of repositories, memory and sessions) gets one worker named after it, created with **New project** (`POST /v1/workspaces {"project": "<name>"}`). It sets `PI_PROJECTS_DIR=/data/projects` and `PI_WEB_PROJECT=<name>` on the worker's volume. On start the worker sparse-clones only that project from `PI_PROJECTS_STATE_REMOTE` (pi-projects' state repo, through web's GitHub login), or creates the folder when the project is new. Each repository in its `project.json` becomes one of the worker's projects (cloned into `repos/<name>`, worktrees in `worktrees/<name>/<branch>`), and the sidebar shows them as one entry named after the project. Adding or removing a repository in the Project menu updates `project.json` and pushes it, so the laptop and other workers see it. The project is the trust boundary: one project per worker, which sleeps and wakes like any other.
+
 ## What a worker gets
 
 | From | What |
