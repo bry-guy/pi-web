@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import {
-  chatsDir, loadBindings, loadConfig, newId, normalizeHookSets, normalizeHooks, normalizePiConfig, normalizeSyncConfig, normalizeThinkingLevel, repositorySource, reposRoot, resolvePath, saveBindings, saveConfig, slug, syncConfig, worktreeRoot,
+  chatsDir, loadBindings, loadConfig, newId, normalizeHookSets, normalizeHooks, normalizePiConfig, normalizeSyncConfig, normalizeThinkingLevel, repositorySource, reposRoot, resolvePath, saveBindings, saveConfig, slug, syncConfig, worktreeRoot, worktreeTarget,
 } from "./config.js";
 import { chatsListing, chatsState, projectState, sessionWorkspace, sessionsUsingWorkspaceAsync } from "./domain.js";
 import { cleanupCandidate, closeSession, restoreSession, findProjectByWorkspace, findProjectByWorkspaceAsync, returnSessionToMain } from "./lifecycle.js";
@@ -61,7 +61,7 @@ export function buildApi(sup, { extensionUi = null } = {}) {
     streamSSE, fs, execFile, path, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID,
     chatsDir, loadBindings, loadConfig, newId, normalizeHookSets, normalizeHooks, normalizePiConfig,
     normalizeSyncConfig, normalizeThinkingLevel, repositorySource, reposRoot, resolvePath,
-    saveBindings, saveConfig, slug, syncConfig, worktreeRoot,
+    saveBindings, saveConfig, slug, syncConfig, worktreeRoot, worktreeTarget,
     chatsListing, chatsState, projectState, sessionWorkspace, sessionsUsingWorkspaceAsync,
     cleanupCandidate, closeSession, restoreSession, findProjectByWorkspace, findProjectByWorkspaceAsync, returnSessionToMain,
     normalizeGitHubOwner, cloneRepository, DEFAULT_DIFF_TARGET, readFileTree, readFileView,

@@ -1,4 +1,6 @@
 import { piSyncState } from "../pi-sync.js";
+import { saveConfig } from "../config.js";
+import { listPiProjects, reconcile } from "../pi-projects.js";
 
 export function register(api, deps) {
   const { remote, loadBindings, loadConfig, reposRoot, chatsListing, projectState, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID, readLogs, logFileName, safe, repositorySourceState, settingsState, github, sup } = deps;
@@ -21,6 +23,8 @@ export function register(api, deps) {
 
   api.get("/state", async c => {
     const cfg = loadConfig();
+    // pi projects' project.json files decide which of their repositories are projects here.
+    if (!remote && reconcile(cfg)) saveConfig(cfg);
     loadBindings();
     const modelState = await safe(() => sup.modelState(), {
       models: [],
@@ -64,6 +68,8 @@ export function register(api, deps) {
       reposRoot: reposRoot(cfg),
       reposRootSource: process.env.PI_WEB_REPOS_ROOT ? "environment" : cfg.reposRoot ? "config" : "default",
       projects: remoteState ? remoteState.projects : projects,
+      // pi projects this server serves (none behind workspaced: each worker reports its own projects' groups).
+      piProjects: remoteState ? [] : listPiProjects().map(({ name, path, repos }) => ({ name, path, repos })),
       chats,
       endedChats: endedChats || [],
     });

@@ -1,6 +1,7 @@
 import { syncConfig } from "../config.js";
 import { remoteConversationPreview, remoteConversationsForRepository } from "../pi-sync.js";
 import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
+import { forgetRepo, piProject, pushState, recordRepo, repoEntry } from "../pi-projects.js";
 
 const IDLE_MS = 24 * 60 * 60 * 1000;
 
@@ -28,6 +29,9 @@ export function register(api, deps) {
     const body = await c.req.json();
     const cfg = loadConfig();
     const source = body.source || repositorySource(cfg);
+    // Adding a repository to a pi project clones it into that project's repos/.
+    const group = body.group ? piProject(String(body.group)) : null;
+    if (body.group && !group) return err(c, 404, "no_such_pi_project");
     let repoPath, sourceInfo, cloned;
     {
       try {
@@ -36,7 +40,7 @@ export function register(api, deps) {
           url: body.url,
           fullName: body.fullName,
           github,
-          root: reposRoot(cfg),
+          root: group ? path.join(group.path, "repos") : reposRoot(cfg),
           signal: c.req.raw?.signal,
         });
         repoPath = result.repoPath;
@@ -66,10 +70,18 @@ export function register(api, deps) {
       }
     }
     if (cfg.projects.some(p => p.repoPath === repoPath)) return err(c, 409, "project_exists");
-    const project = {
+    let project = {
       id: newId("p"), name: body.name || path.basename(repoPath), repoPath, source: sourceInfo,
       hooks: normalizeHooks(body.hooks),
     };
+    if (group) {
+      const url = sourceInfo?.type === "github" ? `https://github.com/${sourceInfo.fullName}.git` : sourceInfo?.url || body.url;
+      const branch = await ws.currentBranchAsync(repoPath).catch(() => null);
+      const repo = { name: path.basename(repoPath), url, ...(branch ? { branch } : {}) };
+      recordRepo(group.name, repo);
+      project = { ...repoEntry(group, repo), source: sourceInfo, hooks: project.hooks };
+      pushState(`${group.name}: add ${repo.name}`).catch(error => console.warn(`pi-projects: could not sync ${group.name}: ${error.message}`));
+    }
     cfg.projects.push(project);
     saveConfig(cfg);
     // First session runs in the repository checkout; Git state remains user-owned.
@@ -120,6 +132,10 @@ export function register(api, deps) {
     const latest = loadConfig();
     latest.projects = latest.projects.filter(p => p.id !== project.id);
     saveConfig(latest);
+    // A pi project's repository is also dropped from project.json, so other machines and workers drop it too.
+    if (project.group && forgetRepo(project.group, path.basename(project.repoPath))) {
+      pushState(`${project.group}: remove ${path.basename(project.repoPath)}`).catch(error => console.warn(`pi-projects: could not sync ${project.group}: ${error.message}`));
+    }
     return c.json({ ok: true, id: project.id, endedSessions: sessions.length });
   });
 

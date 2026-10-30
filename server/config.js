@@ -314,6 +314,11 @@ export function worktreeRoot(cfg) {
   return cfg.worktreeRoot || worktreeRootDefault();
 }
 
+/** Where a project's new worktrees go: its own folder for a pi project's repository, else <root>/<project id>. */
+export function worktreeTarget(cfg, project) {
+  return project.worktreeRoot ? { worktreeRoot: project.worktreeRoot, projectId: "" } : { worktreeRoot: worktreeRoot(cfg), projectId: project.id };
+}
+
 const closedPath = () => path.join(appHome(), "closed.json");
 export function loadClosed() {
   let raw;

@@ -1,6 +1,6 @@
 import path from "node:path";
 import {
-  chatsDir, githubConfig, loadBindings, loadConfig, newId, normalizeHookSets, normalizeHooks, normalizePiConfig, normalizeSyncConfig, normalizeThinkingLevel, repositorySource, reposRoot, resolvePath, saveBindings, saveConfig, sessionSlug, slug, syncConfig, syncSettingsState, worktreeRoot,
+  chatsDir, githubConfig, loadBindings, loadConfig, newId, normalizeHookSets, normalizeHooks, normalizePiConfig, normalizeSyncConfig, normalizeThinkingLevel, repositorySource, reposRoot, resolvePath, saveBindings, saveConfig, sessionSlug, slug, syncConfig, syncSettingsState, worktreeTarget,
 } from "../config.js";
 import { chatsState, projectState, sessionWorkspace, sessionsUsingWorkspace, sessionsUsingWorkspaceAsync } from "../domain.js";
 import { closeSession, findProjectByWorkspace, findProjectByWorkspaceAsync, returnSessionToMain } from "../lifecycle.js";
@@ -183,8 +183,7 @@ export async function ensureBranchContext(project, branch, baseBranch, { syncMai
   const cfg = loadConfig();
   const workspacePath = await ws.ensureWorkspaceAsync({
     repoPath: project.repoPath,
-    worktreeRoot: worktreeRoot(cfg),
-    projectId: project.id,
+    ...worktreeTarget(cfg, project),
     branch,
     fromRef: baseBranch,
     primaryBranch: mainBranch,

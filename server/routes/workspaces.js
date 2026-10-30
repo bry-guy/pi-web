@@ -1,6 +1,6 @@
 import { readHistory } from "../workspace-history.js";
 export function register(api, deps) {
-  const { path, loadBindings, loadConfig, saveBindings, slug, worktreeRoot, sessionWorkspace, sessionsUsingWorkspaceAsync, findProjectByWorkspace, findProjectByWorkspaceAsync, returnSessionToMain, hub, ws, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, suggestedWorktreeBranch, bindSessionToContext, bindRehomedSession, primaryBranch, guardedWorkspaceSessions, sup } = deps;
+  const { path, loadBindings, loadConfig, saveBindings, slug, worktreeTarget, sessionWorkspace, sessionsUsingWorkspaceAsync, findProjectByWorkspace, findProjectByWorkspaceAsync, returnSessionToMain, hub, ws, projectHooks, createOperationReporter, operationRequestId, assertRepositoryIdentity, err, withRepositoryAdmission, suggestedWorktreeBranch, bindSessionToContext, bindRehomedSession, primaryBranch, guardedWorkspaceSessions, sup } = deps;
 
 
   api.post("/sessions/:id/worktree", async c => {
@@ -54,7 +54,7 @@ export function register(api, deps) {
       };
       try {
         ({ branch: branchName, workspacePath: branchWorkspace } = await ws.forkWorkspaceAsync({
-          repoPath: project.repoPath, worktreeRoot: worktreeRoot(cfg), projectId: project.id,
+          repoPath: project.repoPath, ...worktreeTarget(cfg, project),
           parentWorkspace: cwd, parentBranch, existingBranches: localBranches, branch: branch || undefined,
           primaryBranch: mainBranch, beforeMutation: validateSource,
         }));
@@ -86,8 +86,8 @@ export function register(api, deps) {
     let target;
     try {
       target = await ws.ensureWorkspaceAsync({
-        repoPath: project.repoPath, worktreeRoot: worktreeRoot(cfg),
-        projectId: project.id, branch, fromRef: remoteSource || "HEAD", primaryBranch: mainBranch, beforeCreate: validateSource,
+        repoPath: project.repoPath, ...worktreeTarget(cfg, project),
+        branch, fromRef: remoteSource || "HEAD", primaryBranch: mainBranch, beforeCreate: validateSource,
       });
     } catch (e) {
       if (["checkout_branch", "main_worktree_forbidden", "session_streaming", "sessions_active", "repository_changed"].includes(e.code)) return err(c, 409, e.code);

@@ -6,6 +6,7 @@ import path from "node:path";
 import { chatsDir, loadBindings, loadClosed, loadConfig } from "./config.js";
 import * as ws from "./workspaces.js";
 import { publicHooks } from "./hooks.js";
+import { piProject, primaryOfGroup } from "./pi-projects.js";
 
 export async function sessionWorkspace(sessionId, sup) {
   const bindings = loadBindings();
@@ -53,7 +54,7 @@ function projectContexts(project, bindings, primaryBranch) {
   return projectContextsFromLive(project, bindings, ws.listContexts(project.repoPath, primaryBranch));
 }
 
-async function discoverProjectSessions(contexts, bindings, closed, sup, projectId = null) {
+async function discoverProjectSessions(contexts, bindings, closed, sup, projectId = null, extraPaths = []) {
   const workspacePaths = contexts.map(context => context.path);
   const discovered = new Map();
   const add = session => {
@@ -69,6 +70,11 @@ async function discoverProjectSessions(contexts, bindings, closed, sup, projectI
     try {
       for (const session of await sup.listSessions(context.path)) add(session);
     } catch { /* a context may disappear between Git discovery and session listing */ }
+  }
+  for (const extra of extraPaths) {
+    try {
+      for (const session of await sup.listSessions(extra)) add(session);
+    } catch { /* the folder may be gone */ }
   }
   for (const [id, binding] of Object.entries(bindings)) {
     const liveContext = binding?.workspacePath && workspacePaths.some(workspacePath => pathKey(workspacePath) === pathKey(binding.workspacePath));
@@ -119,7 +125,10 @@ export async function projectState(project, sup) {
   const worktrees = Object.fromEntries(contexts.filter(context => context.branch).map(context => [context.branch, context.path]));
 
   const closed = loadClosed();
-  const discovered = (await discoverProjectSessions(contexts, bindings, closed, sup, project.id))
+  // A pi project's own folder has no repository; its sessions show under the project's first repository.
+  const group = project.group ? piProject(project.group) : null;
+  const rootPaths = group && primaryOfGroup(cfg, project.group)?.id === project.id ? [group.path] : [];
+  const discovered = (await discoverProjectSessions(contexts, bindings, closed, sup, project.id, rootPaths))
     // Like chats: an unprompted, unnamed session nothing has open is hidden, not deleted.
     .map(s => s.closed || hasPrompt(s) || promptText(s.name) || sup.isStreaming(s.id) || sup.isOpen?.(s.id) ? s : { ...s, closed: true });
   const all = discovered.filter(s => !s.closed);
@@ -187,6 +196,8 @@ export async function projectState(project, sup) {
     id: project.id,
     name: project.name,
     repoPath: project.repoPath,
+    group: project.group || null,
+    groupPath: group?.path || null,
     source: project.source || { type: "local" },
     defaultBranch,
     branch: currentBranch,
