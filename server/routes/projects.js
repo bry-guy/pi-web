@@ -208,10 +208,13 @@ export function register(api, deps) {
           return err(c, 400, "bad_fork_record", { operation });
         }
       }
-      const existed = !!(await branchContextAsync(project, branch));
+      // A pi project's own sessions (no branch) open in the project folder; no checkout is touched.
+      const root = mode === "synced" && body.projectRoot && project.group ? piProject(project.group) : null;
+      const existed = root ? true : !!(await branchContextAsync(project, branch));
       let notice = null;
       let context;
-      try {
+      if (root) context = { id: null, branch: null, path: root.path, kind: "project" };
+      else try {
         context = await ensureBranchContext(project, branch, body.baseBranch || mainBranch, { syncMain: true, report: reporter.log, sup, except: sourceSessionId });
       } catch (error) {
         // A new session never moves a checkout others are working in: it starts where the checkout is.
@@ -247,7 +250,7 @@ export function register(api, deps) {
         }
         // No binding write: without a binding the session's workspace is its cwd (server/domain.js).
         hub.emit(sessionId, "session_created", { session: { id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch } });
-        const operation = reporter.finish({ httpStatus: 200, message: `Opened synchronized conversation on ${context.branch}.` });
+        const operation = reporter.finish({ httpStatus: 200, message: `Opened synchronized conversation on ${context.branch || "the project folder"}.` });
         return c.json({ id: sessionId, projectId: project.id, contextId: context.id, branch: context.branch, workspacePath: context.path, setup: null, setupNeeded, operation });
       }
       reporter.log({ type: "phase", phase: "create-session", message: `Creating the Pi session in ${context.path}.` });

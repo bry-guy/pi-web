@@ -101,3 +101,20 @@ test("web creates a named pi project when PI_PROJECTS_DIR is set", async () => {
   assert.ok(state.piProjects.some(p => p.name === "fresh"));
   assert.equal((await fixture.post("/api/projects", { project: "fresh" })).status, 409);
 });
+
+test("a repository being cloned is not served until its clone is complete", async () => {
+  const { reconcile } = await import("../server/pi-projects.js");
+  const source = fixture.makeRepo("clone-me");
+  const dir = path.join(projectsDir, "cl");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "project.json"), JSON.stringify({ id: "x", name: "cl", state: "active", repos: [{ name: "clone-me", url: source }] }));
+  const cfg = { projects: [] };
+  reconcile(cfg, { env: { PI_PROJECTS_DIR: projectsDir } });
+  const dest = path.join(dir, "repos", "clone-me");
+  assert.equal(fs.existsSync(dest), false, "nothing at the destination while cloning");
+  for (let i = 0; i < 100 && !fs.existsSync(dest); i++) await new Promise(r => setTimeout(r, 100));
+  assert.ok(fs.existsSync(path.join(dest, ".git")));
+  assert.equal(fs.existsSync(`${dest}.cloning`), false);
+  reconcile(cfg, { env: { PI_PROJECTS_DIR: projectsDir } });
+  assert.ok(cfg.projects.some(p => p.name === "clone-me" && p.group === "cl"));
+});

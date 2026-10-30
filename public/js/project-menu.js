@@ -188,7 +188,9 @@ class PiProjectMenu extends HTMLElement {
         const ready = await this.ensureOnWeb(group, { needRepo: true });
         const repo = ready.members.find(m => m.id === t.dataset.pid) || ready.members[0];
         const primary = repo.defaultBranch || repo.primaryBranch || "main";
-        const result = await api.newProjectSession(repo.id, { mode: "synced", syncSessionId: t.dataset.syncId, branch: t.dataset.branch || primary, baseBranch: primary });
+        // No branch: the conversation lives in the project folder, not in a repository.
+        const where = t.dataset.branch ? { branch: t.dataset.branch, baseBranch: primary } : { projectRoot: true };
+        const result = await api.newProjectSession(repo.id, { mode: "synced", syncSessionId: t.dataset.syncId, ...where });
         this.close();
         store.state.openTree[`group:${group.name}`] = true;
         await refreshState().catch(() => undefined);

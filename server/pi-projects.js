@@ -103,8 +103,14 @@ function cloneInBackground(repo, dest) {
   if (cloning.has(dest)) return;
   cloning.add(dest);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const args = ["clone", ...(repo.branch ? ["--branch", repo.branch] : []), repo.url, dest];
-  execFile("git", args, { timeout: 15 * 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }, () => cloning.delete(dest));
+  // Clone beside the destination and move it in when done, so a half-cloned repository never looks cloned.
+  const tmp = `${dest}.cloning`;
+  fs.rmSync(tmp, { recursive: true, force: true });
+  const args = ["clone", ...(repo.branch ? ["--branch", repo.branch] : []), repo.url, tmp];
+  execFile("git", args, { timeout: 15 * 60_000, env: { ...gitCredentialEnvironment(), GIT_TERMINAL_PROMPT: "0" } }, error => {
+    try { if (!error && !fs.existsSync(dest)) fs.renameSync(tmp, dest); else fs.rmSync(tmp, { recursive: true, force: true }); }
+    finally { cloning.delete(dest); }
+  });
 }
 
 // GitHub HTTPS remotes authenticate through web's credential helper (the login web shares with workers).
