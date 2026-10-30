@@ -75,6 +75,8 @@ export function register(api, deps) {
     }
   });
 
+  api.post("/sessions/:id/queue/clear", async c => c.json(await sup.clearQueue(c.req.param("id"))));
+
   api.post("/sessions/:id/stop", async c => {
     const id = c.req.param("id");
     await sup.stop(id);
@@ -89,7 +91,7 @@ export function register(api, deps) {
     const records = await sup.transcript(id);
     // Emitted after `seq`, so the reloading client applies it once the transcript loads.
     extensionUi?.replayPending(id);
-    return c.json({ sessionId: id, seq, streaming: sup.isStreaming(id), compacting: sup.isCompacting(id), records });
+    return c.json({ sessionId: id, seq, streaming: sup.isStreaming(id), compacting: sup.isCompacting(id), queue: sup.queue(id), records });
   });
 
   api.get("/sessions/:id/meta", async c => {

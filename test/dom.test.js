@@ -1479,6 +1479,18 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     assert.equal(litDots.size, 6, "every spinner dot lights in some frame");
     assert.equal(thread.querySelector(".turn-done-row"), null, "a running turn has no finished row");
 
+    applyEvent({ v: 1, seq: 0.4, sessionId: "s1", type: "queue_update", steering: ["use the other file"], followUp: ["then run lint"] });
+    assert.deepEqual([...thread.querySelectorAll(".queued-msg .bubble")].map(el => el.textContent), ["use the other file", "then run lint"], "queued texts show while the turn runs");
+    assert.match(thread.querySelector(".queued-msg .queued-label").textContent, /Queued steering/i);
+    const realFetch = globalThis.fetch;
+    let cleared = null;
+    globalThis.fetch = async url => { cleared = String(url); return { ok: true, status: 200, json: async () => ({ steering: [], followUp: [] }) }; };
+    thread.querySelector("[data-act='clear-queue']").click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    globalThis.fetch = realFetch;
+    assert.equal(cleared, "/api/sessions/s1/queue/clear");
+    applyEvent({ v: 1, seq: 0.6, sessionId: "s1", type: "queue_update", steering: [], followUp: [] });
+    assert.equal(thread.querySelector(".queued-msg"), null, "an empty queue shows nothing");
     applyEvent({ v: 1, seq: 1, sessionId: "s1", type: "extension_ui_working", message: "Summarizing the test run" });
     assert.equal(thread.querySelector(".busy-text").textContent, "Summarizing the test run", "the extension's live line wins");
 

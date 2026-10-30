@@ -16,7 +16,7 @@ test("pi SDK exposes the surface the real supervisor uses", async () => {
     assert.equal(typeof smProto[m], "function", `SessionManager.${m}`);
   }
   const proto = sdk.AgentSession.prototype;
-  for (const m of ["prompt", "steer", "followUp", "abort", "subscribe", "setModel", "setSessionName", "dispose", "navigateTree", "bindExtensions", "getToolDefinition"]) {
+  for (const m of ["prompt", "steer", "followUp", "abort", "subscribe", "setModel", "setSessionName", "dispose", "navigateTree", "bindExtensions", "getToolDefinition", "clearQueue", "getSteeringMessages", "getFollowUpMessages"]) {
     assert.equal(typeof proto[m], "function", `AgentSession.${m}`);
   }
   for (const g of ["sessionId", "sessionFile", "messages", "isStreaming", "isIdle", "sessionName", "model", "modelRuntime"]) {

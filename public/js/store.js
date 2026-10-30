@@ -141,7 +141,7 @@ export const store = {
     reposRoot: null,     // configured directory scanned by /api/repos
     reposRootSource: "default", // default | config | environment
     files: [],
-    queued: {},              // sessionId -> follow-up count (queue_update)
+    queued: {},              // sessionId -> { steering: [text], followUp: [text] } (queue_update)
     unread: unreadFromStorage(), // sessionId -> completed reply not yet read
     transcripts: {},         // sessionId -> { records, streaming, seq }
   },

@@ -98,6 +98,7 @@ export const api = {
     method: "POST", headers: JH, body: JSON.stringify({ text, mode, images, ...(clientMessageId ? { clientMessageId } : {}) }),
   }).then(j),
   stop: (id) => fetch(`/api/sessions/${id}/stop`, { method: "POST" }).then(j),
+  clearQueue: (id) => fetch(`/api/sessions/${id}/queue/clear`, { method: "POST" }).then(j),
   bang: (id, cmd) => fetch(`/api/sessions/${id}/bang`, { method: "POST", headers: JH, body: JSON.stringify({ cmd }) }).then(j),
   setModel: (id, model) => fetch(`/api/sessions/${id}/model`, { method: "POST", headers: JH, body: JSON.stringify({ model }) }).then(j),
   context: id => fetch(`/api/sessions/${encodeURIComponent(id)}/context`).then(j),
@@ -263,6 +264,7 @@ export async function openTranscript(id, { scrollToLatest = true, operation = nu
       seq: snap.seq ?? -1,
       scrollToLatest,
     };
+    setQueued(id, snap.queue);
     const snapshotSeq = snap.seq ?? -1;
     for (const evt of buffers.get(id) || []) {
       if (evt.seq > snapshotSeq) applyEvent(evt, true);
@@ -499,6 +501,14 @@ function applyUiEvent(evt) {
   return false;
 }
 
+/** Queued steering and follow-up texts; an older worker sends counts only, which show nothing. */
+function setQueued(sessionId, queue) {
+  const list = value => Array.isArray(value) ? value.map(String) : [];
+  const steering = list(queue?.steering), followUp = list(queue?.followUp);
+  if (steering.length || followUp.length) store.state.queued[sessionId] = { steering, followUp };
+  else delete store.state.queued[sessionId];
+}
+
 function applyTranscriptEvent(evt, t, replay) {
   const recs = t.records;
   switch (evt.type) {
@@ -522,7 +532,7 @@ function applyTranscriptEvent(evt, t, replay) {
       t.streaming = true;
       break;
     case "queue_update":
-      store.state.queued[evt.sessionId] = evt.followUp || 0;
+      setQueued(evt.sessionId, evt);
       break;
     case "message_start":
       if (!byId(recs, evt.messageId)) recs.push({ id: evt.messageId, role: "assistant", text: "", streaming: true, at: Date.now() });
