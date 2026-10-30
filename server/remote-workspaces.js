@@ -521,7 +521,11 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   }
 
   // Other devices' conversations of a pi project, straight from pi-sync, so the menu needs no worker.
-  const projectSynced = name => remoteConversationsForProject(name, id => owners.session.has(id));
+  // Only this project's own worker counts as "here": a copy another worker once opened still belongs in this list.
+  const projectSynced = async name => {
+    const worker = await projectWorker(name).catch(() => null);
+    return remoteConversationsForProject(name, id => !!worker && owners.session.get(id) === worker);
+  };
   const syncedPreview = id => remoteConversationPreview(id);
 
   return {
