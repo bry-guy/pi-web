@@ -1420,6 +1420,7 @@ aside.files { background: var(--rail-bg); box-shadow: inset 1px 0 0 var(--hairli
 .panel-row-text { display: grid; flex: 1; min-width: 0; gap: 2px; }
 .panel-row-text strong { font-size: var(--text-md); font-weight: 500; }
 .panel-row-text small { color: var(--muted); font-size: var(--text-sm); line-height: 1.4; }
+.panel-row-text small.checkout-desynced { color: var(--orange); }
 .panel-row .btn { flex: 0 0 auto; min-width: 84px; }
 .session-switch .branch-list { display: grid; gap: var(--space-1); }
 .session-switch .branch-option { padding: var(--space-3); border-radius: var(--radius-md); }

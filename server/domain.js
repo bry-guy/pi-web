@@ -2,6 +2,7 @@
 // A context is a concrete checkout/worktree path. Branch and dirty state are
 // observations of that path, never authoritative session metadata.
 import fs from "node:fs";
+import { execFile } from "node:child_process";
 import path from "node:path";
 import { chatsDir, loadBindings, loadClosed, loadConfig } from "./config.js";
 import * as ws from "./workspaces.js";
@@ -107,6 +108,30 @@ async function sessionsForContexts(project, workspacePath, sup, bindings, contex
     }));
 }
 
+/**
+ * A pi project repository's desynced or not-synced checkouts, as pi-sync last found them (its git config cache:
+ * pi-checkouts.<project id>/<key>.desynced|stopped). Local only: no network.
+ */
+export function checkoutSync(repoPath) {
+  return new Promise(resolve => {
+    execFile("git", ["config", "--local", "--get-regexp", "^pi-checkouts\\."], { cwd: repoPath, timeout: 5000 }, (error, stdout) => {
+      const byKey = new Map();
+      for (const line of error ? [] : String(stdout).split("\n").filter(Boolean)) {
+        const space = line.indexOf(" ");
+        const name = line.slice(0, space);
+        const sub = name.slice(name.indexOf(".") + 1, name.lastIndexOf("."));
+        const key = sub.slice(sub.indexOf("/") + 1);
+        const field = name.slice(name.lastIndexOf(".") + 1);
+        const item = byKey.get(key) || { key, where: key === "repo" ? "main checkout" : key.replace(/^wt\//, ""), message: null, stopped: false };
+        if (field === "desynced") item.message = line.slice(space + 1);
+        if (field === "stopped") item.stopped = line.slice(space + 1) === "true";
+        byKey.set(key, item);
+      }
+      resolve([...byKey.values()].filter(item => item.message || item.stopped));
+    });
+  });
+}
+
 export async function projectState(project, sup) {
   const cfg = loadConfig();
   const bindings = loadBindings();
@@ -157,6 +182,7 @@ export async function projectState(project, sup) {
     updated: updatedAt ? rel(updatedAt) : "—",
     updatedAt,
     hooks: publicHooks(cfg, project),
+    ...(project.group ? { checkoutSync: await checkoutSync(project.repoPath) } : {}),
   };
 }
 

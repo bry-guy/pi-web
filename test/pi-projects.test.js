@@ -56,6 +56,7 @@ test("a pi project's repositories become projects grouped under it, its folder s
   assert.deepEqual(third.projects.find(p => p.id === "pp-eco-code").sessions, []);
   const node = third.projects.find(p => p.id === "pp-eco").sessions.find(s => s.id === inRepo.id);
   assert.equal(node.repoId, "pp-eco-code", "it still knows the repository it ran in");
+  assert.deepEqual(third.projects.find(p => p.id === "pp-eco-code").checkoutSync, [], "pi-sync's checkout state is listed per repository");
   assert.equal(node.contextId, "folder");
 
   // Removing the repository drops it from project.json too.

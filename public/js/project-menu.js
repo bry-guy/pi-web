@@ -246,6 +246,11 @@ class PiProjectMenu extends HTMLElement {
     const repoRows = group.members.map(m => {
       const worktrees = (m.contexts || []).filter(c => c.kind === "worktree" && c.branch).map(c => c.branch);
       const hint = [m.branch || m.defaultBranch, worktrees.length ? `worktrees: ${worktrees.join(", ")}` : "no worktrees"].filter(Boolean).join(" · ");
+      // pi-sync's checkout sync: desynced ones wait for /sync code in a session here.
+      const sync = (m.checkoutSync || []).map(item => item.message
+        ? `<small class="checkout-desynced" title="${esc(item.message)}">⚠ ${esc(item.where)} desynced: run /sync code in a session to choose</small>`
+        : `<small>${esc(item.where)}: not synced on this machine</small>`).join("");
+      if (sync) return row(m.name, hint, `<button class="btn btn-caution" data-act="remove-repo" data-id="${esc(m.id)}" ${busy ? "disabled" : ""}>Remove</button>`).replace("</small></div>", `</small>${sync}</div>`);
       return row(m.name, hint, `<button class="btn btn-caution" data-act="remove-repo" data-id="${esc(m.id)}" ${busy ? "disabled" : ""}>Remove</button>`);
     }).join("");
     const repos = `<section><div class="session-context-heading session-history-heading"><span>Repositories</span><span>${group.members.length}</span></div>
