@@ -54,6 +54,9 @@ test("a pi project's repositories become projects grouped under it, its folder s
   const third = await fixture.state();
   assert.deepEqual(third.projects.find(p => p.id === "pp-eco").sessions.map(s => s.id).sort(), [root.id, inRepo.id].sort());
   assert.deepEqual(third.projects.find(p => p.id === "pp-eco-code").sessions, []);
+  const node = third.projects.find(p => p.id === "pp-eco").sessions.find(s => s.id === inRepo.id);
+  assert.equal(node.repoId, "pp-eco-code", "it still knows the repository it ran in");
+  assert.equal(node.contextId, "folder");
 
   // Removing the repository drops it from project.json too.
   const removed = await fixture.remove("/api/projects/pp-eco-code");

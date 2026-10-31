@@ -592,6 +592,12 @@ class PiHeader extends HTMLElement {
     const p = store.project();
     const node = store.findSession(store.state.sessionId);
     if (!p) return null;
+    // A project-folder session that ran in a repository: that repository's live context (branch, commit, status).
+    if (p.kind === "folder" && node?.repoId) {
+      const repo = store.state.projects.find(item => item.id === node.repoId);
+      const live = repo?.contexts?.find(context => context.path === node.workspacePath);
+      if (live) return { ...live, repoName: repo.name };
+    }
     return p.contexts?.find(context => context.id === node?.contextId)
       || p.contexts?.find(context => context.path === node?.workspacePath)
       || p.contexts?.find(context => context.kind === "checkout")
@@ -606,7 +612,8 @@ class PiHeader extends HTMLElement {
   contextLabel(context) {
     if (context?.kind === "unavailable") return "Unavailable context";
     if (context?.kind === "folder") return "project folder";
-    return context?.branch || "detached HEAD";
+    const branch = context?.branch || "detached HEAD";
+    return context?.repoName ? `${context.repoName} · ${branch}` : branch;
   }
 
   render() {
