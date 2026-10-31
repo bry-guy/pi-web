@@ -35,3 +35,12 @@ test("thinking, timestamps, and pi-summarize entries map into the message model"
   assert.deepEqual(records.filter(r => r.role === "summary").map(r => r.id), ["s1"], "title entries are not step summaries");
   assert.deepEqual(records.find(r => r.role === "summary"), { id: "s1", role: "summary", text: "Read a.js", at: Date.parse("2026-01-01T00:00:05.000Z"), toolCallIds: ["tc1"] });
 });
+
+test("errored assistant messages stay visible after the transcript reloads", () => {
+  const records = entriesToRecords([
+    { type: "message", id: "u1", parentId: null, message: { role: "user", content: "hi" } },
+    { type: "message", id: "a1", parentId: "u1", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "Request blocked." } },
+    { type: "message", id: "a2", parentId: "a1", message: { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Operation aborted" } },
+  ]);
+  assert.deepEqual(records.filter(r => r.role === "error").map(r => r.text), ["Request blocked."]);
+});

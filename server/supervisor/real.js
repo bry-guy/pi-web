@@ -1580,6 +1580,7 @@ export function entriesToRecords(entries) {
           tools.set(c.id, record);
         }
       }
+      if (message.stopReason === "error") records.push({ id: `error:${entry.id}`, role: "error", text: turnErrorMessage(message), at });
       continue;
     }
     if (message.role === "toolResult" || message.role === "tool_result" || message.role === "tool") {
