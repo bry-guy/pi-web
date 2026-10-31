@@ -387,10 +387,10 @@ class PiThread extends HTMLElement {
   renderQueue(sessionId) {
     const queue = store.state.queued[sessionId];
     if (!queue) return "";
-    const bubble = (text, label) => `<div class="msg queued-msg"><div class="msg-user-row"><div class="user-message-content"><div class="queued-label"><span class="queued-tag">Queued</span> ${label}</div><div class="bubble"><div>${esc(text)}</div></div></div></div></div>`;
-    return queue.steering.map(text => bubble(text, "steering · sent at the next step")).join("")
-      + queue.followUp.map(text => bubble(text, "follow-up · sent after this turn")).join("")
-      + `<div class="msg queued-actions"><button type="button" class="queued-cancel" data-act="clear-queue">Clear queue</button></div>`;
+    const bubble = text => `<div class="msg queued-msg"><div class="msg-user-row"><div class="user-message-content"><div class="bubble"><div>${esc(text)}</div></div></div></div></div>`;
+    const count = queue.steering.length + queue.followUp.length;
+    return [...queue.steering, ...queue.followUp].map(bubble).join("")
+      + `<div class="msg queued-actions"><button type="button" class="turn-done-row" data-act="clear-queue">${count} queued · Clear queue<span aria-hidden="true">›</span></button></div>`;
   }
 
   /** The live line while a turn runs: pi-summarize's working message, else pi's default "Working…". */

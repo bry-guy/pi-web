@@ -1481,7 +1481,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
 
     applyEvent({ v: 1, seq: 0.4, sessionId: "s1", type: "queue_update", steering: ["use the other file"], followUp: ["then run lint"] });
     assert.deepEqual([...thread.querySelectorAll(".queued-msg .bubble")].map(el => el.textContent), ["use the other file", "then run lint"], "queued texts show while the turn runs");
-    assert.match(thread.querySelector(".queued-msg .queued-label").textContent, /Queued steering/i);
+    assert.match(thread.querySelector("[data-act='clear-queue']").textContent, /2 queued · Clear queue/);
     const realFetch = globalThis.fetch;
     let cleared = null;
     globalThis.fetch = async url => { cleared = String(url); return { ok: true, status: 200, json: async () => ({ steering: [], followUp: [] }) }; };
