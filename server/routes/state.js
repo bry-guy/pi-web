@@ -1,4 +1,5 @@
 import { piSyncState } from "../pi-sync.js";
+import { STARTED_AT } from "../version.js";
 import { saveConfig } from "../config.js";
 import { listPiProjects, piProjectsDir, reconcile } from "../pi-projects.js";
 
@@ -54,6 +55,7 @@ export function register(api, deps) {
     return c.json({
       apiContractVersion: API_CONTRACT_VERSION,
       buildId: BUILD_ID,
+      startedAt: STARTED_AT,
       capabilities: API_CAPABILITIES,
       mode: process.env.PI_WEB_MODE || "real",
       defaultModel: modelState.configuredDefault,

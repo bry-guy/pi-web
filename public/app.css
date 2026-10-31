@@ -249,7 +249,8 @@ aside.rail {
   width: 24px; height: 24px; border-radius: 50%; background: var(--surface-3);
   display: grid; place-items: center; font-size: 11px; font-weight: 600; color: var(--muted);
 }
-.rail-user { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-build { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 11px; line-height: 1.3; color: var(--faint); }
+.rail-build > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* mini rail */
 aside.mini {
@@ -1181,6 +1182,8 @@ aside.mini { background: var(--rail-bg); box-shadow: inset -1px 0 0 var(--hairli
 .row.active { background: var(--surface-3); opacity: 1; }
 .row .when, .row .count { font-size: 11px; }
 .rail-foot { background: transparent; margin: 6px 8px 8px; padding: 8px 10px; }
+.rail-foot-icon .icon { width: 18px; height: 18px; }
+@media (max-width: 760px) { .rail-foot-icon { width: 44px; height: 44px; } }
 .rail-foot:hover { background: var(--surface-2); }
 .avatar { width: 28px; height: 28px; font-size: 16px; }
 .mini-btn { border-radius: var(--radius-md); background: transparent; }

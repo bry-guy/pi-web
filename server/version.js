@@ -16,3 +16,5 @@ export const API_CAPABILITIES = Object.freeze([
   "pi-sync",
 ]);
 export const BUILD_ID = process.env.PI_WEB_BUILD_ID || "development";
+/** When this server started: a deploy restarts it, so this is when the running build went live. */
+export const STARTED_AT = new Date().toISOString();

@@ -178,6 +178,7 @@ function applyState(s) {
     chats: s.chats,
     endedChats: s.endedChats || [],
     buildId: s.buildId || null,
+    startedAt: s.startedAt || null,
     reconnecting: false,
     defaultModel: s.defaultModel || null,
     defaultThinkingLevel: s.defaultThinkingLevel || "medium",

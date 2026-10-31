@@ -20,7 +20,7 @@ function savedActiveSession() {
 }
 export const icon = name => {
   const paths = {
-    settings: '<path d="M9.7 1.5h.6l.7 1.9 1.5.9 2-.5.4.4.3.5-.9 1.8.1 1.7 1.5 1.4-.2.6-.2.5-2 .1-1.2 1.2-.1 2-.5.2-.6.2-1.4-1.5-1.7-.1-1.8.9-.5-.3-.4-.4.5-2-1-1.5-1.8-.7v-.6-.6l1.8-.7 1-1.5-.5-2 .5-.4.4-.3 1.8.9 1.7-.1 1.4-1.5Z"/><circle cx="10" cy="10" r="2.2"/>',
+    settings: '<g transform="scale(.8333)" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></g>',
     chevronLeft: '<path d="m12.5 4-6 6 6 6"/>',
     copy: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M13 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/>',
     // Three stacked sheets: the copy glyph with one more sheet behind it, for "copy the whole turn".
@@ -36,6 +36,13 @@ export const icon = name => {
   };
   return `<svg class="icon" viewBox="0 0 20 20" aria-hidden="true" focusable="false">${paths[name] || ""}</svg>`;
 };
+
+/** The running build's deploy time, e.g. "Oct 30, 23:52". */
+function deployedAt(iso) {
+  const date = iso ? new Date(iso) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+}
 
 export function openSessionPicker(projectId, { mode = "switch", sourceSessionId = null, branch = null, name = null } = {}) {
   const project = store.state.projects.find(p => p.id === projectId);
@@ -485,12 +492,15 @@ class PiSidebar extends HTMLElement {
           <div class="chats-list"></div>
         </div>
         <button class="rail-foot" data-act="settings" title="Settings" aria-label="Settings">
-          <span class="avatar" aria-hidden="true">π</span><span class="rail-user">pi-web</span>
+          <span class="avatar" aria-hidden="true">π</span><span class="rail-build"><span class="rail-build-sha"></span><span class="rail-build-at"></span></span>
           <span class="rail-foot-icon" aria-hidden="true">${icon("settings")}</span>
         </button>
       </aside>`);
     }
     if (layout === "rail") {
+      const sha = this.querySelector(".rail-build-sha"), at = this.querySelector(".rail-build-at");
+      if (sha) sha.textContent = s.buildId ? s.buildId.slice(0, 7) : "";
+      if (at) at.textContent = deployedAt(s.startedAt);
       const inp = this.querySelector(".rail-search");
       if (inp && inp.value !== s.query && document.activeElement !== inp) inp.value = s.query;
       this.renderResults();
