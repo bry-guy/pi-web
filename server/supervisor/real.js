@@ -1573,6 +1573,8 @@ export function entriesToRecords(entries) {
       const at = entryTime(entry);
       const toolIds = content.filter(c => c?.type === "toolCall").map(c => c.id);
       if (text || thinking) records.push({ id: assistantRecordId(entry.parentId), role: "assistant", text, ...(thinking ? { thinking } : {}), toolIds, at });
+      // A reply the provider refused or that failed keeps its reason in the file; show it, not an empty turn.
+      if (message.stopReason === "error" && message.errorMessage) records.push({ id: `error:${entry.id}`, role: "error", text: turnErrorMessage(message.errorMessage), at });
       for (const c of content) {
         if (c?.type === "toolCall") {
           const record = { id: c.id, role: "tool", tool: c.name, arg: summarizeArgs(c.name, c.arguments || c.args), meta: "", out: "", at };
