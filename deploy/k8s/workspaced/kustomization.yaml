@@ -13,7 +13,7 @@ configMapGenerator:
       - grants.json
 images:
   - name: ghcr.io/bry-guy/pi-ez-web
-    digest: sha256:a9b33608ffc9ae5e76adfe6d0d633e86134cc9fa17a57502e4dae2f805c219ac
+    digest: sha256:998a27b73054294c737c86672b5977447cc2623dc2befefa43e3d24aa3e595b1
 # Workers run the same image as this gateway: copy the images-pinned reference.
 replacements:
   - source:
