@@ -46,7 +46,8 @@ export function register(api, deps) {
     // With workers, every project and chat lives in one; web lists only what they report.
     const projects = [];
     if (!remoteState) for (const p of cfg.projects) {
-      try { projects.push(await projectState(p, sup)); }
+      // A pi project's sessions all list under its folder entry (below), never under one of its repositories.
+      try { projects.push(p.group ? { ...await projectState(p, sup), sessions: [], ended: [] } : await projectState(p, sup)); }
       catch (e) { projects.push({ id: p.id, name: p.name, repoPath: p.repoPath, defaultBranch: await ws.defaultBranchAsync(p.repoPath), error: String(e.message || e), branches: [], sessions: [], contexts: [], worktrees: {}, workspaceStatus: {} }); }
     }
     // Each pi project's own folder is listed like a repository, so its sessions need no repository.

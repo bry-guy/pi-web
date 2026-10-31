@@ -212,17 +212,36 @@ function sessionTree(found, closed, sup, pathToContext = {}) {
 /** Web's id for a pi project's own folder (no repository). */
 export function folderId(name) { return `pp-${name}`; }
 
+const inside = (dir, root) => pathKey(dir) === pathKey(root) || pathKey(dir).startsWith(pathKey(root) + path.sep);
+
 /**
- * A pi project's own folder as a project entry in /api/state, so its sessions list, open and route like
- * a repository's. It is never in config.projects and has no Git: the folder sits in pi-projects' state repo.
+ * A pi project's own folder as a project entry in /api/state. Every session of the project lists here: those
+ * started at the folder and those that ran in one of its repositories or worktrees. Repositories own none.
+ * It is never in config.projects and has no Git: the folder sits in pi-projects' state repo.
  */
 export async function folderState(group, sup) {
   const closed = loadClosed();
-  let found = [];
-  try { found = (await sup.listSessions(group.path)).filter(s => pathKey(s.cwd) === pathKey(group.path)).map(s => ({ ...s, closed: closed.has(s.id) })); }
-  catch { /* the folder may be new */ }
+  const bindings = loadBindings();
+  // pi lists sessions per cwd: the folder, each repository's checkouts and worktrees, and any bound workspace in it.
+  const cwds = new Set([group.path]);
+  for (const repo of loadConfig().projects.filter(p => p.group === group.name)) {
+    cwds.add(repo.repoPath);
+    try { for (const context of await ws.listContextsAsync(repo.repoPath)) if (context.path) cwds.add(context.path); }
+    catch { /* still cloning */ }
+  }
+  for (const binding of Object.values(bindings)) if (binding?.workspacePath && inside(binding.workspacePath, group.path)) cwds.add(binding.workspacePath);
+  const byId = new Map();
+  for (const cwd of cwds) {
+    try {
+      for (const s of await sup.listSessions(cwd)) {
+        const at = bindings[s.id]?.workspacePath || s.cwd;
+        if (!byId.has(s.id) && at && inside(at, group.path)) byId.set(s.id, { ...s, cwd: at, closed: closed.has(s.id) });
+      }
+    } catch { /* the folder may be new, a worktree may be gone */ }
+  }
+  const found = [...byId.values()];
   const context = { id: "folder", kind: "folder", branch: null, path: group.path };
-  const { sessions, ended, updatedAt } = sessionTree(found, closed, sup, { [pathKey(group.path)]: context });
+  const { sessions, ended, updatedAt } = sessionTree(found, closed, sup, Object.fromEntries(found.map(s => [pathKey(s.cwd), context])));
   return {
     id: folderId(group.name),
     name: group.name,
