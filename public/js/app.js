@@ -6,6 +6,8 @@ import { installHints } from "./hints.js";
 
 
 /* ---------------- app root ---------------- */
+// Keep in sync with the matching @media rule in app.css.
+const LANDSCAPE_PHONE = "(orientation: landscape) and (max-height: 500px)";
 class PiApp extends HTMLElement {
   connectedCallback() {
     // Esc closes the topmost modal: a confirmation (unless it is mid-request), then the
@@ -86,6 +88,20 @@ class PiApp extends HTMLElement {
         else location.reload();
       }
     });
+    // Phone in landscape: tapping the transcript hides the header, sidebar and composer for reading,
+    // like a PDF reader; another tap brings them back. Taps on links, buttons, code or a selection don't count.
+    this.addEventListener("click", e => {
+      const shell = this.querySelector(".shell");
+      const reading = e.target.closest?.("[data-screen='chat'] .scrollable");
+      const interactive = e.target.closest?.("a, button, input, textarea, select, summary, label, pre, [data-act], [role='button'], [tabindex]");
+      if (!reading || interactive || !matchMedia(LANDSCAPE_PHONE).matches || String(getSelection?.() || "")) return;
+      // The first tap out of a focused composer only dismisses the keyboard.
+      if (document.activeElement?.matches?.("pi-composer textarea")) return;
+      shell.classList.toggle("immersive");
+    });
+    this.landscapeQuery = matchMedia(LANDSCAPE_PHONE);
+    this.onOrientation = () => this.querySelector(".shell")?.classList.remove("immersive");
+    this.landscapeQuery.addEventListener?.("change", this.onOrientation);
     this.addEventListener("toggle-files", () => {
       const open = !store.state.filesOpen;
       const key = this.filesKey();
@@ -114,6 +130,7 @@ class PiApp extends HTMLElement {
     document.removeEventListener("keydown", this.onModalEscape);
     clearInterval(this.gitRefreshTimer);
     window.removeEventListener("resize", this.onResize);
+    this.landscapeQuery?.removeEventListener?.("change", this.onOrientation);
     document.body?.classList.remove("modal-open");
   }
 
