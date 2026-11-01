@@ -108,16 +108,22 @@ class PiThread extends HTMLElement {
     this.onTouch = e => { this.touching = e.type === "touchstart"; };
     this.onScroll = () => {
       const scroller = this.scroller;
-      if (!scroller) return;
+      if (!scroller || this.keepPlace()) return;
       const top = scroller.scrollTop;
       if (top < (this.lastTop ?? top) - 1) this.follow = false;
       else if (scroller.scrollHeight - top - scroller.clientHeight < 24) this.follow = true;
       this.lastTop = top;
       if (this.inSteps) return;
-      if (!this.scrollSaveFrame) this.scrollSaveFrame = requestAnimationFrame(() => { this.scrollSaveFrame = 0; this.saveScroll(); });
+      if (!this.scrollSaveFrame) this.scrollSaveFrame = requestAnimationFrame(() => {
+        this.scrollSaveFrame = 0;
+        if (this.keepPlace() || !this.renderedKey) return;
+        this.place = { key: this.renderedKey, ...this.scrollAnchor() };
+        this.saveScroll();
+      });
       if (scroller.scrollTop > 360) return;
       this.loadEarlier();
     };
+    this.resizeObserver = globalThis.ResizeObserver ? new ResizeObserver(() => this.keepPlace()) : null;
     this.bindScroller();
     this.onPopState = () => this.syncSteps();
     window.addEventListener("popstate", this.onPopState);
@@ -139,6 +145,7 @@ class PiThread extends HTMLElement {
   disconnectedCallback() {
     this.unsub?.();
     window.removeEventListener("popstate", this.onPopState);
+    this.resizeObserver?.disconnect();
     for (const type of ["scroll", "touchstart", "touchend", "touchcancel"]) this.scroller?.removeEventListener(type, type === "scroll" ? this.onScroll : this.onTouch);
   }
 
@@ -149,7 +156,25 @@ class PiThread extends HTMLElement {
       this.scroller?.removeEventListener(type, fn);
       scroller?.addEventListener(type, fn, { passive: true });
     }
+    this.resizeObserver?.disconnect();
+    if (scroller) this.resizeObserver?.observe(scroller);
     this.scroller = scroller;
+  }
+
+  /** Rotating the phone or collapsing the sidebar reflows the transcript; keep the reader where they were. True when it moved them. */
+  keepPlace() {
+    const scroller = this.scroller;
+    const width = scroller?.clientWidth;
+    if (!scroller || width === this.placeWidth) return false;
+    const measured = this.placeWidth !== undefined;
+    this.placeWidth = width;
+    const place = this.place;
+    if (!measured || !width || this.inSteps || place?.key !== this.renderedKey) return false;
+    if (!place.bottom) return this.restoreScroll(place);
+    scroller.scrollTop = scroller.scrollHeight;
+    this.lastTop = scroller.scrollTop;
+    this.follow = true;
+    return true;
   }
 
   async onClick(e) {

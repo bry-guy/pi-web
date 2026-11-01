@@ -110,7 +110,7 @@
 pi-app, pi-sidebar, pi-header, pi-thread, pi-composer, pi-files,
 pi-projects, pi-settings, pi-repo-picker, pi-session-picker, pi-logs, pi-confirm { display: contents; }
 html, body { height: 100%; }
-html { overflow-x: hidden; }
+html { overflow-x: hidden; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text); overflow-x: hidden;
   font-family: var(--sans); font-feature-settings: "cv11";
@@ -1615,10 +1615,13 @@ pi-extension-ui { display: block; flex: 0 0 auto; background: var(--bg); }
 }
 @container (max-height: 180px) { .empty-pi .tile { display: none; } .col-pad .empty-greeting { font-size: 20px; margin: 0; } }
 
-/* Phone in landscape: keep text clear of the notch, and a tap on the transcript (app.js) hides the chrome for reading.
-   Keep the query in sync with LANDSCAPE_PHONE in app.js. */
+/* Phone in landscape: keep text clear of the notch, and a tap on the transcript (app.js) slides the header
+   and composer away for reading. Keep the query in sync with LANDSCAPE_PHONE in app.js. */
 @media (orientation: landscape) and (max-height: 500px) {
   .col-pad, .composer-pad, .ask-dock { padding-left: max(24px, env(safe-area-inset-left)); padding-right: max(24px, env(safe-area-inset-right)); }
-  .shell.immersive main.col > pi-header, .shell.immersive pi-sidebar, .shell.immersive pi-composer { display: none; }
-  .shell.immersive .col-pad { max-width: none; padding-top: 12px; }
+  /* iOS zooms into inputs under 16px when they take focus. */
+  input, textarea, select, .composer textarea { font-size: 16px; }
+  main.col header.bar, .composer-outer { transition: margin 250ms var(--ease), opacity 250ms var(--ease); }
+  .shell.immersive main.col header.bar { margin-top: calc(-1 * var(--header-height, 56px)); opacity: 0; pointer-events: none; }
+  .shell.immersive .composer-outer { margin-bottom: calc(-1 * var(--composer-height, 120px)); opacity: 0; pointer-events: none; }
 }

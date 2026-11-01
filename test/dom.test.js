@@ -1085,6 +1085,10 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   dom.setNarrowViewport(false);
   transcriptPad.click();
   assert.equal(shell.classList.contains("immersive"), false, "only in landscape on a phone");
+  store.set({ railOpen: true });
+  root.onOrientation({ matches: true });
+  assert.equal(store.state.railOpen, false, "turning a phone sideways collapses the sidebar");
+  store.set({ railOpen: true });
 
   textarea.value = "/";
   textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));

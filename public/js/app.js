@@ -88,7 +88,7 @@ class PiApp extends HTMLElement {
         else location.reload();
       }
     });
-    // Phone in landscape: tapping the transcript hides the header, sidebar and composer for reading,
+    // Phone in landscape: tapping the transcript slides the header and composer away for reading,
     // like a PDF reader; another tap brings them back. Taps on links, buttons, code or a selection don't count.
     this.addEventListener("click", e => {
       const shell = this.querySelector(".shell");
@@ -97,11 +97,19 @@ class PiApp extends HTMLElement {
       if (!reading || interactive || !matchMedia(LANDSCAPE_PHONE).matches || String(window.getSelection?.() || "")) return;
       // The first tap out of a focused composer only dismisses the keyboard.
       if (document.activeElement?.matches?.("pi-composer textarea")) return;
+      // The slide needs the composer's height; it may have grown since the last tap.
+      const composer = this.querySelector(".composer-outer");
+      if (composer) this.style.setProperty("--composer-height", `${composer.getBoundingClientRect().height}px`);
       shell.classList.toggle("immersive");
     });
+    // Turning a phone sideways collapses the sidebar to leave room to read; it can be reopened.
     this.landscapeQuery = matchMedia(LANDSCAPE_PHONE);
-    this.onOrientation = () => this.querySelector(".shell")?.classList.remove("immersive");
+    this.onOrientation = e => {
+      this.querySelector(".shell")?.classList.remove("immersive");
+      if (e.matches) store.set({ railOpen: false, drawerOpen: false });
+    };
     this.landscapeQuery.addEventListener?.("change", this.onOrientation);
+    if (this.landscapeQuery.matches) store.set({ railOpen: false });
     this.addEventListener("toggle-files", () => {
       const open = !store.state.filesOpen;
       const key = this.filesKey();
