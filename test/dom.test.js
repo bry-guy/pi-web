@@ -1069,7 +1069,22 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   composer.querySelector(".send-btn").click();
   assert.equal(store.transcript("s1").records.filter(record => record.pending).length, pendingBeforeButton + 1);
   while (composer.sendingIds.has("s1")) await new Promise(resolve => setImmediate(resolve));
+  // Landscape phone: a tap on the transcript hides the chrome and another brings it back; buttons don't count.
+  textarea.blur();
+  const shell = root.querySelector(".shell");
+  const transcriptPad = root.querySelector("[data-screen='chat'] .col-pad");
+  transcriptPad.click();
+  assert.equal(shell.classList.contains("immersive"), true);
+  const transcriptButton = dom.window.document.createElement("button");
+  transcriptPad.append(transcriptButton);
+  transcriptButton.click();
+  transcriptButton.remove();
+  assert.equal(shell.classList.contains("immersive"), true, "buttons don't toggle reading mode");
+  transcriptPad.click();
+  assert.equal(shell.classList.contains("immersive"), false);
   dom.setNarrowViewport(false);
+  transcriptPad.click();
+  assert.equal(shell.classList.contains("immersive"), false, "only in landscape on a phone");
 
   textarea.value = "/";
   textarea.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
