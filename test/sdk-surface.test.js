@@ -1,6 +1,9 @@
 // SDK drift detector: asserts the API names the real supervisor calls exist in
 // the installed @earendil-works/pi-coding-agent — no credentials needed.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 test("pi SDK exposes the surface the real supervisor uses", async () => {
@@ -22,11 +25,17 @@ test("pi SDK exposes the surface the real supervisor uses", async () => {
   for (const g of ["sessionId", "sessionFile", "messages", "isStreaming", "isIdle", "sessionName", "model", "modelRuntime"]) {
     assert.ok(Object.getOwnPropertyDescriptor(proto, g)?.get, `AgentSession getter ${g}`);
   }
-  const { session: surfaceSession } = await sdk.createAgentSession({
-    cwd: process.cwd(), sessionManager: SM.inMemory(process.cwd()), noTools: "all",
-  });
-  assert.ok(surfaceSession.sessionManager);
-  surfaceSession.dispose();
+  // An empty agent dir: the machine's own settings would install its packages (network, credentials).
+  const agentDir = mkdtempSync(join(tmpdir(), "pi-web-sdk-surface-"));
+  try {
+    const { session: surfaceSession } = await sdk.createAgentSession({
+      cwd: process.cwd(), agentDir, sessionManager: SM.inMemory(process.cwd()), noTools: "all",
+    });
+    assert.ok(surfaceSession.sessionManager);
+    surfaceSession.dispose();
+  } finally {
+    rmSync(agentDir, { recursive: true, force: true });
+  }
   assert.equal(typeof sdk.getAgentDir, "function");
   assert.equal(typeof sdk.SettingsManager?.fromStorage, "function");
   assert.equal(typeof sdk.DefaultResourceLoader, "function");
