@@ -1,7 +1,7 @@
 import { api, refreshState } from "./api.js";
 import { beginOperation, completeOperation } from "./operations.js";
 import { setHTML, store, toast } from "./store.js";
-import { closeConversation, esc, icon, selectSession } from "./shell.js";
+import { closeConversation, esc, icon, selectSession, syncSummary } from "./shell.js";
 import { gitErrorMessage, runningPickerOperation, pickerError, launchSetup, pickerOperationKinds, featureBranchForName } from "./panel-utils.js";
 
 // A fork's default name: the session's name plus the first free "(fork)", "(fork 2)", … among the project's sessions.
@@ -445,7 +445,8 @@ class PiSessionPicker extends HTMLElement {
     else {
       const fetchRunning = !!runningPickerOperation("fetch", picker.sourceSessionId);
       const fetchButton = `<button class="btn btn-secondary" data-act="fetch-branches" title="Fetch remote Git branches" aria-label="Fetch remote Git branches" ${this.busy || fetchRunning ? "disabled" : ""}>${this.busy && this.busyLabel === "Fetching…" ? "Fetching…" : "Fetch"}</button>`;
-      const gitRows = this.gitRows(context);
+      const sync = syncSummary(picker.sourceSessionId && store.state.extensionStatuses?.[picker.sourceSessionId]?.["pi-sync"]);
+      const gitRows = context ? [["Repository", project.name], ...this.gitRows(context), ...(sync ? [["Sync", sync.message]] : [])] : [];
       const gitButtons = `${fetchButton}${onCurrent ? `<button class="btn btn-secondary" data-act="pull-branch" ${this.busy ? "disabled" : ""}>Pull</button><button class="btn btn-secondary" data-act="push-branch" ${this.busy ? "disabled" : ""}>${this.busy && this.busyLabel === "Checking commits to push…" ? esc(this.busyLabel) : "Push"}</button>` : ""}<button class="btn btn-secondary" data-act="open-switch" ${this.busy ? "disabled" : ""}>Switch…</button>`;
       const gitSection = `<section class="session-branch-actions" aria-label="Git">
         <div class="session-context-heading"><span>Git</span></div>
