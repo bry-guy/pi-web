@@ -13,7 +13,7 @@ import { createLifecycle } from "../workspaced/lifecycle.js";
 import { parseGrants, repoKey, withGrantCheck } from "../workspaced/grants.js";
 import { localProvider } from "../workspaced/local.js";
 import { deploymentManifest, quantity, slugFromRepository } from "../workspaced/manifests.js";
-import { createRemoteWorkspaces, registerRemoteRoutes } from "../server/remote-workspaces.js";
+import { createRemoteWorkspaces, registerRemoteRoutes, WORKER_REFRESH_TOKEN } from "../server/remote-workspaces.js";
 import { EventHub } from "../server/events.js";
 
 const TOKEN = "secret-token";
@@ -223,6 +223,21 @@ test("web refreshes OAuth at 30 minutes and republishes model logins only on cha
   assert.deepEqual(refreshed[0], ["anthropic", 30 * 60_000]);
   assert.ok(refreshed.every(([id]) => id === "anthropic"));
   assert.deepEqual(puts.map(([u, b]) => [u, b]), [["http://w/v1/model-auth", '{"v":1}'], ["http://w/v1/model-auth", '{"v":2}']]);
+  remote.stop();
+});
+
+test("workers get OAuth logins without the refresh token", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "model-push-"));
+  const authPath = path.join(dir, "auth.json");
+  writeFileSync(authPath, JSON.stringify({ anthropic: { type: "oauth", access: "a", refresh: "r", expires: 1 }, k: { type: "api_key", key: "x" } }));
+  const puts = [];
+  const fetchImpl = async (url, init) => { puts.push(init.body); return new Response("{}", { status: 200 }); };
+  const remote = createRemoteWorkspaces({ url: "http://w", token: TOKEN, modelAuthPath: authPath, fetchImpl, modelAuthSyncMs: 0 });
+  await remote.pushModelAuth();
+  const sent = JSON.parse(puts[0]);
+  assert.deepEqual(sent.anthropic, { type: "oauth", access: "a", refresh: WORKER_REFRESH_TOKEN, expires: 1 });
+  assert.deepEqual(sent.k, { type: "api_key", key: "x" });
+  assert.equal(JSON.parse(readFileSync(authPath, "utf8")).anthropic.refresh, "r");
   remote.stop();
 });
 

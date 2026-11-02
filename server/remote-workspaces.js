@@ -58,6 +58,19 @@ export function embeddedWorkspaced(env, { log = console.log } = {}) {
 }
 
 // transfer: web's own earlier chats to copy into the chats worker (chat-transfer.js), or null.
+// Workers get OAuth logins without the refresh token: web is the only refresher. A worker that refreshed
+// would spend the shared refresh token and could not save the new one (read-only), signing everyone out.
+export const WORKER_REFRESH_TOKEN = "refreshed-by-pi-web";
+export function workerModelAuth(content) {
+  let auth;
+  try { auth = JSON.parse(content); } catch { return content; }
+  if (!auth || typeof auth !== "object" || Array.isArray(auth)) return content;
+  const oauth = Object.values(auth).filter(c => c?.type === "oauth" && typeof c.refresh === "string");
+  if (!oauth.length) return content;
+  for (const c of oauth) c.refresh = WORKER_REFRESH_TOKEN;
+  return JSON.stringify(auth, null, 2);
+}
+
 export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, syncedProjects = async () => [], syncedTtlMs = 30_000, log = console.log }) {
   const owners = { project: new Map(), session: new Map() };
 
@@ -452,7 +465,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       }
     }
     let content;
-    try { content = modelAuthPath ? readFileSync(modelAuthPath, "utf8") : "{}"; } catch { content = "{}"; }
+    try { content = workerModelAuth(modelAuthPath ? readFileSync(modelAuthPath, "utf8") : "{}"); } catch { content = "{}"; }
     if (content === publishedModelAuth) return;
     const res = await call("/model-auth", { method: "PUT", headers: { "content-type": "application/json" }, body: content });
     if (!res.ok) throw Object.assign(new Error("could not share model logins"), { code: "workspaced_unavailable" });

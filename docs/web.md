@@ -91,7 +91,7 @@ When Pi or an extension asks something (`ask_user_question`, a confirmation, a v
 
 ## Logins reach workers
 
-When you sign in to GitHub or a model provider, web sends the login to workspaced (`PUT /v1/github-auth`, `PUT /v1/model-auth`), and workspaced hands it to every worker read-only. Every worker can therefore read those logins. You sign in once, in web.
+When you sign in to GitHub or a model provider, web sends the login to workspaced (`PUT /v1/github-auth`, `PUT /v1/model-auth`), and workspaced hands it to every worker read-only. Every worker can therefore read those logins. You sign in once, in web. Workers get model logins without their refresh tokens: web refreshes them (every 5 minutes, any login with under 30 minutes left) and re-shares, so a worker can never spend a refresh token that web and the other workers depend on. If web can't re-share for about half an hour, workers' model requests fail until it can.
 
 ## Security
 
