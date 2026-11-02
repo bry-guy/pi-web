@@ -28,7 +28,7 @@ afterEach(async () => {
   else process.env.PI_PROJECTS_DIR = previous;
 });
 
-test("a pi project's repositories become projects grouped under it, its folder sessions under its folder", async () => {
+test("a pi project's repositories become projects grouped under it, its folder sessions under its folder, repository sessions under the repository", async () => {
   const first = await fixture.state();
   const project = first.projects.find(p => p.id === "pp-eco-code");
   assert.ok(project, "repository listed in project.json is a project");
@@ -48,16 +48,14 @@ test("a pi project's repositories become projects grouped under it, its folder s
   const second = await fixture.state();
   assert.ok(second.projects.find(p => p.id === "pp-eco").sessions.some(s => s.id === root.id), "root session belongs to the project folder");
   assert.equal(second.projects.find(p => p.id === "pp-eco-code").sessions.some(s => s.id === root.id), false);
-  // So does a session that ran in one of its repositories: repositories own no sessions.
+  // A session that ran in one of its repositories is a repository session: it lists under that repository.
   const inRepo = await fixture.supervisor.createSession({ cwd: path.join(projectsDir, "eco", "repos", "code") });
   await fixture.post(`/api/sessions/${inRepo.id}/message`, { text: "hello" });
   const third = await fixture.state();
-  assert.deepEqual(third.projects.find(p => p.id === "pp-eco").sessions.map(s => s.id).sort(), [root.id, inRepo.id].sort());
-  assert.deepEqual(third.projects.find(p => p.id === "pp-eco-code").sessions, []);
-  const node = third.projects.find(p => p.id === "pp-eco").sessions.find(s => s.id === inRepo.id);
-  assert.equal(node.repoId, "pp-eco-code", "it still knows the repository it ran in");
+  assert.deepEqual(third.projects.find(p => p.id === "pp-eco").sessions.map(s => s.id), [root.id]);
+  assert.deepEqual(third.projects.find(p => p.id === "pp-eco-code").sessions.map(s => s.id), [inRepo.id]);
   assert.deepEqual(third.projects.find(p => p.id === "pp-eco-code").checkoutSync, [], "pi-sync's checkout state is listed per repository");
-  assert.equal(node.contextId, "folder");
+  assert.equal(third.projects.find(p => p.id === "pp-eco").sessions[0].contextId, "folder");
 
   // Removing the repository drops it from project.json too.
   const removed = await fixture.remove("/api/projects/pp-eco-code");
