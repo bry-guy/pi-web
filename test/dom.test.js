@@ -409,6 +409,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   const sessionDetails = root.querySelector(".session-branch-actions");
   assert.ok(sessionDetails);
   assert.deepEqual([...sessionDetails.querySelectorAll(".session-detail-row")].map(row => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]), [
+    ["Repository", "demo"],
     ["Branch", "main"],
     ["Commit", "abcdef12 Initial project commit"],
     ["Workspace", "checkout · /tmp/demo"],
@@ -449,6 +450,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.notify("state");
   const currentProject = store.state.projects.find(item => item.id === "p1");
   assert.deepEqual([...root.querySelectorAll(".session-branch-actions .session-detail-row")].map(row => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]), [
+    ["Repository", "demo"],
     ["Branch", "main"],
     ["Commit", "abcdef12 Initial project commit"],
     ["Workspace", "checkout · /tmp/demo"],
@@ -584,7 +586,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(root.querySelector("[data-act='apply-session-branch'][data-mode='switch']"), null);
   assert.equal(store.findSession("s1", store.state.projects[0].sessions).branch, "develop");
   assert.match(root.querySelector("pi-header .workspace-branch").textContent, /develop/);
-  assert.doesNotMatch(root.querySelector("pi-header .workspace-trigger").textContent, /CHECKOUT|WORKTREE|demo/, "the header shows branch, commit and state only");
+  assert.doesNotMatch(root.querySelector("pi-header .workspace-trigger").textContent, /CHECKOUT|WORKTREE/, "the header shows repository, branch, commit and state only");
+  assert.match(root.querySelector("pi-header .workspace-branch").textContent, /^demo · develop$/, "a repository session names its repository");
   assert.match(store.state.operations.find(operation => operation.kind === "switch-session").events.at(-1).message, /Switched session s1 to develop/);
   store.state.transcripts.sibling.streaming = false;
   store.notify("transcript");
@@ -1169,6 +1172,35 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   escape();
   assert.equal(store.state.sessionPicker, null, "then the session panel closes");
   delete store.state.projects[0].ended;
+
+  // A pi project: project-level sessions in its menu, repository sessions behind a drill-through into each repository.
+  const folder = { id: "pp-eco", kind: "folder", name: "eco", group: "eco", branches: [], contexts: [{ id: "folder", kind: "folder", branch: null, path: "/w/eco" }], sessions: [{ id: "f1", title: "Plan the week", when: "1m", contextId: "folder", children: [] }] };
+  const repo = { id: "pp-eco-code", name: "code", group: "eco", defaultBranch: "main", branches: ["main"], contexts: [{ id: "c1", kind: "checkout", branch: "main", path: "/w/eco/repos/code", head: "1234567890abcdef", status: "clean" }], sessions: [{ id: "r1", title: "Fix the bug", when: "2m", branch: "main", contextId: "c1", children: [] }] };
+  store.state.projects.push(folder, repo);
+  store.set({ projectMenu: { projectId: "group:eco", synced: [
+    { sessionId: "sy1", title: "Remote repo work", repo: "code", branch: "feat", commit: "fedcba9876543210", device: "laptop", when: "3m" },
+    { sessionId: "sy2", title: "Remote project talk", repo: null, device: "laptop", when: "4m" },
+  ] } });
+  const menuText = () => root.querySelector("pi-project-menu .session-picker-body").textContent;
+  assert.match(menuText(), /Plan the week/);
+  assert.match(menuText(), /Remote project talk/);
+  assert.doesNotMatch(menuText(), /Fix the bug|Remote repo work/, "repository sessions are not in the project's list");
+  root.querySelector("pi-project-menu [data-act='open-repo'][data-id='pp-eco-code']").click();
+  assert.equal(root.querySelector("pi-project-menu .session-picker-subtitle").textContent, "eco · code");
+  const repoRows = [...root.querySelectorAll("pi-project-menu .history-entry-head")].map(row => row.textContent);
+  assert.ok(repoRows.some(text => /Fix the bug/.test(text) && /main · 12345678 · 2m/.test(text)), "a repository session shows branch and short commit");
+  assert.ok(repoRows.some(text => /Remote repo work/.test(text) && /feat · fedcba98 · laptop · 3m/.test(text)));
+  assert.ok(root.querySelector("pi-project-menu [data-act='open-synced'][data-sync-id='sy1'][data-repo='pp-eco-code']"), "it opens in the repository");
+  assert.doesNotMatch(menuText(), /Plan the week|Remote project talk/);
+  root.querySelector("pi-project-menu [data-act='close-project-menu']").click();
+  assert.ok(store.state.projectMenu, "Back from a repository returns to its project");
+  assert.match(menuText(), /Plan the week/);
+  store.set({ projectMenu: null, view: "chat", projectId: "pp-eco", sessionId: "f1", chatId: null });
+  assert.equal(root.querySelector("pi-header .workspace-trigger").textContent.trim(), "eco", "a project session's header names only its project");
+  store.set({ projectId: "pp-eco-code", sessionId: "r1" });
+  assert.match(root.querySelector("pi-header .workspace-trigger").textContent, /code · main\s*·\s*12345678/);
+  store.state.projects.splice(-2, 2);
+  store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null });
 
   // One copy row per turn, on its last reply; "Copy Turn" only when the turn had several.
   store.state.transcripts.s1.streaming = false;
