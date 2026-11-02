@@ -409,6 +409,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   const sessionDetails = root.querySelector(".session-branch-actions");
   assert.ok(sessionDetails);
   assert.deepEqual([...sessionDetails.querySelectorAll(".session-detail-row")].map(row => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]), [
+    ["Repository", "demo"],
     ["Branch", "main"],
     ["Commit", "abcdef12 Initial project commit"],
     ["Workspace", "checkout · /tmp/demo"],
@@ -449,6 +450,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.notify("state");
   const currentProject = store.state.projects.find(item => item.id === "p1");
   assert.deepEqual([...root.querySelectorAll(".session-branch-actions .session-detail-row")].map(row => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]), [
+    ["Repository", "demo"],
     ["Branch", "main"],
     ["Commit", "abcdef12 Initial project commit"],
     ["Workspace", "checkout · /tmp/demo"],
@@ -584,7 +586,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(root.querySelector("[data-act='apply-session-branch'][data-mode='switch']"), null);
   assert.equal(store.findSession("s1", store.state.projects[0].sessions).branch, "develop");
   assert.match(root.querySelector("pi-header .workspace-branch").textContent, /develop/);
-  assert.doesNotMatch(root.querySelector("pi-header .workspace-trigger").textContent, /CHECKOUT|WORKTREE|demo/, "the header shows branch, commit and state only");
+  assert.doesNotMatch(root.querySelector("pi-header .workspace-trigger").textContent, /CHECKOUT|WORKTREE/, "the header shows repository, branch, commit and state only");
+  assert.match(root.querySelector("pi-header .workspace-branch").textContent, /^demo · develop$/, "a repository session names its repository");
   assert.match(store.state.operations.find(operation => operation.kind === "switch-session").events.at(-1).message, /Switched session s1 to develop/);
   store.state.transcripts.sibling.streaming = false;
   store.notify("transcript");

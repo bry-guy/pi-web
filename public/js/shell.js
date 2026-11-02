@@ -592,12 +592,6 @@ class PiHeader extends HTMLElement {
     const p = store.project();
     const node = store.findSession(store.state.sessionId);
     if (!p) return null;
-    // A project-folder session that ran in a repository: that repository's live context (branch, commit, status).
-    if (p.kind === "folder" && node?.repoId) {
-      const repo = store.state.projects.find(item => item.id === node.repoId);
-      const live = repo?.contexts?.find(context => context.path === node.workspacePath);
-      if (live) return { ...live, repoName: repo.name };
-    }
     return p.contexts?.find(context => context.id === node?.contextId)
       || p.contexts?.find(context => context.path === node?.workspacePath)
       || p.contexts?.find(context => context.kind === "checkout")
@@ -609,11 +603,9 @@ class PiHeader extends HTMLElement {
     return this.sessionContext()?.branch || null;
   }
 
-  contextLabel(context) {
+  contextLabel(context, project) {
     if (context?.kind === "unavailable") return "Unavailable context";
-    if (context?.kind === "folder") return "project folder";
-    const branch = context?.branch || "detached HEAD";
-    return context?.repoName ? `${context.repoName} · ${branch}` : branch;
+    return `${project.name} · ${context?.branch || "detached HEAD"}`;
   }
 
   render() {
@@ -628,12 +620,14 @@ class PiHeader extends HTMLElement {
     const syncInfo = syncSummary(activeSession?.id && store.state.extensionStatuses[activeSession.id]?.["pi-sync"]);
     const syncLine = syncInfo ? `<span class="sync-label ${syncInfo.tone}" title="${esc(syncInfo.full)}">${esc(`${syncInfo.state}: ${syncInfo.message}`)}</span>` : "";
     const workspace = inProject ? this.sessionContext() : null;
-    const branch = workspace ? this.contextLabel(workspace) : null;
+    const branch = workspace ? this.contextLabel(workspace, p) : null;
     const commit = workspace?.head ? String(workspace.head) : "";
     const commitLabel = commit
       ? `<span class="workspace-divider">·</span><span class="workspace-commit" title="Current commit ${esc(commit)}">${esc(commit.slice(0, 8))}</span>`
       : "";
-    const workspaceTrigger = inProject && workspace ? `
+    // A project-level session: just its project; repository sessions show repository, branch, commit and Git state.
+    const workspaceTrigger = inProject && workspace?.kind === "folder" ? `<span class="workspace-trigger"><span class="workspace-branch">${esc(p.group || p.name)}</span></span>`
+      : inProject && workspace ? `
         <span class="workspace-trigger">
           <span class="workspace-branch">${esc(branch)}</span>${commitLabel}<span class="workspace-divider">·</span><span class="workspace-state">${esc(gitStatusText(workspace))}</span>
         </span>` : "";
