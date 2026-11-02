@@ -72,22 +72,25 @@ export async function remoteConversationsForRepository(cwd, localIds, { project 
   const client = await createSyncClient(syncConfig(loadConfig()).serverUrl);
   // A pi project's conversations carry its name (pi-sync `project`); they may sit in any of its repositories or its folder.
   const belongs = item => (project && item.project === project) || (repository && module.repositoryIdentity(item.workspace) === repository);
-  return listItems((await client.list()).sessions.filter(item => belongs(item) && !localIds.has(item.sessionId)));
+  return listItems((await client.list()).sessions.filter(item => belongs(item) && !localIds.has(item.sessionId)), module);
 }
 
 /** Shared conversations of pi project `project` that `isHere(sessionId)` does not already hold, newest first. */
 export async function remoteConversationsForProject(project, isHere = () => false) {
   const client = await createSyncClient(syncConfig(loadConfig()).serverUrl);
-  return listItems((await client.list()).sessions.filter(item => item.project === project && !isHere(item.sessionId)));
+  return listItems((await client.list()).sessions.filter(item => item.project === project && !isHere(item.sessionId)), await loadPiSyncModule());
 }
 
-function listItems(sessions) {
+function listItems(sessions, module) {
   return sessions
     .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
     .map(item => ({
       sessionId: item.sessionId,
       title: typeof item.title === "string" && item.title.trim() ? item.title.trim() : null,
       branch: item.workspace?.branch || null,
+      // A repository-level conversation: its repository's name (project.json's repo name) and commit; none for project-level.
+      repo: module.repositoryIdentity?.(item.workspace)?.split("/").at(-1) || null,
+      commit: item.workspace?.commit || null,
       updatedAt: item.updatedAt || item.createdAt,
       when: rel(item.updatedAt || item.createdAt),
       device: item.devices?.[0]?.label || null,
