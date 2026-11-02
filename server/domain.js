@@ -210,8 +210,6 @@ function sessionTree(found, closed, sup, pathToContext = {}) {
       name: n.name || null,
       contextId: pathToContext[pathKey(n.cwd)]?.id || null,
       branch: pathToContext[pathKey(n.cwd)]?.branch || null,
-      // In a pi project's folder entry: the repository the session ran in, if any.
-      repoId: pathToContext[pathKey(n.cwd)]?.repoId || null,
       workspacePath: n.cwd || null,
       streaming: sup.isStreaming(n.id),
       model: n.model || null,
@@ -243,41 +241,23 @@ export function folderId(name) { return `pp-${name}`; }
 const inside = (dir, root) => pathKey(dir) === pathKey(root) || pathKey(dir).startsWith(pathKey(root) + path.sep);
 
 /**
- * A pi project's own folder as a project entry in /api/state. Every session of the project lists here: those
- * started at the folder and those that ran in one of its repositories or worktrees. Repositories own none.
+ * A pi project's own folder as a project entry in /api/state: the project-level sessions, those that run in the
+ * folder rather than in one of its repositories or worktrees (those list under their repository).
  * It is never in config.projects and has no Git: the folder sits in pi-projects' state repo.
  */
 export async function folderState(group, sup) {
   const closed = loadClosed();
   const bindings = loadBindings();
-  // pi lists sessions per cwd: the folder, each repository's checkouts and worktrees, and any bound workspace in it.
-  const cwds = new Set([group.path]);
   const context = { id: "folder", kind: "folder", branch: null, path: group.path };
-  // Sessions keep the folder as their context, plus the repository and branch they ran in (code view, header).
-  const where = { [pathKey(group.path)]: context };
-  for (const repo of loadConfig().projects.filter(p => p.group === group.name)) {
-    cwds.add(repo.repoPath);
-    where[pathKey(repo.repoPath)] = { ...context, repoId: repo.id };
-    try {
-      for (const live of await ws.listContextsAsync(repo.repoPath)) {
-        if (!live.path) continue;
-        cwds.add(live.path);
-        where[pathKey(live.path)] = { ...context, repoId: repo.id, branch: live.branch || null };
-      }
-    } catch { /* still cloning */ }
-  }
-  for (const binding of Object.values(bindings)) if (binding?.workspacePath && inside(binding.workspacePath, group.path)) cwds.add(binding.workspacePath);
-  const byId = new Map();
-  for (const cwd of cwds) {
-    try {
-      for (const s of await sup.listSessions(cwd)) {
-        const at = bindings[s.id]?.workspacePath || s.cwd;
-        if (!byId.has(s.id) && at && inside(at, group.path)) byId.set(s.id, { ...s, cwd: at, closed: closed.has(s.id) });
-      }
-    } catch { /* the folder may be new, a worktree may be gone */ }
-  }
-  const found = [...byId.values()];
-  const { sessions, ended, updatedAt } = sessionTree(found, closed, sup, Object.fromEntries(found.map(s => [pathKey(s.cwd), where[pathKey(s.cwd)] || context])));
+  const inRepos = at => ["repos", "worktrees"].some(dir => inside(at, path.join(group.path, dir)));
+  const found = [];
+  try {
+    for (const s of await sup.listSessions(group.path)) {
+      const at = bindings[s.id]?.workspacePath || s.cwd;
+      if (at && inside(at, group.path) && !inRepos(at)) found.push({ ...s, cwd: at, closed: closed.has(s.id) });
+    }
+  } catch { /* the folder may be new */ }
+  const { sessions, ended, updatedAt } = sessionTree(found, closed, sup, Object.fromEntries(found.map(s => [pathKey(s.cwd), context])));
   return {
     id: folderId(group.name),
     name: group.name,

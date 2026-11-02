@@ -409,6 +409,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   const sessionDetails = root.querySelector(".session-branch-actions");
   assert.ok(sessionDetails);
   assert.deepEqual([...sessionDetails.querySelectorAll(".session-detail-row")].map(row => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]), [
+    ["Repository", "demo"],
     ["Branch", "main"],
     ["Commit", "abcdef12 Initial project commit"],
     ["Workspace", "checkout · /tmp/demo"],
@@ -449,6 +450,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.notify("state");
   const currentProject = store.state.projects.find(item => item.id === "p1");
   assert.deepEqual([...root.querySelectorAll(".session-branch-actions .session-detail-row")].map(row => [row.querySelector("dt").textContent, row.querySelector("dd").textContent]), [
+    ["Repository", "demo"],
     ["Branch", "main"],
     ["Commit", "abcdef12 Initial project commit"],
     ["Workspace", "checkout · /tmp/demo"],
