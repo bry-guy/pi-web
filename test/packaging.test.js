@@ -150,6 +150,9 @@ test("deploy job pins the built digest and gates production on main", () => {
   assert.match(deployJob, /needs: \[tests, publish\]/);
   assert.match(deployJob, /DIGEST: \$\{\{ needs\.publish\.outputs\.digest \}\}/);
   assert.match(deployJob, /cancel-in-progress: false/);
-  assert.match(deployJob, /run: \.\.\/src\/scripts\/deploy\.sh preview/);
-  assert.match(deployJob, /if: github\.ref == 'refs\/heads\/main'\n        working-directory: main\n        run: \.\.\/src\/scripts\/deploy\.sh production/);
+  // deploy.sh runs from main, never from the pushed (possibly agent) branch.
+  assert.doesNotMatch(deployJob, /path: src/);
+  assert.match(deployJob, /ssh-key: \$\{\{ secrets\.MAIN_DEPLOY_KEY \}\}/);
+  assert.match(deployJob, /run: scripts\/deploy\.sh preview/);
+  assert.match(deployJob, /if: github\.ref == 'refs\/heads\/main'\n        working-directory: main\n        run: scripts\/deploy\.sh production/);
 });
