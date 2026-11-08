@@ -26,9 +26,8 @@ export function fileScope() {
   const s = store.state;
   const current = store.project();
   const node = store.findSession(s.sessionId);
-  // The project folder has no repository of its own: browse the one the session ran in, else the first.
-  const ran = current?.kind === "folder" && node?.repoId ? s.projects.find(p => p.id === node.repoId) : null;
-  const project = ran || (current?.kind === "folder" ? s.projects.find(p => p.group === current.group && p.kind !== "folder") || current : current);
+  // The project folder has no repository of its own: browse its first.
+  const project = current?.kind === "folder" ? s.projects.find(p => p.group === current.group && p.kind !== "folder") || current : current;
   const checkout = p => p?.contexts?.find(context => context.kind === "checkout")?.id || p?.contexts?.[0]?.id || null;
   const picked = s.fileScope;
   if (picked && picked.sessionId === s.sessionId) {
@@ -38,8 +37,7 @@ export function fileScope() {
       return { project: other, contextId };
     }
   }
-  const ranIn = ran?.contexts?.find(context => context.path === node?.workspacePath)?.id;
-  return { project, contextId: project === current ? node?.contextId || checkout(project) : ranIn || checkout(project) };
+  return { project, contextId: project === current ? node?.contextId || checkout(project) : checkout(project) };
 }
 
 /* ---------------- file tree (right column) ---------------- */

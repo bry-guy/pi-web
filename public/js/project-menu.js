@@ -3,7 +3,7 @@
 // The Chats menu is its sibling for plain chats: new chat, past chats, and the chats worker.
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { setHTML, store, toast } from "./store.js";
-import { esc, groupMembers, icon, sidebarEntry, newChat, newProjectSession, restoreConversation, selectChat, selectSession } from "./shell.js";
+import { esc, groupMembers, icon, sidebarEntry, newChat, newProjectSession, restoreConversation, selectChat, selectSession, syncSummary } from "./shell.js";
 import { workerAction, workerCard } from "./workers.js";
 import { gitErrorMessage, launchSetup } from "./panel-utils.js";
 
@@ -14,6 +14,10 @@ export function openProjectMenu(projectId) {
 export function openChatsMenu() {
   store.set({ projectMenu: { chats: true }, sessionPicker: null, drawerOpen: false });
 }
+
+// What pi-sync last reported for a session open on this server ("up to date", "in use on …"), if anything.
+const syncOf = id => syncSummary(store.state.extensionStatuses?.[id]?.["pi-sync"])?.message || "";
+const shortSha = sha => (sha ? String(sha).slice(0, 8) : "");
 
 // workspaced's worker for plain chats.
 const CHATS_WORKER = "chats";
@@ -152,10 +156,19 @@ class PiProjectMenu extends HTMLElement {
 
   async onGroupClick(e) {
     const group = this.group();
-    if (e.target.matches(".session-picker-scrim") || e.target.closest("[data-act='close-project-menu']")) { this.close(); return; }
+    const menu = this.menu();
+    if (e.target.matches(".session-picker-scrim")) { this.close(); return; }
+    if (e.target.closest("[data-act='close-project-menu']")) {
+      // Back from a repository's view returns to its project.
+      if (menu.repo) { menu.repo = null; menu.preview = null; this.render(); } else this.close();
+      return;
+    }
     const t = e.target.closest("[data-act]");
     const act = t?.dataset.act;
     const member = id => group.members.find(m => m.id === id) || group.members[0];
+    if (act === "open-repo") { menu.repo = t.dataset.id; menu.preview = null; this.render(); return; }
+    // Repository sessions start in the repository, on its default branch.
+    if (act === "new-repo-session") { this.close(); await newProjectSession(t.dataset.id); return; }
     if (act === "new-session") {
       // Project sessions start in the project folder.
       await this.run("Starting session…", async () => {
@@ -191,10 +204,13 @@ class PiProjectMenu extends HTMLElement {
     }
     if (act === "open-synced") {
       await this.run("Opening conversation…", async () => {
-        const ready = await this.ensureOnWeb(group);
-        // Project sessions open in the project folder, whichever repository they last ran in.
-        const target = ready.folder;
-        const result = await api.newProjectSession(target.id, { mode: "synced", syncSessionId: t.dataset.syncId });
+        const repo = t.dataset.repo && group.members.find(m => m.id === t.dataset.repo);
+        // Repository sessions open in that repository, on their branch; project sessions in the project folder.
+        const target = repo || (await this.ensureOnWeb(group)).folder;
+        const primary = repo && (repo.defaultBranch || repo.primaryBranch || "main");
+        const result = await api.newProjectSession(target.id, repo
+          ? { mode: "synced", syncSessionId: t.dataset.syncId, branch: t.dataset.branch || primary, baseBranch: primary }
+          : { mode: "synced", syncSessionId: t.dataset.syncId });
         this.close();
         store.state.openTree[`group:${group.name}`] = true;
         await refreshState().catch(() => undefined);
@@ -236,6 +252,8 @@ class PiProjectMenu extends HTMLElement {
         .finally(() => { if (this.menu() === menu) this.render(); });
     }
     if (first.workspace && !menu.workersLoaded) { menu.workersLoaded = true; void refreshWorkers(); }
+    const repo = menu.repo && group.members.find(m => m.id === menu.repo);
+    if (repo) { this.renderRepo(menu, group, repo); return; }
     const busy = !!menu.busy;
     const row = (title, hint, button) => `<div class="panel-row"><div class="panel-row-text"><strong>${esc(title)}</strong><small>${esc(hint)}</small></div>${button}</div>`;
     const listRow = (...args) => this.listRow(menu, ...args);
@@ -250,8 +268,10 @@ class PiProjectMenu extends HTMLElement {
       const sync = (m.checkoutSync || []).map(item => item.message
         ? `<small class="checkout-desynced" title="${esc(item.message)}">⚠ ${esc(item.where)} desynced: run /sync code in a session to choose</small>`
         : `<small>${esc(item.where)}: not synced on this machine</small>`).join("");
-      if (sync) return row(m.name, hint, `<button class="btn btn-caution" data-act="remove-repo" data-id="${esc(m.id)}" ${busy ? "disabled" : ""}>Remove</button>`).replace("</small></div>", `</small>${sync}</div>`);
-      return row(m.name, hint, `<button class="btn btn-caution" data-act="remove-repo" data-id="${esc(m.id)}" ${busy ? "disabled" : ""}>Remove</button>`);
+      const count = this.repoSessions(menu, m).length;
+      const buttons = `<button class="btn btn-secondary" data-act="open-repo" data-id="${esc(m.id)}">Sessions${count ? ` (${count})` : ""}</button><button class="btn btn-caution" data-act="remove-repo" data-id="${esc(m.id)}" ${busy ? "disabled" : ""}>Remove</button>`;
+      if (sync) return row(m.name, hint, buttons).replace("</small></div>", `</small>${sync}</div>`);
+      return row(m.name, hint, buttons);
     }).join("");
     const repos = `<section><div class="session-context-heading session-history-heading"><span>Repositories</span><span>${group.members.length}</span></div>
       ${group.members.length ? "" : `<div class="session-history-empty">${group.workspace ? "No repositories yet, or still cloning." : "Starting this project…"}</div>`}
@@ -260,17 +280,9 @@ class PiProjectMenu extends HTMLElement {
     const flat = [];
     const walk = (nodes, pid) => { for (const n of nodes || []) { if (!n.draft) flat.push({ ...n, pid }); walk(n.children, pid); } };
     if (group.folder) walk(group.folder.sessions, group.folder.id);
-    // Other devices' sessions sit in the same list, labelled with the device that last wrote them.
-    for (const item of menu.synced || []) flat.push({ synced: item.sessionId, title: item.title || "Untitled conversation", branch: item.branch, when: item.when, updatedAt: item.updatedAt, where: item.leaseHolder ? `running on ${item.leaseHolder}` : item.device });
-    flat.sort((a, b) => String(b.activityAt || b.updatedAt || "").localeCompare(String(a.activityAt || a.updatedAt || "")));
-    const head = n => n.synced
-      ? `data-act="open-synced" data-sync-id="${esc(n.synced)}" data-branch="${esc(n.branch || "")}" data-pid="${esc(first.id || "")}"`
-      : `data-act="open-session" data-id="${esc(n.id)}" data-pid="${esc(n.pid)}"`;
-    const meta = n => n.synced ? [n.where, n.when] : [n.when];
-    const empty = menu.synced === null ? "Loading sessions…" : "No sessions yet.";
-    const sessions = `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Sessions</span><span>${flat.length}</span></div>
-      ${flat.length ? `<div class="history-list">${flat.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" ${head(n)}><span class="history-main"><strong>${esc(n.title)}</strong><small>${esc(meta(n).filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("")}</div>`
-        : `<div class="session-history-empty">${empty}</div>`}</section>`;
+    // Other devices' project-level sessions sit in the same list; repository ones list under their repository.
+    for (const item of menu.synced || []) if (!item.repo) flat.push(this.syncedNode(item));
+    const sessions = this.sessionsSection(menu, flat, n => n.synced ? [n.where, n.when] : [n.when, syncOf(n.id)]);
 
     const past = [group.folder].filter(Boolean).flatMap(m => (m.ended || []).map(item => ({ ...item, pid: m.id })));
     const pastSection = past.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Past sessions</span><span>${past.length}</span></div>
@@ -285,6 +297,51 @@ class PiProjectMenu extends HTMLElement {
     const progress = busy ? `<div class="session-picker-progress" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>${esc(menu.busy)}</span></div>` : "";
     const error = menu.error ? `<div class="session-picker-error">${esc(menu.error)}</div>` : "";
     this.frame("Project", group.name, `${progress}${error}${actions}${repos}${sessions}${pastSection}${workerSection}${dangerSection}`);
+  }
+
+  syncedNode(item) {
+    return { synced: item.sessionId, title: item.title || "Untitled conversation", branch: item.branch, commit: item.commit, when: item.when, updatedAt: item.updatedAt, where: item.leaseHolder ? `running on ${item.leaseHolder}` : item.device };
+  }
+
+  /** A repository's sessions here plus its other-device ones (pi-sync's listing names the repository). */
+  repoSessions(menu, repo) {
+    const flat = [];
+    const walk = nodes => { for (const n of nodes || []) { if (!n.draft) flat.push({ ...n, pid: repo.id }); walk(n.children); } };
+    walk(repo.sessions);
+    for (const item of menu.synced || []) if (item.repo === repo.name) flat.push({ ...this.syncedNode(item), repoId: repo.id });
+    return flat;
+  }
+
+  /** A newest-first session list; `meta(n)` is each row's hint. */
+  sessionsSection(menu, flat, meta) {
+    flat.sort((a, b) => String(b.activityAt || b.updatedAt || "").localeCompare(String(a.activityAt || a.updatedAt || "")));
+    const head = n => n.synced
+      ? `data-act="open-synced" data-sync-id="${esc(n.synced)}" data-branch="${esc(n.branch || "")}" data-repo="${esc(n.repoId || "")}"`
+      : `data-act="open-session" data-id="${esc(n.id)}" data-pid="${esc(n.pid)}"`;
+    const empty = menu.synced === null ? "Loading sessions…" : "No sessions yet.";
+    return `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Sessions</span><span>${flat.length}</span></div>
+      ${flat.length ? `<div class="history-list">${flat.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" ${head(n)}><span class="history-main"><strong>${esc(n.title)}</strong><small>${esc(meta(n).filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("")}</div>`
+        : `<div class="session-history-empty">${empty}</div>`}</section>`;
+  }
+
+  /** A repository of a pi project: its sessions, which open on the project's worker in the repository itself. */
+  renderRepo(menu, group, repo) {
+    const busy = !!menu.busy;
+    const primary = repo.defaultBranch || repo.primaryBranch || "main";
+    const row = (title, hint, button) => `<div class="panel-row"><div class="panel-row-text"><strong>${esc(title)}</strong><small>${esc(hint)}</small></div>${button}</div>`;
+    const actions = `<section class="session-picker-actions" aria-label="Repository"><div class="panel-rows">
+      ${row("New session", `Starts in ${repo.name} on ${primary}.`, `<button class="btn btn-secondary" data-act="new-repo-session" data-id="${esc(repo.id)}" ${busy ? "disabled" : ""}>New</button>`)}
+    </div></section>`;
+    const headOf = n => (repo.contexts || []).find(c => c.id === n.contextId || c.path === n.workspacePath)?.head;
+    const sessions = this.sessionsSection(menu, this.repoSessions(menu, repo), n => n.synced
+      ? [n.branch, shortSha(n.commit), n.where, n.when]
+      : [n.branch, shortSha(headOf(n)), n.when, syncOf(n.id)]);
+    const past = repo.ended || [];
+    const pastSection = past.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Past sessions</span><span>${past.length}</span></div>
+      <div class="history-list">${past.map(item => this.listRow(menu, `past:${item.id}`, item.title, `Ended ${item.when}`, `data-act="open-past" data-id="${esc(item.id)}" data-pid="${esc(repo.id)}"`)).join("")}</div></section>` : "";
+    const progress = busy ? `<div class="session-picker-progress" role="status"><span class="loading-spinner" aria-hidden="true"></span><span>${esc(menu.busy)}</span></div>` : "";
+    const error = menu.error ? `<div class="session-picker-error">${esc(menu.error)}</div>` : "";
+    this.frame("Repository", `${group.name} · ${repo.name}`, `${progress}${error}${actions}${sessions}${pastSection}`);
   }
 
   /** The last few messages of a previewed conversation, then its Open button. */
