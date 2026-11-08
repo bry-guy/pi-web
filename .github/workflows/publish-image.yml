@@ -106,15 +106,13 @@ jobs:
       SHA: ${{ needs.publish.outputs.sha }}
       DIGEST: ${{ needs.publish.outputs.digest }}
     steps:
-      # deploy.sh comes from the pushed commit; the pins it edits live on main.
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          path: src
+      # deploy.sh comes from main, not the pushed commit: feature/** pushes (agents included) must not
+      # run their own code with the main push key and tailnet access.
       - uses: actions/checkout@v4
         with:
           ref: main
           path: main
+          ssh-key: ${{ secrets.MAIN_DEPLOY_KEY }}
 
       - name: Validate digest
         run: '[[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ && "$SHA" =~ ^[0-9a-f]{40}$ ]]'
@@ -128,9 +126,9 @@ jobs:
 
       - name: Deploy preview
         working-directory: main
-        run: ../src/scripts/deploy.sh preview
+        run: scripts/deploy.sh preview
 
       - name: Deploy production
         if: github.ref == 'refs/heads/main'
         working-directory: main
-        run: ../src/scripts/deploy.sh production
+        run: scripts/deploy.sh production

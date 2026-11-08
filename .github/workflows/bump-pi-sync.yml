@@ -12,9 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.MAIN_DEPLOY_KEY }} # main only accepts direct pushes from this key
       - name: Find pi-sync main
         id: upstream
         run: |
@@ -35,12 +36,9 @@ jobs:
       - if: steps.upstream.outputs.current != 'true'
         name: Commit the pin to main
         env:
-          GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.upstream.outputs.sha }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore(sync): pin pi-sync ${SHA:0:12}" -- PI_SYNC_COMMIT
-          git push origin HEAD:main
-          # Pushes made with the workflow token start no workflows, so start the deploy here.
-          gh workflow run publish-image.yml --ref main
+          git push origin HEAD:main # a deploy-key push starts publish-image itself

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Pin $DIGEST (built from $SHA) in deploy/k8s, push to main, and wait until the
-# environment serves $SHA. Argo CD syncs deploy/k8s from main.
+# environment serves $SHA. Argo CD syncs deploy/k8s from main. Pushed with the ci-main deploy key, so
+# the commit says [skip ci] to not start publish-image again.
 # Usage: SHA=<commit> DIGEST=sha256:<hex> scripts/deploy.sh preview|production
 set -euo pipefail
 
@@ -27,7 +28,7 @@ for attempt in 1 2 3 4 5; do
     echo "$env_name already pins $DIGEST"
     break
   fi
-  git commit --quiet -m "deploy($env_name): ${SHA:0:7}" -m "Source: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$SHA" -- "${files[@]}"
+  git commit --quiet -m "deploy($env_name): ${SHA:0:7} [skip ci]" -m "Source: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$SHA" -- "${files[@]}"
   if git push --quiet origin HEAD:main; then
     echo "Pushed $env_name pin for ${SHA:0:7}"
     # Best-effort: Argo CD refreshes now instead of at its next 30s poll.
