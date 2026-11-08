@@ -11,5 +11,9 @@
         "uploads.github.com"
       ]
     }
+  },
+  "git": {
+    "name": "bry-guy-pi-web-developer[bot]",
+    "email": "353922029+bry-guy-pi-web-developer[bot]@users.noreply.github.com"
   }
 }
