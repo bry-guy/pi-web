@@ -1,7 +1,15 @@
 {
-  "description": "Develop pi-web: work in worktrees, run mise run check, push agent/* branches and open PRs (feature/* pushes deploy preview)",
-  "egress": ["uploads.github.com"],
+  "description": "Develop pi-web: work in a worktree, run mise run check, push feature/<name> (deploys preview) or agent/<name> (no preview), open a PR and merge it with `gh pr merge --auto --squash` once CI passes. Merging deploys production. Changes under .pi/ and .github/ wait for Bryan.",
+  "egress": [
+    "uploads.github.com"
+  ],
   "secrets": {
-    "GH_TOKEN": { "hosts": ["github.com", "api.github.com", "uploads.github.com"] }
+    "GH_TOKEN": {
+      "hosts": [
+        "github.com",
+        "api.github.com",
+        "uploads.github.com"
+      ]
+    }
   }
 }
