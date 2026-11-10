@@ -3,10 +3,42 @@
 // least recently used idle one sleeps to make room. idleMs optionally also
 // sleeps workers after a fixed idle time. Activity = proxied requests other
 // than the passive ones web makes on its own (state, events, health).
+import http from "node:http";
+import https from "node:https";
+import { Readable } from "node:stream";
+
 export const PASSIVE = /^\/api\/(events|state|health)$/;
 
+// provider.upstream(name) is a base URL, or { url, headers } when the worker sits behind a
+// gateway that routes by header (OpenShell routes by Host). Null when it has no address.
+export function upstreamOf(provider, name) {
+  const u = provider.upstream(name);
+  if (!u) return null;
+  return typeof u === "string" ? { url: u, headers: {} } : { url: u.url, headers: u.headers || {} };
+}
+
+// fetch() ignores a Host header, so a request that sets one goes through node:http instead.
+export function upstreamFetch(url, init = {}) {
+  const headers = new Headers(init.headers);
+  if (!headers.has("host")) return globalThis.fetch(url, init);
+  const u = new URL(url);
+  return new Promise((resolve, reject) => {
+    const req = (u.protocol === "https:" ? https : http).request(u, { method: init.method || "GET", headers: Object.fromEntries(headers), signal: init.signal }, res => {
+      const out = new Headers();
+      for (const [k, v] of Object.entries(res.headers)) for (const x of [].concat(v)) out.append(k, x);
+      const empty = init.method === "HEAD" || [204, 205, 304].includes(res.statusCode);
+      resolve(new Response(empty ? null : Readable.toWeb(res), { status: res.statusCode, statusText: res.statusMessage, headers: out }));
+    });
+    req.on("error", reject);
+    const body = init.body;
+    if (body == null) req.end();
+    else if (typeof body === "string" || body instanceof Uint8Array) req.end(body);
+    else Readable.fromWeb(body).on("error", e => req.destroy(e)).pipe(req);
+  });
+}
+
 export function createLifecycle({
-  provider, fetchImpl = globalThis.fetch, log = console.log,
+  provider, fetchImpl = upstreamFetch, log = console.log,
   idleMs = 0, maxAwake = 3, sweepMs = 60_000, wakeTimeoutMs = 45_000, pollMs = 500, cacheMs = 3_000, now = Date.now,
 }) {
   const lastUsed = new Map();
@@ -33,10 +65,10 @@ export function createLifecycle({
   const busy = async name => !!inflight.get(name) || !!(await health(name))?.busy;
 
   async function health(name) {
-    const base = provider.upstream(name);
-    if (!base) return null;
+    const up = upstreamOf(provider, name);
+    if (!up) return null;
     try {
-      const res = await fetchImpl(`${base}/api/health`, { signal: AbortSignal.timeout(2_000) });
+      const res = await fetchImpl(`${up.url}/api/health`, { headers: up.headers, signal: AbortSignal.timeout(2_000) });
       return res.ok ? await res.json() : null;
     } catch { return null; }
   }

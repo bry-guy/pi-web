@@ -5,10 +5,30 @@
 //
 //   { "default":  { "anyProject": true },
 //     "operator": { "repos": ["bry-guy/infra"], "namespace": "pi-ez-operator",
-//                   "serviceAccount": "infra-operator", "env": ["operator-env"], "egress": "open" } }
+//                   "serviceAccount": "infra-operator", "env": ["operator-env"], "egress": "open" },
+//     "agent":    { "anyProject": true, "provider": "openshell",
+//                   "egress": [{ "host": "api.github.com", "port": 443 }] } }
 const K8S_NAME = /^[a-z0-9]([a-z0-9.-]{0,61}[a-z0-9])?$/;
 const LABEL_VALUE = /^[a-zA-Z0-9]([a-zA-Z0-9._-]{0,61}[a-zA-Z0-9])?$/;
 export const DEFAULT_GRANT = "default";
+export const PROVIDERS = ["openshell"];
+const HOST = /^[A-Za-z0-9*]([A-Za-z0-9*.-]{0,252})$/;
+
+// An OpenShell grant's egress: default deny, plus these endpoints.
+function parseEgressRules(name, rules) {
+  if (!Array.isArray(rules)) fail(`${name}.egress must be a list of {host, port} for provider openshell`);
+  return rules.map((r, i) => {
+    const at = `${name}.egress[${i}]`;
+    if (!r || typeof r !== "object") fail(`${at} must be an object`);
+    const unknown = Object.keys(r).filter(k => !["host", "port", "binaries", "allowEncodedSlash"].includes(k));
+    if (unknown.length) fail(`${at} has unknown fields ${unknown.join(", ")}`);
+    if (typeof r.host !== "string" || !HOST.test(r.host)) fail(`${at}.host is not a host name`);
+    if (!Number.isInteger(r.port) || r.port < 1 || r.port > 65535) fail(`${at}.port must be a port number`);
+    if (r.binaries != null && !(Array.isArray(r.binaries) && r.binaries.every(b => typeof b === "string" && b.startsWith("/")))) fail(`${at}.binaries must be absolute paths`);
+    if (r.allowEncodedSlash != null && typeof r.allowEncodedSlash !== "boolean") fail(`${at}.allowEncodedSlash must be true or false`);
+    return { host: r.host, port: r.port, ...(r.binaries ? { binaries: r.binaries } : {}), ...(r.allowEncodedSlash ? { allowEncodedSlash: true } : {}) };
+  });
+}
 
 function fail(message) { throw new Error(`WORKSPACED_GRANTS: ${message}`); }
 
@@ -26,12 +46,18 @@ export function parseGrants(text) {
     for (const key of ["namespace", "serviceAccount"]) if (g[key] != null && !K8S_NAME.test(g[key])) fail(`${name}.${key} is not a valid name`);
     // Refuse rather than silently drop: a grant that used to pick a sandbox must not quietly run without one.
     if (g.runtimeClass != null) fail(`${name}.runtimeClass is no longer supported; remove it from the grant`);
-    if (g.egress != null && !LABEL_VALUE.test(g.egress)) fail(`${name}.egress is not a valid label value`);
+    if (g.provider != null && !PROVIDERS.includes(g.provider)) fail(`${name}.provider must be one of ${PROVIDERS.join(", ")}`);
+    if (g.provider === "openshell") {
+      // Refuse what an OpenShell worker cannot hold yet, rather than run without it.
+      for (const key of ["namespace", "serviceAccount"]) if (g[key] != null) fail(`${name}.${key} is not supported with provider openshell`);
+      if (env.length) fail(`${name}.env is not supported with provider openshell`);
+    } else if (g.egress != null && (typeof g.egress !== "string" || !LABEL_VALUE.test(g.egress))) fail(`${name}.egress is not a valid label value`);
     if (!g.anyProject && !repos.length) fail(`${name} needs anyProject or repos`);
     grants[name] = {
       name, anyProject: !!g.anyProject, repos, env,
       namespace: g.namespace || null, serviceAccount: g.serviceAccount || null,
-      egress: g.egress || null,
+      egress: g.provider === "openshell" ? parseEgressRules(name, g.egress ?? []) : g.egress || null,
+      provider: g.provider || null,
       description: typeof g.description === "string" ? g.description : "",
     };
   }
