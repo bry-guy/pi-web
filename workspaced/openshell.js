@@ -68,7 +68,7 @@ export function createArgs({ name, repository, grant, config, policyFile }) {
   } };
   return [
     "sandbox", "create", "--name", `ws-${name}`, "--from", config.image, "--policy", policyFile,
-    "--expose", String(WORKSPACE_PORT), "--detach", "--no-tty",
+    "--expose", String(WORKSPACE_PORT), "--detach", "--no-tty", "--restart-policy", "on-failure",
     "--label", `${MANAGED_LABEL}=${MANAGED_BY}`, "--label", `${NAME_LABEL}=${name}`,
     "--annotation", `${GRANT_ANNOTATION}=${grant?.name || DEFAULT_GRANT}`, "--annotation", `${IMAGE_ANNOTATION}=${config.image}`,
     ...(repository ? ["--annotation", `${REPO_ANNOTATION}=${repository}`] : []),
@@ -83,7 +83,8 @@ const httpError = (message, status, code) => Object.assign(new Error(message), {
 // One `sandbox list -o json` entry as a workspace.
 function toWorkspace(s) {
   const state = PHASE_STATE[s.phase] || "starting";
-  const failure = (s.conditions || []).find(c => c.message)?.message;
+  // The first condition with a message is usually "Sandbox is not suspended"; the failing one is False.
+  const failure = (s.conditions || []).find(c => c.status === "False" && c.type !== "Suspended" && c.message)?.message;
   return {
     name: s.labels?.[NAME_LABEL] || null,
     provider: "openshell",
@@ -167,7 +168,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       try {
         const policyFile = path.join(dir, "policy.yaml");
         writeFileSync(policyFile, YAML.stringify(sandboxPolicy(grant)));
-        // Waits for the sandbox and its exposed port; pulling the image can take minutes.
+        // --detach returns once OpenShell has the sandbox (~7 s), not when the worker answers; wake waits for it.
         await run(createArgs({ name, repository, grant, config, policyFile }), 600_000);
       } finally {
         rmSync(dir, { recursive: true, force: true });

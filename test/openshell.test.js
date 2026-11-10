@@ -128,6 +128,7 @@ test("openshell create makes a labelled PVC, then a sandbox with the worker's en
   assert.deepEqual(args.slice(0, 4), ["sandbox", "create", "--name", "ws-agent"]);
   assert.equal(flag("--from"), "img@sha256:abc");
   assert.equal(flag("--expose"), "3141");
+  assert.equal(flag("--restart-policy"), "on-failure", "a crashed worker comes back");
   assert.ok(args.includes("--detach") && args.includes("--no-tty"));
   assert.deepEqual(args.slice(args.indexOf("--")), ["--", "node", "/app/server/index.js"]);
   const env = args.flatMap((a, i) => a === "--env" ? [args[i + 1]] : []);
@@ -214,6 +215,28 @@ test("a gateway outage hides sandboxes but never breaks the primary's workers", 
   await provider.scale("plain", 0);
   await provider.create({ name: "other", repository: "o/other", grant: GRANTS.default });
   assert.deepEqual(primary.calls, [["scale", "plain", 0], ["create", "other"]]);
+});
+
+test("a failed sandbox names the condition that failed; every call answers 503 workspace_failed", async () => {
+  // The real shape from `sandbox get` after its worker process was killed: Suspended is the first condition with a message.
+  const conditions = [
+    { type: "Suspended", status: "False", reason: "NotSuspended", message: "Sandbox is not suspended" },
+    { type: "Ready", status: "False", reason: "MainProcessFailed", message: "Canonical main process exited with status 137" },
+    { type: "PodScheduled", status: "True", reason: "PodScheduled", message: "" },
+  ];
+  const cli = fakeCli([{ ...sandbox("agent", "Error"), conditions }]);
+  const provider = withOpenShell(fakePrimary([]), openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec }), { log: () => {} });
+  const lifecycle = createLifecycle({ provider, idleMs: 0, sweepMs: 0, log: () => {} });
+  const app = createWorkspaced({ provider, grants: GRANTS, token: TOKEN, lifecycle });
+  try {
+    const [w] = await provider.list();
+    assert.deepEqual([w.state, w.problem.message], ["failed", "Canonical main process exited with status 137"]);
+    for (const [method, path] of [["GET", "/api/health"], ["POST", "/api/sessions/s1/message"]]) {
+      const res = await app.request(`/v1/workspaces/agent${path}`, { method, headers: auth, body: method === "POST" ? "{}" : undefined });
+      assert.equal(res.status, 503, path);
+      assert.equal((await res.json()).error, "workspace_failed", path);
+    }
+  } finally { lifecycle.stop(); }
 });
 
 test("a grant asking for an unconfigured provider fails create clearly; other grants are untouched", async () => {
