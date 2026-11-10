@@ -4,7 +4,8 @@ import https from "node:https";
 const SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
 
 // The API through `kubectl proxy` (WORKSPACED_KUBE_URL, e.g. http://127.0.0.1:8001): workspaced run
-// outside the cluster with the proxy's credentials. For development and tests against a real cluster.
+// outside the cluster with the proxy's credentials. For development and tests against a real cluster;
+// ignored inside a cluster, where it would replace the pod's own credentials with unauthenticated calls.
 export function proxyKube(base, fetchImpl = globalThis.fetch) {
   return {
     async request(method, path, body, contentType = "application/json") {
@@ -21,7 +22,7 @@ export function proxyKube(base, fetchImpl = globalThis.fetch) {
   };
 }
 
-export const kubeFromEnv = (env = process.env) => env.WORKSPACED_KUBE_URL ? proxyKube(env.WORKSPACED_KUBE_URL) : inClusterKube();
+export const kubeFromEnv = (env = process.env) => env.WORKSPACED_KUBE_URL && !env.KUBERNETES_SERVICE_HOST ? proxyKube(env.WORKSPACED_KUBE_URL) : inClusterKube();
 
 // Minimal in-cluster Kubernetes API client; workspaced needs a handful of CRUD
 // calls, which does not justify a client library dependency.

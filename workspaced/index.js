@@ -175,7 +175,7 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
       const w = await lifecycle.info(name);
       if (w?.state === "sleeping") return c.json({ error: "workspace_sleeping", name }, 503);
       // A failed worker would otherwise pass its gateway's own 412 to web's polling.
-      if (w?.problem?.fatal) return await starting(c, name);
+      if (w?.provider === "openshell" && w?.problem?.fatal) return await starting(c, name);
     } else if (!await lifecycle.ensureAwake(name)) return await starting(c, name);
     const up = upstreamOf(provider, name);
     if (!up) return c.json({ error: "workspace_unavailable", name }, 502);

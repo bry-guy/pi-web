@@ -81,7 +81,7 @@ A grant with `"provider": "openshell"` creates its workers as [NVIDIA OpenShell]
 
 `WORKSPACE_IMAGE`, `WORKSPACE_STORAGE` and `WORKSPACE_STORAGE_CLASS` apply as for Deployment workers. Other `OPENSHELL_*` variables the CLI reads (such as `OPENSHELL_GATEWAY_INSECURE`) pass through.
 
-A sandbox worker is `ws-<name>`: the worker image running `node /app/server/index.js` with the same environment a Deployment worker gets (plus `HOST=127.0.0.1`), the PVC `ws-<name>` at `/data` (created with the labels OpenShell requires, or used as is if it exists), port 3141 exposed through the gateway, and a policy: `/app` and the system read-only, `/data` and `/tmp` read-write, and no network except the grant's `egress`:
+A sandbox worker is `ws-<name>`: the worker image running `node /app/server/index.js` with the plain environment a Deployment worker gets (plus `HOST=127.0.0.1`) but none of its Secrets (no `PI_SYNC_TOKEN`, GitHub or model sign-in yet), the PVC `ws-<name>` at `/data` (created with the labels OpenShell requires, or used as is if it exists), port 3141 exposed through the gateway, and a policy: `/app` and the system read-only, `/data` and `/tmp` read-write, and no network except the grant's `egress`:
 
 ```json
 "agent": { "anyProject": true, "provider": "openshell", "egress": [

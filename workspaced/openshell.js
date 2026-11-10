@@ -104,7 +104,9 @@ function toWorkspace(s) {
 
 // exec(bin, args, {env, timeout}) resolves { stdout, stderr }: execFile's promise form, injectable for tests.
 export function openshellProvider({ kube, config, exec = promisify(execFile), waitMs = 90_000, pollMs = 2_000 }) {
-  const env = { ...process.env, OPENSHELL_GATEWAY_ENDPOINT: config.endpoint, OPENSHELL_WORKSPACE: config.workspace, OPENSHELL_COLOR: "never" };
+  // The CLI gets only what it reads: never workspaced's own token or the workers' secrets.
+  const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(PATH|HOME|XDG_CONFIG_HOME|OPENSHELL_.*)$/.test(k)));
+  const env = { ...own, OPENSHELL_GATEWAY_ENDPOINT: config.endpoint, OPENSHELL_WORKSPACE: config.workspace, OPENSHELL_COLOR: "never" };
   const pvcs = `/api/v1/namespaces/${config.namespace}/persistentvolumeclaims`;
   const endpoint = new URL(config.endpoint);
   // shortcut: pins live in memory (the CLI cannot change a sandbox's annotations); persist them if pinning sandboxes matters.
@@ -114,7 +116,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     try {
       return (await exec(config.bin, args, { env, timeout, maxBuffer: 16 * 1024 * 1024 })).stdout;
     } catch (e) {
-      const detail = String(e.stderr || e.message || "").replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").filter(Boolean).pop();
+      const detail = String(e.stderr || (e.killed ? "timed out" : `exit ${e.code ?? "unknown"}`)).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").filter(Boolean).pop();
       throw httpError(`openshell ${args.slice(0, 2).join(" ")} failed: ${detail}`, 502, "openshell_error");
     }
   }
