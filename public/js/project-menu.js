@@ -6,6 +6,14 @@ import { setHTML, store, toast } from "./store.js";
 import { esc, groupMembers, icon, sidebarEntry, newChat, newProjectSession, restoreConversation, selectChat, selectSession, syncSummary } from "./shell.js";
 import { workerAction, workerCard } from "./workers.js";
 import { gitErrorMessage, launchSetup } from "./panel-utils.js";
+import { renderMarkdown } from "./markdown.js";
+
+// A preview shows Pi's replies as plain text: rendered Markdown without its markers.
+function plainText(markdown) {
+  const template = document.createElement("template");
+  template.innerHTML = renderMarkdown(markdown).replace(/<br\s*\/?>/g, "\n");
+  return template.content.textContent.trim();
+}
 
 export function openProjectMenu(projectId) {
   store.set({ projectMenu: { projectId }, sessionPicker: null, drawerOpen: false });
@@ -354,7 +362,8 @@ class PiProjectMenu extends HTMLElement {
     else {
       const hidden = preview.records.length - SHOWN;
       content = `${hidden > 0 ? `<div class="convo-preview-note">${hidden} earlier message${hidden === 1 ? "" : "s"}</div>` : ""}${preview.records.slice(-SHOWN).map(record => {
-        const text = record.text.length > 600 ? `${record.text.slice(0, 600)}…` : record.text;
+        const plain = record.role === "user" ? record.text : plainText(record.text);
+        const text = plain.length > 600 ? `${plain.slice(0, 600)}…` : plain;
         return `<div class="convo-preview-msg ${record.role}"><span>${record.role === "user" ? "You" : "Pi"}</span><p>${esc(text)}</p></div>`;
       }).join("")}`;
     }
@@ -425,7 +434,7 @@ class PiProjectMenu extends HTMLElement {
         : `<div class="session-history-empty">Ended chats show up here, and opening one brings it back.</div>`}</section>`;
     // Without workspaced (mock mode) there is no workers list, and no chats worker to show.
     const worker = (workers?.workspaces || []).find(item => item.name === CHATS_WORKER);
-    const workerSection = !workers && !store.state.workersError ? "" : `<section><div class="session-context-heading"><span>Worker</span></div>${worker
+    const workerSection = !workers && !store.state.workersError ? "" : `<section class="chats-worker"><div class="session-context-heading"><span>Worker</span></div>${worker
       ? workerCard(worker, workers.usageAvailable, { canDelete: false })
       : `<div class="session-history-empty">${esc(store.state.workersError || "The chats worker starts with the first chat.")}</div>`}</section>`;
     const error = menu.error ? `<div class="session-picker-error">${esc(menu.error)}</div>` : "";

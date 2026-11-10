@@ -52,9 +52,9 @@ function json(data, ok = true, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 }
 
-async function boot() {
+async function boot(url = "http://pi-web.test/") {
   const dom = new JSDOM("<!doctype html><html><body><pi-app></pi-app></body></html>", {
-    url: "http://pi-web.test/",
+    url,
     pretendToBeVisual: true,
   });
   let narrowViewport = false;
@@ -246,8 +246,13 @@ async function boot() {
 }
 
 test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
-  const dom = await boot();
+  // The URL names the session to open on load (not the first one, which opens by default).
+  const dom = await boot("http://pi-web.test/?s=sibling");
   const { store } = await import("../public/js/store.js");
+  assert.equal(store.state.sessionId, "sibling", "the session in the URL opens on load");
+  assert.equal(dom.window.history.length, 1, "opening it on load adds no Back step");
+  (await import("../public/js/shell.js")).selectSession("p1", "s1", { history: "replace" });
+  assert.equal(dom.window.location.search, "?s=s1");
   const { api, applyEvent: applyEventNow, openTranscript, refreshState, shouldBufferEvent } = await import("../public/js/api.js");
   // The thread renders streaming events once per frame; assertions read the DOM right away, so flush it.
   const flushThreads = () => dom.window.document?.querySelectorAll("pi-thread")?.forEach(thread => { if (thread.renderQueued) thread.render(); });
@@ -1228,14 +1233,49 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.match(menuText(), /Plan the week/);
   store.set({ projectMenu: null, view: "chat", projectId: "pp-eco", sessionId: "f1", chatId: null });
   assert.equal(root.querySelector("pi-header .workspace-trigger").textContent.trim(), "eco", "a project session's header names only its project");
-  assert.match(root.querySelector("pi-header [data-act='session-panel']").getAttribute("aria-label"), /^Project menu for /);
+  assert.match(root.querySelector("pi-header [data-act='session-panel']").getAttribute("aria-label"), /^Session menu for /);
+  // A project-folder session's header opens its session panel too: session actions, no Git, and a way to the Project menu.
+  root.querySelector("pi-header [data-act='session-panel']").click();
+  assert.equal(store.state.projectMenu, null, "not the Project menu");
+  assert.ok(root.querySelector("pi-session-picker [data-act='rename-session']"), "Rename is reachable");
+  assert.ok(root.querySelector("pi-session-picker [data-act='end-session']"));
+  assert.equal(root.querySelector("pi-session-picker [aria-label='Git']"), null, "no Git section without a repository");
+  assert.equal(root.querySelector("pi-session-picker [data-act='open-fork']"), null, "no fork without a repository");
+  root.querySelector("pi-session-picker [data-act='open-project-menu']").click();
+  assert.equal(store.state.sessionPicker, null);
+  assert.equal(store.state.projectMenu?.projectId, "group:eco", "Project… opens the project's menu");
+  store.set({ projectMenu: null });
   store.set({ filesOpen: true });
   assert.equal(root.querySelector("pi-files .file-scope-label")?.textContent, "Repository:", "a project session's Files labels the repository it shows");
   assert.equal(root.querySelector("pi-files .file-repo")?.selectedOptions[0].textContent, "code");
   store.set({ filesOpen: false });
   store.set({ projectId: "pp-eco-code", sessionId: "r1" });
   assert.match(root.querySelector("pi-header .workspace-trigger").textContent, /code · main\s*·\s*12345678/);
+  root.querySelector("pi-header [data-act='session-panel']").click();
+  assert.ok(root.querySelector("pi-session-picker [aria-label='Git']"), "a repository session keeps its Git section");
+  assert.ok(root.querySelector("pi-session-picker [data-act='open-project-menu']"), "and reaches its project's menu");
+  store.set({ sessionPicker: null });
   store.state.projects.splice(-2, 2);
+  store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null });
+
+  // Each session has its own URL: switching adds a Back step, and Back and Forward move between sessions.
+  const sessionInUrl = () => new URL(dom.window.location.href).searchParams.get("s");
+  selectSession("p1", "s1", { history: "replace" });
+  const historyLength = dom.window.history.length;
+  selectSession("p1", "sibling");
+  assert.equal(sessionInUrl(), "sibling");
+  assert.equal(dom.window.history.length, historyLength + 1, "switching adds one Back step");
+  selectSession("p1", "sibling");
+  assert.equal(dom.window.history.length, historyLength + 1, "re-opening the open session adds none");
+  dom.window.history.back();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(store.state.sessionId, "s1", "Back opens the previous session");
+  assert.equal(sessionInUrl(), "s1");
+  dom.window.history.forward();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(store.state.sessionId, "sibling", "Forward opens it again");
+  selectSession("p1", "s1", { history: "replace" });
+  assert.equal(dom.window.history.length, historyLength + 1, "a replace (startup, server move) adds no Back step");
   store.set({ view: "chat", projectId: "p1", sessionId: "s1", chatId: null });
 
   // One copy row per turn, on its last reply; "Copy Turn" only when the turn had several.

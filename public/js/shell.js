@@ -12,6 +12,20 @@ const ACTIVE_SESSION_STORAGE_KEY = "pi-ez-web:active-session";
 function saveActiveSession(value) {
   try { globalThis.localStorage?.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(value)); } catch { /* storage is optional */ }
 }
+// The open conversation is in the URL (?s=<id>), so Back and Forward move between sessions.
+export const urlSessionId = () => new URL(location.href).searchParams.get("s");
+// "push" adds a Back step when switching from another conversation; "replace" (startup, server-driven moves) does not; "none" (popstate) leaves the URL.
+function showInUrl(id, mode = "push") {
+  if (mode === "none") return;
+  const url = new URL(location.href);
+  const current = url.searchParams.get("s");
+  if (current === id) return;
+  url.searchParams.set("s", id);
+  if (current && mode === "push") {
+    url.hash = ""; // a file, steps or settings view belongs to the conversation being left
+    history.pushState({ piSession: id }, "", url);
+  } else history.replaceState(history.state, "", url);
+}
 function savedActiveSession() {
   try {
     const value = JSON.parse(globalThis.localStorage?.getItem(ACTIVE_SESSION_STORAGE_KEY) || "null");
@@ -102,6 +116,7 @@ export function sidebarProjects(projects = store.state.projects) {
 }
 
 export const groupId = name => `group:${name}`;
+const sessionCount = n => `${n} session${n === 1 ? "" : "s"}`;
 
 /** The repositories (projects) of the pi project `id` names, or the one project it is. */
 export function groupMembers(id) {
@@ -132,10 +147,12 @@ function wakeEarly(project) {
   if (project?.workspace && project.workspaceState === "sleeping") void api.wakeWorkspace(project.workspace);
 }
 
-export function selectSession(projectId, sessionId, { showOperation = false } = {}) {
+export function selectSession(projectId, sessionId, { showOperation = false, history: urlMode } = {}) {
   const project = store.state.projects.find(p => p.id === projectId);
   const node = findNode(project?.sessions, sessionId);
   wakeEarly(project);
+  // Before the view changes, so a closing settings view goes back over its own entry, not this one.
+  showInUrl(sessionId, urlMode);
   store.set({
     view: "chat", projectId, sessionId, chatId: null, drawerOpen: false, sessionPicker: null, sessionPickerError: null,
     filesOpen: store.state.filesOpen, files: [], fileError: null, filePath: null, fileView: null,
@@ -164,14 +181,15 @@ export function selectSessionById(sessionId, options = {}) {
   }
   const chat = store.state.chats.find(item => item.id === sessionId);
   if (chat) {
-    selectChat(sessionId);
+    selectChat(sessionId, options);
     return true;
   }
   return false;
 }
 
-export function selectChat(chatId) {
+export function selectChat(chatId, { history: urlMode } = {}) {
   const chat = store.state.chats.find(c => c.id === chatId);
+  showInUrl(chatId, urlMode);
   store.set({
     view: "chat", chatId, sessionId: null, projectId: null, drawerOpen: false, sessionPicker: null, sessionPickerError: null,
     filesOpen: false, files: [], fileError: null, filePath: null, fileView: null,
@@ -191,24 +209,26 @@ export function selectChat(chatId) {
 export function openSavedSelectionEarly() {
   const saved = savedActiveSession();
   if (!saved?.id || !["chat", "session"].includes(saved.kind)) return null;
+  if (urlSessionId() && urlSessionId() !== saved.id) return null; // the URL names another conversation; main.js opens it
+
   const isChat = saved.kind === "chat";
   store.set({ view: "chat", chatId: isChat ? saved.id : null, sessionId: isChat ? null : saved.id, projectId: isChat ? null : saved.projectId || null, model: null, requestedModel: null, modelFallback: false, modelUnavailable: false });
   openTranscript(saved.id);
   return saved.id;
 }
 
-export function restoreLastSelection() {
+export function restoreLastSelection(options = {}) {
   const saved = savedActiveSession();
   if (!saved?.id) return false;
   if (saved.kind === "chat" && store.state.chats.some(chat => chat.id === saved.id)) {
-    selectChat(saved.id);
+    selectChat(saved.id, options);
     return true;
   }
   if (saved.kind === "session") {
     const project = store.state.projects.find(candidate => candidate.id === saved.projectId && findNode(candidate.sessions, saved.id));
     if (project) {
       store.state.openTree[project.id] = true;
-      selectSession(project.id, saved.id);
+      selectSession(project.id, saved.id, options);
       return true;
     }
   }
@@ -523,7 +543,7 @@ class PiSidebar extends HTMLElement {
         <div class="row mono ${active && !open ? "active" : ""}" role="button" tabindex="0" aria-expanded="${open}" data-act="project-row" data-id="${esc(p.id)}">
           <span class="caret" data-act="toggle-tree" data-tree-id="${esc(p.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(p.name)}">${icon("chevronRight")}</span>
           <span class="lbl">${esc(p.name)}</span>
-          <span class="count" title="${this.count(p.sessions)} sessions" aria-label="${this.count(p.sessions)} sessions">${this.count(p.sessions)}</span>
+          <span class="count" title="${sessionCount(this.count(p.sessions))}" aria-label="${sessionCount(this.count(p.sessions))}">${this.count(p.sessions)}</span>
           <button class="row-new" data-act="project-new-session" data-id="${esc(p.id)}" data-tip="New session" aria-label="New session in ${esc(p.name)}">${icon("plus")}</button>
         </div></div>`);
       if (open) this.sessionRows(p, p.sessions, 0, nameMatch ? "" : q, projRows, !!q && nameMatch);
@@ -578,9 +598,7 @@ class PiHeader extends HTMLElement {
       store.set({ view: "settings" });
     } else if (act === "session-panel") {
       const p = store.project();
-      // The project folder has no branches to switch between: its project menu instead.
-      if (p?.kind === "folder") openProjectMenu(groupId(p.group));
-      else if (p) openSessionPicker(p.id, { mode: "switch", sourceSessionId: store.state.sessionId });
+      if (p) openSessionPicker(p.id, { mode: "switch", sourceSessionId: store.state.sessionId });
       void refreshState().catch(() => {});
     } else if (act === "files") {
       e.stopPropagation();
@@ -658,7 +676,7 @@ class PiHeader extends HTMLElement {
       ? `<svg width="17" height="15" viewBox="0 0 17 15" aria-hidden="true"><rect width="17" height="1.8" y="0" fill="currentColor"/><rect width="17" height="1.8" y="6.6" fill="currentColor"/><rect width="17" height="1.8" y="13.2" fill="currentColor"/></svg>`
       : icon("sidebar");
     // A conversation's title block is one target that opens its session panel; the header's buttons keep their own actions.
-    const panelAct = inProject ? ` data-act="session-panel" role="button" tabindex="0" aria-label="${esc(`${store.project()?.kind === "folder" ? "Project menu" : "Session menu"} for ${title}`)}"` : "";
+    const panelAct = inProject ? ` data-act="session-panel" role="button" tabindex="0" aria-label="${esc(`Session menu for ${title}`)}"` : "";
     setHTML(this, `<header class="bar${panelAct ? " bar-session" : ""}">
       <button class="hamburger" data-act="sidebar-toggle" title="${sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}" aria-expanded="${sidebarOpen}">${sidebarControl}</button>
       <div class="bar-main"${panelAct}><div class="bar-title">${esc(title)}</div>${subArea}${operationArea}</div>
