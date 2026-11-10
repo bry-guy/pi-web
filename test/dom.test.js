@@ -742,8 +742,10 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.match(root.querySelector("pi-settings").textContent, /Default model/);
   assert.match(root.querySelector("pi-settings").textContent, /Default thinking mode/);
   assert.equal(root.querySelector("pi-settings [data-setting='defaultThinkingLevel']").value, "xhigh");
+  assert.ok(root.querySelector("pi-settings .settings-path-control > .repos-root-input + [data-act='save-repos-root']"), "the repositories path and its Save wrap as one unit");
   store.set({ settingsCategory: "providers" });
   assert.match(root.querySelector("pi-settings").textContent, /Anthropic/);
+  for (const button of root.querySelectorAll("pi-settings .provider-actions [data-auth-login]")) assert.equal(button.title, button.textContent, "a login button's full label survives an ellipsis");
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Default model/, "only the active category renders");
   store.set({ settingsCategory: "pi" });
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Pi profile & extensions/);

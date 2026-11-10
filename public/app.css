@@ -594,7 +594,7 @@ pi-context-meter { display: flex; min-width: 0; }
 }
 .settings-section { margin-top: 18px; }
 .settings-section-title { color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: .09em; text-transform: uppercase; font-weight: 600; }
-.provider-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; margin-top: 8px; align-items: stretch; }
+.provider-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 8px; margin-top: 8px; align-items: stretch; }
 .provider-card { display: flex; flex-direction: column; min-width: 0; margin-top: 0; padding: 12px; }
 .provider-card-head { display: flex; align-items: flex-start; gap: 10px; min-height: 42px; }
 .provider-card-head > div { flex: 1; min-width: 0; }
@@ -603,7 +603,9 @@ pi-context-meter { display: flex; min-width: 0; }
 .provider-card .provider-actions { margin-top: auto; }
 .provider-card .settings-action { min-height: 31px; text-align: left; }
 .provider-action-note { color: var(--faint); font: 10.5px/1.4 var(--mono); }
-.provider-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 6px; margin-top: 8px; }
+/* Buttons keep one line and take their own width; one that doesn't fit beside the others moves to the next line. */
+.provider-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.provider-actions > .settings-action { flex: 1 1 auto; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .settings-action, .settings-save {
   border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: var(--radius-sm);
   padding: 6px 9px; font-size: 11.5px; cursor: pointer;
@@ -634,7 +636,7 @@ pi-context-meter { display: flex; min-width: 0; }
 .settings-card-spaced { margin-top: 8px; }
 .settings-select, .settings-inline-input { min-width: 180px; padding: 7px 9px; border-radius: var(--radius-md); background: var(--surface-2); color: var(--text); font: inherit; font-family: var(--mono); font-size: 11.5px; outline: none; }
 .settings-inline-input { width: 240px; }
-.pi-profile-input, .pi-resource-list { width: min(100%, 430px); }
+.pi-profile-input, .pi-resource-list { width: 300px; }
 .pi-resource-list { min-height: 82px; resize: vertical; line-height: 1.45; }
 .pi-resource-status { align-items: flex-start; }
 .settings-select:focus, .settings-inline-input:focus { box-shadow: 0 0 0 2px var(--accent-soft); }
@@ -643,12 +645,16 @@ pi-context-meter { display: flex; min-width: 0; }
 .settings-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 /* A row's text keeps a readable width; when the row is too narrow its control wraps below instead of squeezing the text. */
 .settings-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 13px 16px; }
-.settings-row .sr-main, .settings-actions-row > .sr-sub { flex: 1 1 12rem; min-width: 0; }
-.settings-save { white-space: nowrap; }
+/* Controls keep their size but never get wider than the row. */
+.settings-row > * { flex: 0 0 auto; max-width: 100%; }
+.settings-row .sr-main, .settings-actions-row > .sr-sub { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.settings-save, .settings-row .settings-action { white-space: nowrap; }
 .settings-row .sr-title { font-size: 13.5px; }
 .settings-row .sr-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .settings-path-row { align-items: flex-start; flex-wrap: wrap; }
-.settings-path-control { display: flex; flex: 1 1 300px; gap: 6px; min-width: 240px; }
+/* Input and its Save button wrap below the text together; the input gives up width, the button doesn't. */
+.settings-path-control { display: flex; flex: 1 1 300px; gap: 6px; min-width: 0; }
+.settings-path-control > .settings-save { flex: 0 0 auto; }
 .repos-root-input {
   flex: 1; min-width: 0; padding: 6px 9px; border-radius: var(--radius-md);
   background: var(--surface-2); color: var(--text); font-family: var(--mono); font-size: 11.5px; outline: none;
@@ -1602,7 +1608,7 @@ pi-extension-ui { display: block; flex: 0 0 auto; background: var(--bg); }
 @media (hover: none) { .row { opacity: 1; } }
 
 /* Pi settings: a row that opens a sub-page (Extensions, Skills). */
-.settings-link { width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; align-items: center; }
+.settings-link { flex-wrap: nowrap; width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; align-items: center; }
 .settings-link:hover, .settings-link:focus-visible { background: var(--hover); outline: 0; }
 .settings-link-chevron { display: inline-grid; color: var(--faint); }
 .settings-link-chevron .icon { width: 16px; height: 16px; }
