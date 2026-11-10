@@ -99,6 +99,25 @@ test("replies are routed by reference or to the latest notice, and confirmed", a
   notifier.stop();
 });
 
+test("a question whose DM failed is sent once more, and a failed delivery is reported", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { notifier, sent } = setup({ agents: { s1: "labrat" }, post: async () => { throw new Error("worker down"); } });
+  let fails = 1;
+  const real = sent.push.bind(sent);
+  sent.push = (...a) => { if (fails-- > 0) throw new Error("discord down"); return real(...a); };
+  notifier.event("s1", "extension_ui_request", select);
+  await flush();
+  assert.equal(sent.length, 0);
+  t.mock.timers.tick(30_000);
+  await flush();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].content, /Pick one/);
+  await notifier.handleMessage(dm("1"));
+  await flush();
+  assert.match(sent[1].content, /Could not deliver/);
+  assert.deepEqual(replyAction({ kind: "question", requestId: "r", method: "input", options: [] }, "  "), { hint: "Reply with the text to enter." });
+});
+
 test("an already answered question says so", async () => {
   const { notifier, sent } = setup({ agents: { a1: "bot" }, post: async () => ({ status: 409, body: { error: "stale_extension_ui_request" } }) });
   notifier.event("a1", "extension_ui_request", select);
