@@ -523,7 +523,7 @@ class PiSidebar extends HTMLElement {
         <div class="row mono ${active && !open ? "active" : ""}" role="button" tabindex="0" aria-expanded="${open}" data-act="project-row" data-id="${esc(p.id)}">
           <span class="caret" data-act="toggle-tree" data-tree-id="${esc(p.id)}" role="button" tabindex="0" aria-label="${open ? "Collapse" : "Expand"} ${esc(p.name)}">${icon("chevronRight")}</span>
           <span class="lbl">${esc(p.name)}</span>
-          <span class="count">${this.count(p.sessions)}</span>
+          <span class="count" title="${this.count(p.sessions)} sessions" aria-label="${this.count(p.sessions)} sessions">${this.count(p.sessions)}</span>
           <button class="row-new" data-act="project-new-session" data-id="${esc(p.id)}" data-tip="New session" aria-label="New session in ${esc(p.name)}">${icon("plus")}</button>
         </div></div>`);
       if (open) this.sessionRows(p, p.sessions, 0, nameMatch ? "" : q, projRows, !!q && nameMatch);
@@ -658,7 +658,7 @@ class PiHeader extends HTMLElement {
       ? `<svg width="17" height="15" viewBox="0 0 17 15" aria-hidden="true"><rect width="17" height="1.8" y="0" fill="currentColor"/><rect width="17" height="1.8" y="6.6" fill="currentColor"/><rect width="17" height="1.8" y="13.2" fill="currentColor"/></svg>`
       : icon("sidebar");
     // A conversation's title block is one target that opens its session panel; the header's buttons keep their own actions.
-    const panelAct = inProject ? ` data-act="session-panel" role="button" tabindex="0" aria-label="${esc(`Session menu for ${title}`)}"` : "";
+    const panelAct = inProject ? ` data-act="session-panel" role="button" tabindex="0" aria-label="${esc(`${store.project()?.kind === "folder" ? "Project menu" : "Session menu"} for ${title}`)}"` : "";
     setHTML(this, `<header class="bar${panelAct ? " bar-session" : ""}">
       <button class="hamburger" data-act="sidebar-toggle" title="${sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}" aria-expanded="${sidebarOpen}">${sidebarControl}</button>
       <div class="bar-main"${panelAct}><div class="bar-title">${esc(title)}</div>${subArea}${operationArea}</div>

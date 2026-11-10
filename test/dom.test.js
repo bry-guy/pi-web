@@ -395,6 +395,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(root.querySelector("[data-act='open-fork']").disabled, false, "Fork is an enabled action");
   assert.equal(root.querySelector("[data-act='merge-branch']").disabled, true);
   assert.equal(root.querySelector("[data-act='delete-branch']").disabled, true);
+  assert.match(root.querySelector(".session-disabled-reason")?.textContent || "", /primary checkout/, "the disabled reason is visible, not only a tooltip");
   assert.equal(root.querySelector(".session-picker [data-session-name]"), null, "the session panel no longer edits the name");
   assert.equal(root.querySelector(".session-picker .branch-picker-trigger"), null, "the branch dropdown is replaced by Switch");
   const forkOpener = root.querySelector("[data-act='open-fork']");
@@ -999,6 +1000,17 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   filesToggle().click();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.ok(root.querySelector("pi-files [data-file='README.md']"), "Files opens after closing it over a file");
+  // On a phone the tree covers the chat: "Back to chat" from a file closes both.
+  dom.setNarrowViewport(true);
+  root.querySelector("pi-files [data-file='src/app.js']").click();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  root.querySelector("[data-act='close-file']").click();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(store.state.filePath, null);
+  assert.equal(store.state.filesOpen, false, "phone Back to chat lands on the chat, not the tree");
+  dom.setNarrowViewport(false);
+  filesToggle().click();
+  await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(root.querySelector("pi-header [data-act='files'] svg path:last-child").getAttribute("d"), "m11.4 4-2.8 12", "the Files toggle is a </> code symbol");
 
   // Settings → Appearance → Show hidden files (on by default) hides dot-names from the tree.
@@ -1197,6 +1209,11 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.match(menuText(), /Plan the week/);
   store.set({ projectMenu: null, view: "chat", projectId: "pp-eco", sessionId: "f1", chatId: null });
   assert.equal(root.querySelector("pi-header .workspace-trigger").textContent.trim(), "eco", "a project session's header names only its project");
+  assert.match(root.querySelector("pi-header [data-act='session-panel']").getAttribute("aria-label"), /^Project menu for /);
+  store.set({ filesOpen: true });
+  assert.equal(root.querySelector("pi-files .file-scope-label")?.textContent, "Repository:", "a project session's Files labels the repository it shows");
+  assert.equal(root.querySelector("pi-files .file-repo")?.selectedOptions[0].textContent, "code");
+  store.set({ filesOpen: false });
   store.set({ projectId: "pp-eco-code", sessionId: "r1" });
   assert.match(root.querySelector("pi-header .workspace-trigger").textContent, /code · main\s*·\s*12345678/);
   store.state.projects.splice(-2, 2);

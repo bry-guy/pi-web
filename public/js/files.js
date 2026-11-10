@@ -1,6 +1,6 @@
 import { api } from "./api.js";
 import { setHTML, store } from "./store.js";
-import { esc, gitStatusText, icon } from "./shell.js";
+import { esc, gitStatusText, icon, mobile } from "./shell.js";
 
 /* ---------------- file view navigation ---------------- */
 // Opening a file pushes #file/<path> and replaces the chat pane; Back and "<" return to chat.
@@ -105,10 +105,14 @@ class PiFiles extends HTMLElement {
     if (!project) return "";
     const repos = project.group ? store.state.projects.filter(p => p.group === project.group) : [project];
     const contexts = (project.contexts || []).filter(c => c.kind !== "unavailable");
-    if (repos.length < 2 && contexts.length < 2) return "";
+    // A project-level session browses one of the project's repositories: say which, and how many there are.
+    const inFolder = store.project()?.kind === "folder";
+    if (repos.length < 2 && contexts.length < 2 && !inFolder) return "";
+    const repoCount = repos.filter(p => p.kind !== "folder").length;
+    const repoLabel = inFolder ? `<span class="file-scope-label">${repoCount > 1 ? `${repoCount} repos:` : "Repository:"}</span>` : "";
     const repoSelect = repos.length > 1 ? `<select class="file-repo" aria-label="Repository">${repos.map(p => `<option value="${esc(p.id)}" ${p.id === project.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>` : "";
     const branchSelect = contexts.length > 1 ? `<select class="file-branch" aria-label="Branch">${contexts.map(c => `<option value="${esc(c.id)}" ${c.id === contextId ? "selected" : ""}>${esc(c.branch || c.path)}${c.kind === "worktree" ? " (worktree)" : ""}</option>`).join("")}</select>` : "";
-    return `<div class="file-target-row file-scope-row" role="group" aria-label="Repository and branch">${repoSelect}${branchSelect}</div>`;
+    return `<div class="file-target-row file-scope-row" role="group" aria-label="Repository and branch">${repoLabel}${repoSelect}${branchSelect}</div>`;
   }
 
   captureScroll() {
@@ -277,7 +281,10 @@ class PiFileView extends HTMLElement {
     document.addEventListener("keydown", this.onDocumentKeydown);
     window.addEventListener("popstate", this.onPopState);
     this.addEventListener("click", e => {
-      if (e.target.closest("[data-act='close-file']")) closeFileView();
+      if (!e.target.closest("[data-act='close-file']")) return;
+      closeFileView();
+      // On a phone the tree covers the chat, so "Back to chat" closes it too.
+      if (mobile()) store.set({ filesOpen: false });
     });
     this.addEventListener("scroll", e => {
       if (e.target.matches(".file-view-scroll") && store.state.filePath) this.viewerScroll.set(store.state.filePath, e.target.scrollTop);
