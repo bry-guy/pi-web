@@ -441,7 +441,7 @@ function applyUiEvent(evt) {
       void refreshState().catch(err => store.setError(`Could not refresh state: ${err.message || err}`));
     } else if (viewingSession(evt.sessionId)) {
       void refreshState()
-        .then(async () => { if (viewingSession(evt.sessionId)) (await import("./shell.js")).selectSessionById(evt.toSessionId); })
+        .then(async () => { if (viewingSession(evt.sessionId)) (await import("./shell.js")).selectSessionById(evt.toSessionId, { history: "replace" }); })
         .catch(err => store.setError(`Could not refresh state: ${err.message || err}`));
     }
     return true;

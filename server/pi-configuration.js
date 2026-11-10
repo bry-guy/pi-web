@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { appHome, effectivePiConfig, loadConfig, resolvePath } from "./config.js";
+import { appHome, effectivePiConfig, loadConfig, resolvePath, syncConfig } from "./config.js";
 import { readStoredAuth } from "./github.js";
 
 const MAX_PROFILE_BYTES = 512 * 1024;
@@ -89,6 +89,10 @@ function skippedPackages(env = process.env) {
   return new Set(String(env.PI_WEB_SKIP_PACKAGES || "").split(",").map(item => item.trim()).filter(Boolean));
 }
 
+// pi-web loads its own pi-sync (PI_SYNC_COMMIT) whenever a sync server is set, so a profile's pi-sync would load its skills twice.
+const PI_SYNC_PACKAGE = /^(?:npm:@bry-guy\/pi-sync(?:@.*)?|(?:git:|https?:\/\/|ssh:\/\/git@|git@)?github\.com[/:]bry-guy\/pi-sync(?:\.git)?(?:@.*)?)$/i;
+const bundledPiSync = source => PI_SYNC_PACKAGE.test(source) && !!syncConfig().serverUrl;
+
 function prepareProfileSettings(value, { baseDir, remote, warnings }) {
   const settings = clone(value);
   // Session and credential storage always remain owned by the deployment's
@@ -99,7 +103,7 @@ function prepareProfileSettings(value, { baseDir, remote, warnings }) {
     const skip = skippedPackages();
     settings.packages = settings.packages
       .map(entry => resolveEntry(entry, baseDir, remote, warnings, "package"))
-      .filter(entry => entry && !skip.has(sourceOf(entry)));
+      .filter(entry => entry && !skip.has(sourceOf(entry)) && !bundledPiSync(sourceOf(entry)));
   }
   for (const key of RESOURCE_KEYS) {
     if (!Array.isArray(settings[key])) continue;

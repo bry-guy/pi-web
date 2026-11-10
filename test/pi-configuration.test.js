@@ -326,3 +326,25 @@ test("PI_WEB_SKIP_PACKAGES leaves the listed profile packages out", async () => 
     else process.env.PI_WEB_SKIP_PACKAGES = previous;
   }
 });
+
+test("the profile's pi-sync is left out while pi-web's bundled pi-sync is in use", async () => {
+  const packages = ["npm:keep", "git:github.com/bry-guy/pi-sync", { source: "https://github.com/bry-guy/pi-sync.git" }, "npm:@bry-guy/pi-sync@1.2.0", "git:github.com/bry-guy/pi-sync-extra"];
+  const configuration = () => new PiConfiguration({
+    fetchImpl: async url => {
+      if (url === "https://api.github.com/repos/bry-guy/dotfiles") return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: [] }), { status: 200 });
+      return new Response(JSON.stringify({ packages }), { status: 200 });
+    },
+  });
+  const resolve = () => configuration().resolve({ profile: "https://github.com/bry-guy/dotfiles", packages: [], extensions: [] });
+  const previous = process.env.PI_SYNC_SERVER_URL;
+  try {
+    process.env.PI_SYNC_SERVER_URL = "http://pi-syncd.test:8080";
+    assert.deepEqual((await resolve()).settings.packages, ["npm:keep", "git:github.com/bry-guy/pi-sync-extra"]);
+    delete process.env.PI_SYNC_SERVER_URL;
+    assert.deepEqual((await resolve()).settings.packages, packages, "without a sync server the bundled pi-sync is not loaded, so the profile's stays");
+  } finally {
+    if (previous === undefined) delete process.env.PI_SYNC_SERVER_URL;
+    else process.env.PI_SYNC_SERVER_URL = previous;
+  }
+});

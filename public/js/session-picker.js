@@ -1,7 +1,8 @@
 import { api, refreshState } from "./api.js";
 import { beginOperation, completeOperation } from "./operations.js";
 import { setHTML, store, toast } from "./store.js";
-import { closeConversation, esc, icon, selectSession, syncSummary } from "./shell.js";
+import { closeConversation, esc, groupId, icon, selectSession, syncSummary } from "./shell.js";
+import { openProjectMenu } from "./project-menu.js";
 import { gitErrorMessage, runningPickerOperation, pickerError, launchSetup, pickerOperationKinds, featureBranchForName } from "./panel-utils.js";
 
 // A fork's default name: the session's name plus the first free "(fork)", "(fork 2)", … among the project's sessions.
@@ -165,7 +166,7 @@ class PiSessionPicker extends HTMLElement {
   /** The workspace's own log (hooks, git operations, fork and switch), fetched once per opening. */
   loadHistory() {
     const picker = this.picker();
-    if (!picker || !picker.sourceSessionId || picker.history !== undefined) return;
+    if (!picker || !picker.sourceSessionId || picker.history !== undefined || this.project()?.kind === "folder") return;
     picker.history = null;
     api.sessionHistory(picker.sourceSessionId)
       .then(result => { picker.history = result.entries || []; })
@@ -218,6 +219,11 @@ class PiSessionPicker extends HTMLElement {
     }
     if (act === "fork-session") { await this.submitFork(); return; }
     if (act === "rename-session") { await this.rename(); return; }
+    if (act === "open-project-menu") {
+      const group = this.project()?.group;
+      if (group && !this.busy) { this.close(); openProjectMenu(groupId(group)); }
+      return;
+    }
     if (act === "toggle-history") {
       const picker = this.picker();
       const id = e.target.closest("[data-act]").dataset.id;
@@ -487,16 +493,19 @@ class PiSessionPicker extends HTMLElement {
           const hint = name === "setup" ? "Runs the project's setup script (e.g. npm ci) in this worktree." : `Runs the project's ${name} hook in this worktree.`;
           return actionRow(label, hint, `<button class="btn btn-secondary" data-act="run-hook" data-hook="${esc(name)}" ${running ? "disabled" : ""}>${esc(running ? "Running…" : label)}</button>`);
         }).join("");
+        // A project-folder session has no repository: no Git, fork, hooks or workspace history.
+        const folder = project.kind === "folder";
         const sessionSection = `<section class="session-picker-actions" aria-label="Session">
           <div class="session-context-heading"><span>Session</span></div>
           <div class="panel-rows session-picker-session-buttons">
             ${actionRow("Rename", "Names this session; the name shows in the sidebar.", `<button class="btn btn-secondary" data-act="rename-session" ${this.busy ? "disabled" : ""}>Rename…</button>`)}
-            ${actionRow("Fork", "Copies this conversation to a new branch and worktree.", `<button class="btn btn-secondary" data-act="open-fork" ${this.busy ? "disabled" : ""}>Fork…</button>`)}
-            ${hookRows}
+            ${folder ? "" : actionRow("Fork", "Copies this conversation to a new branch and worktree.", `<button class="btn btn-secondary" data-act="open-fork" ${this.busy ? "disabled" : ""}>Fork…</button>`)}
+            ${folder ? "" : hookRows}
+            ${project.group ? actionRow("Project", `${project.group}'s repositories, sessions and worker.`, `<button class="btn btn-secondary" data-act="open-project-menu" ${this.busy ? "disabled" : ""}>Project…</button>`) : ""}
             ${actionRow("End session", "Stops it, withdraws it from sync on this server and archives it. Git is not touched.", `<button class="btn btn-caution" data-act="end-session" ${this.busy ? "disabled" : ""}>End</button>`)}
           </div>
         </section>`;
-        body = `${sessionSection}${gitSection}${this.historySection(picker)}`;
+        body = folder ? sessionSection : `${sessionSection}${gitSection}${this.historySection(picker)}`;
       }
     }
 
