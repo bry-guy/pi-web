@@ -641,8 +641,10 @@ pi-context-meter { display: flex; min-width: 0; }
 .settings-select:disabled, .settings-inline-input:disabled { opacity: .55; }
 .settings-actions-row { justify-content: space-between; }
 .settings-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.settings-row { display: flex; align-items: center; gap: 12px; padding: 13px 16px; }
-.settings-row .sr-main { flex: 1; }
+/* A row's text keeps a readable width; when the row is too narrow its control wraps below instead of squeezing the text. */
+.settings-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 13px 16px; }
+.settings-row .sr-main, .settings-actions-row > .sr-sub { flex: 1 1 12rem; min-width: 0; }
+.settings-save { white-space: nowrap; }
 .settings-row .sr-title { font-size: 13.5px; }
 .settings-row .sr-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .settings-path-row { align-items: flex-start; flex-wrap: wrap; }
@@ -849,6 +851,7 @@ main.col.settings-open > pi-header { display: none; }
 .session-context-heading .settings-action { padding: 4px 8px; font-size: 10px; text-transform: none; letter-spacing: normal; }
 .session-picker .workspace-actions { justify-content: flex-end; }
 .session-history { margin-top: 18px; padding-top: 13px; }
+.chats-worker { margin-top: 18px; }
 .session-history-heading { margin: 0 2px 8px; }
 .session-history-heading > span:last-child { color: var(--faint); font-size: 9.5px; font-weight: 400; letter-spacing: normal; text-transform: none; }
 .session-history-scroll { display: grid; gap: 4px; max-height: 230px; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; scrollbar-gutter: stable; }
@@ -964,6 +967,7 @@ main.col.settings-open > pi-header { display: none; }
   .session-picker-body { max-height: none; flex: 1 1 auto; overflow-y: auto; }
   .session-picker-actions { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   .settings-actions-row { align-items: flex-start; flex-direction: column; }
+  .settings-actions-row > .sr-sub { flex-basis: auto; }
   /* Equal columns so a worker's last action doesn't sit alone on its own row. */
   .worker-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); width: 100%; }
   /* On a phone Files covers the whole screen, header included; its own bar closes it. */

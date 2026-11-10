@@ -6,6 +6,8 @@ const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http:
 const domGlobals = {
   window: dom.window,
   document: dom.window.document,
+  location: dom.window.location,
+  history: dom.window.history,
   HTMLElement: dom.window.HTMLElement,
   customElements: dom.window.customElements,
 };

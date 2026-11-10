@@ -9,7 +9,7 @@ import "./repo-picker.js";
 import "./app.js";
 import { connectSSE, openTranscript, paintCachedState, refreshState, resumeConnection } from "./api.js";
 import { store } from "./store.js";
-import { openSavedSelectionEarly, restoreLastSelection, selectChat, selectSession } from "./shell.js";
+import { openSavedSelectionEarly, restoreLastSelection, selectChat, selectSession, selectSessionById, urlSessionId } from "./shell.js";
 
 let updateReloadRequested = false;
 
@@ -55,6 +55,11 @@ window.addEventListener("offline", () => store.set({ offline: true, reconnecting
 window.addEventListener("online", resumeConnection);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resumeConnection(); });
 window.addEventListener("pageshow", resumeConnection);
+// Back and Forward between sessions: open the one the URL names (a removed one leaves the view as it is).
+window.addEventListener("popstate", () => {
+  const id = urlSessionId();
+  if (id && id !== store.activeKey()) selectSessionById(id, { history: "none" });
+});
 paintCachedState();
 const uiConfig = loadUiConfig();
 void registerServiceWorker();
@@ -66,22 +71,27 @@ try {
   // PiApp renders the fatal restart prompt from store.state.fatalError.
 }
 
-// Restore the last selected session; fall back to the most recent chat, then a project session.
+// Open the session the URL names, else the last selected one; fall back to the most recent chat, then a project session.
+// Startup selections replace the URL rather than adding Back steps.
 const s = store.state;
+const startup = { history: "replace" };
+const urlId = urlSessionId();
 if (!s.fatalError && store.activeKey() && store.activeKey() !== earlyId) {
   // The user picked another conversation while startup state was loading; keep it.
-} else if (!s.fatalError && earlyId && restoreLastSelection()) {
+} else if (!s.fatalError && urlId && urlId !== earlyId && selectSessionById(urlId, startup)) {
+  // The URL named a conversation other than the saved one, and it still exists.
+} else if (!s.fatalError && earlyId && restoreLastSelection(startup)) {
   // Saved conversation still exists; restoreLastSelection() applied its full selection.
 } else if (!s.fatalError && earlyId && store.activeKey() === earlyId) {
   // Saved conversation was closed or moved: drop the stale early selection, then fall back.
   store.set({ chatId: null, sessionId: null, projectId: null, model: s.effectiveDefaultModel || null, requestedModel: null, modelFallback: false, modelUnavailable: false });
-  if (s.chats[0]) selectChat(s.chats[0].id);
-} else if (!s.fatalError && !restoreLastSelection() && s.chats[0]) selectChat(s.chats[0].id);
+  if (s.chats[0]) selectChat(s.chats[0].id, startup);
+} else if (!s.fatalError && !restoreLastSelection(startup) && s.chats[0]) selectChat(s.chats[0].id, startup);
 // A deep link such as #settings/workers opens after the startup selection above.
 const route = settingsRoute(location.hash);
 if (route) store.set(route);
 else if (!s.fatalError && !store.activeKey()) {
   const p = s.projects[0];
-  if (p?.sessions[0]) { store.state.openTree[p.id] = true; selectSession(p.id, p.sessions[0].id); }
+  if (p?.sessions[0]) { store.state.openTree[p.id] = true; selectSession(p.id, p.sessions[0].id, startup); }
   else store.notify("state");
 }
