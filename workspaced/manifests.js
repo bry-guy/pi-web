@@ -95,7 +95,8 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
   }
   env.push(...(score?.env || []));
   const envFrom = [
-    ...(envConfigMap ? [{ configMapRef: { name: envConfigMap, optional: true } }] : []),
+    // A Secret with the ConfigMap's name carries the personal layer's secrets (PI_SYNC_TOKEN).
+    ...(envConfigMap ? [{ configMapRef: { name: envConfigMap, optional: true } }, { secretRef: { name: envConfigMap, optional: true } }] : []),
     // Optional: a grant may name Secrets the deployer hasn't filled yet.
     ...(grant.env || []).map(secret => ({ secretRef: { name: secret, optional: true } })),
   ];
