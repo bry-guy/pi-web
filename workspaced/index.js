@@ -2,10 +2,11 @@ import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { createLifecycle, PASSIVE } from "./lifecycle.js";
+import { createLifecycle, PASSIVE, upstreamFetch, upstreamOf } from "./lifecycle.js";
 import { CHATS_WORKSPACE, slugFromRepository, validName } from "./manifests.js";
 import { grantAllows, grantError, parseGrants, resolveGrant, withGrantCheck } from "./grants.js";
 import { createScoreSource, scoreFromFile, withScore } from "./score.js";
+import { openshellConfig, openshellProvider, withOpenShell } from "./openshell.js";
 
 // Hop-by-hop and length/encoding headers; fetch() re-frames bodies itself.
 const DROP_HEADERS = ["connection", "keep-alive", "transfer-encoding", "upgrade", "host", "content-length", "content-encoding", "authorization"];
@@ -20,7 +21,7 @@ function tokenMatches(header, token) {
 // web's session traffic to each workspace's worker. Only web calls it.
 // auth "network" means a NetworkPolicy admits only web; otherwise a bearer token.
 // scores (createScoreSource) reads score.yaml when adding a project; without it, no repository is read.
-export function createWorkspaced({ provider, grants = parseGrants(""), token, auth = "token", fetchImpl = globalThis.fetch, scores = null, lifecycle = createLifecycle({ provider, fetchImpl, idleMs: 0 }) }) {
+export function createWorkspaced({ provider, grants = parseGrants(""), token, auth = "token", fetchImpl = upstreamFetch, scores = null, lifecycle = createLifecycle({ provider, fetchImpl, idleMs: 0 }) }) {
   if (auth !== "network" && !token) throw new Error("WORKSPACED_TOKEN is required unless WORKSPACED_AUTH=network");
   const app = new Hono();
   const named = handler => async c => {
@@ -113,11 +114,11 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
   app.post("/v1/workspaces/:name/reload", named(async (c, name) => {
     const refusal = await refuseAsleep(c, name);
     if (refusal) return refusal;
-    const base = provider.upstream(name);
-    if (!base) return c.json({ error: "workspace_unavailable", name }, 502);
+    const up = upstreamOf(provider, name);
+    if (!up) return c.json({ error: "workspace_unavailable", name }, 502);
     lifecycle.begin(name);
     try {
-      const res = await fetchImpl(`${base}/api/pi/reload`, { method: "POST", signal: AbortSignal.timeout(120_000) });
+      const res = await fetchImpl(`${up.url}/api/pi/reload`, { method: "POST", headers: up.headers, signal: AbortSignal.timeout(120_000) });
       return c.json(await res.json().catch(() => ({ error: "workspace_unavailable", name })), res.status);
     } catch {
       return c.json({ error: "workspace_unavailable", name }, 502);
@@ -171,16 +172,20 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
     const rest = c.req.path.slice(`/v1/workspaces/${name}`.length);
     // Web's own polling never wakes a worker; anything the user does does.
     if (PASSIVE.test(rest)) {
-      if ((await lifecycle.info(name))?.state === "sleeping") return c.json({ error: "workspace_sleeping", name }, 503);
+      const w = await lifecycle.info(name);
+      if (w?.state === "sleeping") return c.json({ error: "workspace_sleeping", name }, 503);
+      // A failed worker would otherwise pass its gateway's own 412 to web's polling.
+      if (w?.provider === "openshell" && w?.problem?.fatal) return await starting(c, name);
     } else if (!await lifecycle.ensureAwake(name)) return await starting(c, name);
-    const base = provider.upstream(name);
-    if (!base) return c.json({ error: "workspace_unavailable", name }, 502);
+    const up = upstreamOf(provider, name);
+    if (!up) return c.json({ error: "workspace_unavailable", name }, 502);
     const raw = c.req.url;
     const search = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
-    const target = base + rest + search;
+    const target = up.url + rest + search;
     const active = !PASSIVE.test(rest);
     const headers = new Headers(c.req.raw.headers);
     for (const h of DROP_HEADERS) headers.delete(h);
+    for (const [k, v] of Object.entries(up.headers)) headers.set(k, v);
     const hasBody = !["GET", "HEAD"].includes(c.req.method);
     let upstream;
     if (active) lifecycle.begin(name);
@@ -209,9 +214,9 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
 
 async function providerFromEnv(grants, env = process.env, localOptions = {}) {
   if ((env.WORKSPACED_PROVIDER || "local") === "kubernetes") {
-    const { inClusterKube } = await import("./kube.js");
+    const { kubeFromEnv } = await import("./kube.js");
     const { kubernetesProvider } = await import("./kubernetes.js");
-    return kubernetesProvider({ kube: inClusterKube(), grants });
+    return kubernetesProvider({ kube: kubeFromEnv(env), grants });
   }
   const { localProvider } = await import("./local.js");
   const provider = localProvider({ root: env.WORKSPACED_ROOT || `${env.HOME}/.pi-ez-workspaces`, ...localOptions });
@@ -225,7 +230,10 @@ export async function workspacedFromEnv(env = process.env, { token = env.WORKSPA
   const grants = parseGrants(env.WORKSPACED_GRANTS || "");
   const scores = createScoreSource();
   const raw = await providerFromEnv(grants, env, local);
-  const provider = withScore(withGrantCheck(raw, grants), scores, grants);
+  // Sandboxes for grants with provider "openshell", only when its gateway is configured.
+  const config = openshellConfig(env);
+  const openshell = config && openshellProvider({ kube: (await import("./kube.js")).kubeFromEnv(env), config });
+  const provider = withScore(withGrantCheck(withOpenShell(raw, openshell), grants), scores, grants);
   const idleMinutes = Number(env.WORKSPACED_IDLE_MINUTES ?? 0);
   const maxAwake = Number(env.WORKSPACED_MAX_AWAKE ?? 3);
   const lifecycle = createLifecycle({ provider, idleMs: idleMinutes * 60_000, maxAwake });
@@ -235,7 +243,7 @@ export async function workspacedFromEnv(env = process.env, { token = env.WORKSPA
   const refreshGrants = async () => {
     if (provider.setGrant) for (const w of await provider.list().catch(() => [])) {
       const grant = grants[w.grant];
-      if (grant) await provider.setGrant(w.name, grant).catch(e => console.warn(`workspaced: could not refresh ${w.name}: ${e.message}`));
+      if (grant && !w.provider) await provider.setGrant(w.name, grant).catch(e => console.warn(`workspaced: could not refresh ${w.name}: ${e.message}`));
     }
   };
   return { app, provider: raw, refreshGrants };

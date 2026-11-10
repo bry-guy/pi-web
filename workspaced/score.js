@@ -159,7 +159,8 @@ export function withScore(provider, scores, grants, log = console.log) {
   if (!provider.setScore) return provider;
   async function apply(name) {
     const w = (await provider.list()).find(x => x.name === name);
-    if (!w) return false;
+    // Only Deployment workers have sidecars; an OpenShell worker (w.provider) has none to apply.
+    if (!w || w.provider) return false;
     const text = await scores.read(w.repository);
     if (text === null && !scores.authenticated() && w.score) return false;
     const declared = scoreFromFile(text);

@@ -12,7 +12,7 @@ export const GITHUB_SECRET = "pi-ez-github-auth";
 const GITHUB_DIR = "/run/secrets/pi-ez-github";
 export const MODEL_SECRET = "pi-ez-model-auth";
 const MODEL_DIR = "/run/secrets/pi-ez-model";
-const DATA = "/data";
+export const DATA = "/data";
 const SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
 const HOME = `${DATA}/pi-ez-operator-home`;
 const NAME_RE = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/;
@@ -66,15 +66,8 @@ export function serviceManifest({ name, repository }) {
   };
 }
 
-// The grant (see grants.js) supplies the ServiceAccount, env Secrets and egress
-// label; nothing else may give a worker credentials.
-// score: a plan from score.js (native sidecars, env, and the record kept in an annotation), or null.
-export function deploymentManifest({ name, repository, image, grant = { name: "default", env: [] }, envConfigMap = null, imagePullSecret = null, resources = {}, score = null }) {
-  if (!validName(name)) throw new Error("invalid workspace name");
-  const serviceAccountName = grant.serviceAccount || null;
-  // With score sidecars, the pod-wide automount would also reach the database, so the token moves to a
-  // projected volume on the workspace container only (the same files the automount would provide).
-  const scopedToken = !!(score && serviceAccountName);
+/** The environment workspaced gives every worker, as [{name, value}]; the OpenShell provider shares it. */
+export function workerEnv({ name, repository }) {
   const env = [
     ["PORT", String(WORKSPACE_PORT)], ["PI_WEB_MODE", "real"],
     // Shared conversations name the machine that last wrote them; a worker is "web-<project>" in that list.
@@ -89,6 +82,19 @@ export function deploymentManifest({ name, repository, image, grant = { name: "d
     if (existing) existing.value = value;
     else env.push({ name: n, value });
   }
+  return env;
+}
+
+// The grant (see grants.js) supplies the ServiceAccount, env Secrets and egress
+// label; nothing else may give a worker credentials.
+// score: a plan from score.js (native sidecars, env, and the record kept in an annotation), or null.
+export function deploymentManifest({ name, repository, image, grant = { name: "default", env: [] }, envConfigMap = null, imagePullSecret = null, resources = {}, score = null }) {
+  if (!validName(name)) throw new Error("invalid workspace name");
+  const serviceAccountName = grant.serviceAccount || null;
+  // With score sidecars, the pod-wide automount would also reach the database, so the token moves to a
+  // projected volume on the workspace container only (the same files the automount would provide).
+  const scopedToken = !!(score && serviceAccountName);
+  const env = workerEnv({ name, repository });
   const taken = new Set(env.map(e => e.name));
   for (const e of score?.env || []) {
     if (taken.has(e.name)) throw Object.assign(new Error(`score variable ${e.name} collides with a workspace setting`), { status: 422, code: "invalid_score" });

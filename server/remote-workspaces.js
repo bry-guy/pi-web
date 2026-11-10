@@ -325,7 +325,9 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     if (!res.ok) throw Object.assign(new Error("workspaced unavailable"), { code: "workspaced_unavailable", status: 502 });
     const body = await res.json();
     const byName = new Map(allGrants.map(g => [g.name, g]));
-    const grantView = g => g && { name: g.name, description: g.description || "", namespace: g.namespace, serviceAccount: g.serviceAccount, egress: g.egress, env: g.env || [] };
+    const grantView = g => g && { name: g.name, description: g.description || "", namespace: g.namespace, serviceAccount: g.serviceAccount,
+      // An OpenShell grant's egress is a list of endpoints; the settings page shows it as text.
+      egress: Array.isArray(g.egress) ? g.egress.map(e => `${e.host}:${e.port}`).join(", ") || "none" : g.egress, env: g.env || [] };
     return {
       usageAvailable: !!body.usageAvailable,
       workspaces: (body.workspaces || []).map(w => ({

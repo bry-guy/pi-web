@@ -29,7 +29,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # mise and yadm let deployment prestart hooks install the operator's dotfiles
-# and project tools. Downloads are pinned by SHA-256.
+# and project tools; workspaced drives OpenShell sandboxes with the openshell
+# CLI (a static musl build). Downloads are pinned by SHA-256.
 RUN set -eu; \
     tmp="$(mktemp -d)"; \
     curl -fsSL --proto '=https' --tlsv1.2 --max-time 60 -o "$tmp/mise" \
@@ -39,8 +40,13 @@ RUN set -eu; \
       'https://github.com/yadm-dev/yadm/archive/refs/tags/3.5.0.tar.gz'; \
     echo "2a15ed91238dd2f15db9905eb56702272c079ad9c37c505dfee69c6b5e9054b6  $tmp/yadm.tar.gz" | sha256sum -c -; \
     tar -xzf "$tmp/yadm.tar.gz" -C "$tmp" yadm-3.5.0/yadm; \
+    curl -fsSL --proto '=https' --tlsv1.2 --max-time 120 -o "$tmp/openshell.tar.gz" \
+      'https://github.com/NVIDIA/OpenShell/releases/download/v0.1.7/openshell-x86_64-unknown-linux-musl.tar.gz'; \
+    echo "5c1adfcae797eac9b2e8b9280c66c1f75e4e84d9e31ce6938c5b994314ef6098  $tmp/openshell.tar.gz" | sha256sum -c -; \
+    tar -xzf "$tmp/openshell.tar.gz" -C "$tmp" openshell; \
     install -m 0755 "$tmp/mise" /usr/local/bin/mise; \
     install -m 0755 "$tmp/yadm-3.5.0/yadm" /usr/local/bin/yadm; \
+    install -m 0755 "$tmp/openshell" /usr/local/bin/openshell; \
     rm -rf "$tmp"
 
 COPY package.json package-lock.json ./

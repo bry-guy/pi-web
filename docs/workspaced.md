@@ -66,6 +66,42 @@ A grant says what a project's worker may hold. The deployer defines grants; a us
 
 How Secrets get filled (kubectl, External Secrets, a CI job) is your choice. Workers never talk to a secret manager; they see plain environment variables.
 
+## OpenShell sandboxes
+
+A grant with `"provider": "openshell"` creates its workers as [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) sandboxes (0.1.7) instead of Deployments, next to whatever `WORKSPACED_PROVIDER` runs. It is off unless `OPENSHELL_GATEWAY_ENDPOINT` is set; without it, creating a worker with such a grant fails with `501 provider_unconfigured`, and nothing else changes. workspaced drives the gateway with the `openshell` CLI (in the image) and keeps no record of its own: the gateway's sandbox list is the record.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENSHELL_GATEWAY_ENDPOINT` | unset (off) | Gateway URL, e.g. `http://openshell.openshell.svc.cluster.local:8080`. Also where workspaced proxies sandbox workers |
+| `OPENSHELL_WORKSPACE` | `default` | OpenShell workspace for the sandboxes and their PVCs' attach label |
+| `OPENSHELL_NAMESPACE` | `openshell` | Namespace the gateway puts sandboxes in; workers' PVCs go there |
+| `OPENSHELL_SERVICE_DOMAIN` | `openshell.localhost` | Host the gateway routes exposed services by: `<workspace>--ws-<name>.<domain>[:port]` |
+| `OPENSHELL_BIN` | `openshell` | CLI path |
+| `WORKSPACED_KUBE_URL` | unset | Kubernetes API through `kubectl proxy` instead of in-cluster credentials (running workspaced off-cluster) |
+
+`WORKSPACE_IMAGE`, `WORKSPACE_STORAGE` and `WORKSPACE_STORAGE_CLASS` apply as for Deployment workers. Other `OPENSHELL_*` variables the CLI reads (such as `OPENSHELL_GATEWAY_INSECURE`) pass through.
+
+A sandbox worker is `ws-<name>`: the worker image running `node /app/server/index.js` with the plain environment a Deployment worker gets (plus `HOST=127.0.0.1`) but none of its Secrets (no `PI_SYNC_TOKEN`, GitHub or model sign-in yet), the PVC `ws-<name>` at `/data` (created with the labels OpenShell requires, or used as is if it exists), port 3141 exposed through the gateway, and a policy: `/app` and the system read-only, `/data` and `/tmp` read-write, and no network except the grant's `egress`:
+
+```json
+"agent": { "anyProject": true, "provider": "openshell", "egress": [
+  { "host": "pi-syncd.pi-sync.svc.cluster.local", "port": 8080 },
+  { "host": "registry.npmjs.org", "port": 443, "allowEncodedSlash": true }
+] }
+```
+
+Each endpoint becomes a `rest`, `enforce`, `access: full` rule for `binaries` (default `/usr/local/bin/node`, which covers every process the worker starts). `allowEncodedSlash` is for npm scoped packages. A recommended base list, none of it built in: pi-syncd by its full cluster name (the sandbox resolver has no search domains), the model API hosts you use (`api.anthropic.com`, …), `github.com` and `api.github.com`, and `registry.npmjs.org` with `allowEncodedSlash`. An OpenShell grant may not set `namespace`, `serviceAccount` or `env`.
+
+Sleep is `sandbox stop` (the disk stays), wake is `sandbox start`, restart is both, reset also recreates the PVC, delete removes the sandbox and, when purged, the PVC. OpenShell also makes a `/sandbox` PVC (`workspace-default--ws-<name>`) for each sandbox and deletes it with the sandbox. A worker whose main process exits is restarted by OpenShell (`--restart-policy on-failure`, about 6 s on the same disk); one that keeps failing shows as failed, with the failing condition as its message, until restarted. Create returns once OpenShell accepts the sandbox (about 7 s); the worker answered 6 to 27 s after create in the tests, and the first request or wake waits up to 45 s for it before answering 503. Such a worker keeps its grant (change it by removing and re-adding the project), has no score resources, and does not move to a new image on its own.
+
+The deployer adds:
+
+- RBAC for workspaced's ServiceAccount in `OPENSHELL_NAMESPACE`: get, create, delete on `persistentvolumeclaims`.
+- NetworkPolicy: egress from workspaced to the gateway's port 8080, and ingress to the gateway from workspaced (the spike's policy admits only its own namespace).
+- Gateway chart values `server.auth.allowUnauthenticatedUsers` and `server.drivers.kubernetes.allowDriverConfig`, and the worker image pull secret in that namespace.
+
+Not done yet: credentials for sandbox workers (no GitHub or model login, no grant Secrets; `setGitHubAuth` and `setModelAuth` skip them), gateway authentication and TLS (the gateway is plaintext and unauthenticated, so only its NetworkPolicy protects it), pins that survive a workspaced restart, resource limits, and usage figures.
+
 ## API
 
 All routes need `Authorization: Bearer $WORKSPACED_TOKEN`. `GET /v1/workspaces` (add `?detail=1` for `busy`, `lastUsed`, `usage` per workspace and `usageAvailable`; usage is `{cpuMillicores, memoryBytes}` from metrics-server, or from `ps` for the local provider, which reports one process and its CPU averaged over its life), `POST /v1/workspaces` (`{"repository": …, "grant"?: …}`, `{"project": "<name>"}` for a pi project's worker, or `{"chats": true}` for the repository-less `chats` worker), `DELETE /v1/workspaces/:name`, `POST …/:name/wake`, `POST …/:name/sleep` (409 `workspace_busy` for a busy worker unless `?force=1`), `PUT …/:name/pin`, `PUT …/:name/grant`,
