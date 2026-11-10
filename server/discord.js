@@ -5,6 +5,7 @@
 import { discordTransport } from "./discord-transport.js";
 
 export const QUESTION_DELAY_MS = 5 * 60_000;
+const RETRY_MS = 30_000;
 const LIMIT = 2000;
 const METHODS = new Set(["select", "confirm", "input", "editor"]);
 const KEEP_NOTICES = 200;
@@ -44,7 +45,7 @@ export function replyAction(notice, text) {
     if (/^(n|no)$/i.test(value)) return { rest, body: { confirmed: false } };
     return { hint: "Reply yes or no." };
   }
-  return { rest, body: { value: text } };
+  return value ? { rest, body: { value: text } } : { hint: "Reply with the text to enter." };
 }
 
 // transport: { send(content, { replyTo }) → { id }, react(messageId, emoji), start(), stop() }
@@ -64,13 +65,18 @@ export function createNotifier({ userId, baseUrl = "", transport, post, titleOf 
     last = notice;
   }
 
-  function ask(sessionId, request) {
+  function ask(sessionId, request, retry = true) {
     const key = `${sessionId}:${request.requestId}`;
     waiting.delete(key);
     asked.add(key);
     const notice = { kind: "question", sessionId, requestId: request.requestId, method: request.method, options: (request.options || []).map(String) };
     const content = questionText({ title: titleOf(sessionId), agent: agentOf(sessionId), request, link: sessionLink(baseUrl, sessionId) });
-    notify(notice, content).catch(fail("message"));
+    notify(notice, content).catch(e => {
+      fail("message")(e);
+      if (!asked.delete(key)) return; // answered meanwhile
+      // An agent run has no browser to replay the question, so try once more before giving up.
+      if (retry) waiting.set(key, timers.setTimeout(() => ask(sessionId, request, false), RETRY_MS));
+    });
   }
 
   function event(sessionId, type, data = {}) {
@@ -109,7 +115,10 @@ export function createNotifier({ userId, baseUrl = "", transport, post, titleOf 
       if (res.status < 300) return transport.react(message.id, "✅").catch(fail("reaction"));
       if (notice.kind === "question" && res.status === 409) return answer(message, "That question was already answered.");
       return answer(message, `Could not deliver that (${res.body?.error || res.status}).`);
-    } catch (e) { fail("reply")(e); }
+    } catch (e) {
+      fail("reply")(e);
+      if (message?.id) answer(message, "Could not deliver that: the session's worker did not answer. Try again in a minute.");
+    }
   }
 
   function stop() {
