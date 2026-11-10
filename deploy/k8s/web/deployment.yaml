@@ -193,6 +193,21 @@ spec:
                   name: pi-sync-token
                   key: PI_SYNC_TOKEN
                   optional: true
+            # Discord contact (docs/web.md): off until Secret pi-web-discord exists.
+            - name: PI_WEB_DISCORD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pi-web-discord
+                  key: token
+                  optional: true
+            - name: PI_WEB_DISCORD_USER
+              valueFrom:
+                secretKeyRef:
+                  name: pi-web-discord
+                  key: user
+                  optional: true
+            - name: PI_WEB_PUBLIC_URL
+              value: https://pi.bry-guy.net
             # Projects run in per-project workers via workspaced; chats in its "chats" worker.
             - name: PI_WEB_WORKSPACED_URL
               value: http://pi-workspaced.pi-workspaced.svc:3150
