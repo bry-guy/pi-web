@@ -1,7 +1,12 @@
 {
-  "description": "Develop pi-web: work in a worktree, run mise run check, push feature/<name> (deploys preview) or agent/<name> (no preview), open a PR and merge it with `gh pr merge --auto --squash` once CI passes. Merging deploys production. Changes under .pi/ and .github/ wait for Bryan.",
+  "description": "Develop pi-web and the pi extension repos of this project (pi-sync, pi-projects, pi-background, pi-keepalive, pi-mounts, pi-secret-broker, pi-summarize, pi-worktree-include): work in a worktree, run the repo's tests, push agent/<name> (in pi-web, feature/<name> also deploys preview), open a PR and merge it with `gh pr merge --auto --squash` once CI passes. Merging pi-web or pi-sync deploys production. Changes under .pi/, .github/ and deploy paths wait for Bryan.",
   "egress": [
-    "uploads.github.com"
+    "uploads.github.com",
+    "proxy.golang.org",
+    "sum.golang.org",
+    "go.dev",
+    "dl.google.com",
+    "storage.googleapis.com"
   ],
   "secrets": {
     "GH_TOKEN": {
