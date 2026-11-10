@@ -671,7 +671,7 @@ pi-context-meter { display: flex; min-width: 0; }
   font-family: var(--mono); font-size: 11.5px; cursor: pointer;
 }
 .settings-chip:hover { border-color: var(--accent); color: var(--accent); }
-.settings-mono { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.settings-mono { font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: inline-block; }
 
 /* ---------- file panel ---------- */
