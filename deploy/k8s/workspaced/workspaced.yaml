@@ -23,6 +23,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
+        fsGroup: 1000 # lets uid 1000 read the mounted client certificate
       containers:
         - name: gateway
           image: ghcr.io/bry-guy/pi-ez-web:sha-placeholder
@@ -35,6 +36,11 @@ spec:
               drop: [ALL]
             seccompProfile:
               type: RuntimeDefault
+          # OpenShell client settings (infra: selfhost/platform/openshell). Absent = provider off.
+          envFrom:
+            - configMapRef:
+                name: openshell-client
+                optional: true
           env:
             - name: PORT
               value: "3150"
@@ -73,6 +79,25 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
+          volumeMounts:
+            # The OpenShell provider writes each sandbox's policy to a temp file for the CLI.
+            - name: tmp
+              mountPath: /tmp
+            - name: openshell-config
+              mountPath: /var/lib/openshell-client
+            - name: openshell-client-tls
+              mountPath: /var/lib/openshell-client/openshell/gateways/openshell/mtls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: openshell-config
+          emptyDir: {}
+        - name: openshell-client-tls
+          secret:
+            secretName: openshell-client-tls
+            optional: true
+            defaultMode: 0440
 ---
 apiVersion: v1
 kind: Service
