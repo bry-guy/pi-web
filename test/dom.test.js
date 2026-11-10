@@ -108,6 +108,10 @@ async function boot() {
         dom.window.__extensionUiResponses.push(JSON.parse(options.body || "{}"));
         return json({ ok: true });
       }
+      if (url === "/api/sessions/s1/name" && options.method === "POST") {
+        dom.window.__renameBody = JSON.parse(options.body || "{}");
+        return json({ ok: true, name: dom.window.__renameBody.name });
+      }
       if (url.includes("/api/sessions/") && url.includes("/extension-ui/") && options.method === "DELETE") return json({ ok: true, cancelled: true });
       if (url === "/api/sessions/s1/push-preview") return json({ ok: true, branch: "main", upstream: "origin/main", head: "head-2", baseHead: "head-1", commitCount: 2, commits: [{ hash: "head-2", shortHash: "head-2", subject: "second commit" }, { hash: "head-1", shortHash: "head-1", subject: "first commit" }] });
       if (url === "/api/sessions/s1/push" && options.method === "POST") {
@@ -342,6 +346,11 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(card(), null, "only the open conversation's question shows");
   assert.ok(store.state.asks.sibling, "and the other one is kept for its session");
   delete store.state.asks.sibling;
+  // An extension's notify() is a status line, not a message from Pi.
+  applyEvent({ v: 1, seq: 10, sessionId: "s1", type: "extension_ui_notify", message: "Observational memory: observer running on ~56-token chunk", level: "info" });
+  assert.match(root.querySelector("pi-thread .extension-notice")?.textContent || "", /observer running on ~56-token chunk/);
+  assert.equal(root.querySelector("pi-thread .command-notice"), null, "an extension notice is not shown as a Pi message");
+  store.set({ commandNotice: null });
   const project = store.state.projects[0];
   const session = project.sessions.find(item => item.id === "s1");
   const originalSession = { ...session };
@@ -398,6 +407,16 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.match(root.querySelector(".session-disabled-reason")?.textContent || "", /primary checkout/, "the disabled reason is visible, not only a tooltip");
   assert.equal(root.querySelector(".session-picker [data-session-name]"), null, "the session panel no longer edits the name");
   assert.equal(root.querySelector(".session-picker .branch-picker-trigger"), null, "the branch dropdown is replaced by Switch");
+  globalThis.prompt = (_label, value) => { assert.equal(value, "New session", "Rename starts from the current title"); return "  ui-audit  "; };
+  root.querySelector(".session-picker [data-act='rename-session']").click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(dom.window.__renameBody, { name: "ui-audit" }, "Rename sends the trimmed name");
+  globalThis.prompt = () => "x".repeat(121);
+  root.querySelector(".session-picker [data-act='rename-session']").click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.match(root.querySelector(".session-picker-error")?.textContent || "", /1 to 120 characters/);
+  store.set({ sessionPickerError: null });
+  delete globalThis.prompt;
   const forkOpener = root.querySelector("[data-act='open-fork']");
   forkOpener.focus();
   const dialog = root.querySelector(".session-picker");

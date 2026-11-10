@@ -311,6 +311,19 @@ test("Pi built-in commands are discoverable and web-adapted", async () => {
   assert.match(await file.text(), /\"type\":\"session\"/);
 });
 
+test("a session can be renamed with a trimmed 1-120 character name", async () => {
+  const { id } = await (await post("/api/chats")).json();
+  for (const name of ["", "   ", "x".repeat(121), 42]) {
+    const rejected = await post(`/api/sessions/${id}/name`, { name });
+    assert.equal(rejected.status, 400);
+    assert.equal((await rejected.json()).error, "invalid_session_name");
+  }
+  const renamed = await post(`/api/sessions/${id}/name`, { name: "  ui-audit  " });
+  assert.deepEqual(await renamed.json(), { ok: true, name: "ui-audit" });
+  const state = await (await get("/api/state")).json();
+  assert.equal(state.chats.find(chat => chat.id === id)?.title, "ui-audit", "the new name is the listed title");
+});
+
 test("followUp queues; steer interrupts", async () => {
   const sse = new SSE(base + "/api/events");
   const { id } = await (await post("/api/chats")).json();
