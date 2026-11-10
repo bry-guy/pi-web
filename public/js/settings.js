@@ -428,7 +428,9 @@ class PiSettings extends HTMLElement {
           : method.id === "api_key"
             ? `Use ${provider.id === "openai" ? "OpenAI" : provider.id === "anthropic" ? "Anthropic" : name} API key`
             : method.label;
-      return `<button class="settings-action" data-auth-login="${esc(provider.id)}" data-auth-type="${esc(method.id)}">${esc(provider.configured ? `Reconnect · ${label}` : label)}</button>`;
+      const text = provider.configured ? `Reconnect · ${label}` : label;
+      // title: a narrow card cuts the one-line label with an ellipsis.
+      return `<button class="settings-action" data-auth-login="${esc(provider.id)}" data-auth-type="${esc(method.id)}" title="${esc(text)}">${esc(text)}</button>`;
     }).join("") || "";
     const logout = provider.canLogout
       ? `<button class="settings-action quiet" data-auth-logout="${esc(provider.id)}">Disconnect</button>` : "";
