@@ -10,6 +10,7 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { chatTransfer } from "./chat-transfer.js";
+import { discordFromEnv } from "./discord.js";
 import { remoteConversationPreview, remoteConversationsForProject, syncedProjects as syncedProjectsFromServer } from "./pi-sync.js";
 
 // workspaced's CHATS_WORKSPACE: the worker without a repository.
@@ -35,7 +36,15 @@ export function remoteWorkspacesFromEnv(env, deps) {
   }
   const modelAuthPath = path.join(env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"), "auth.json");
   const cachePath = env.PI_WEB_HOME ? path.join(env.PI_WEB_HOME, "remote-projects.json") : null;
-  return createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, ...(fetchImpl ? { fetchImpl } : {}), ...deps });
+  let discord = null;
+  const remote = createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, onEvent: (...a) => discord?.event(...a), ...(fetchImpl ? { fetchImpl } : {}), ...deps });
+  discord = discordFromEnv(env, { post: remote.sessionPost, titleOf: remote.sessionTitle, agentOf: remote.agentOf });
+  if (discord) {
+    const stop = remote.stop;
+    remote.stop = () => { stop(); discord.stop(); };
+    process.once("exit", () => discord.stop());
+  }
+  return remote;
 }
 
 // workspaced with the local provider, answering web's calls in-process (no port, no network).
@@ -71,7 +80,7 @@ export function workerModelAuth(content) {
   return JSON.stringify(auth, null, 2);
 }
 
-export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, syncedProjects = async () => [], syncedTtlMs = 30_000, log = console.log }) {
+export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, syncedProjects = async () => [], syncedTtlMs = 30_000, onEvent = null, log = console.log }) {
   const owners = { project: new Map(), session: new Map() };
 
   // pi projects with synced conversations (pi-sync), so a project not on web yet is still listed.
@@ -109,6 +118,28 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     } catch { /* the cache is a convenience */ }
   }
   for (const chat of chatSnapshot) owners.session.set(chat.id, CHATS);
+
+  // Sessions created for an agent run (`agent: "<name>"` on create): sessionId → agent name.
+  const agentsPath = cachePath ? path.join(path.dirname(cachePath), "agent-sessions.json") : null;
+  let agents = {};
+  try { agents = agentsPath ? JSON.parse(readFileSync(agentsPath, "utf8")) : {}; } catch { agents = {}; }
+  function markAgent(id, name) {
+    if (typeof id !== "string" || !id || typeof name !== "string" || !name.trim()) return;
+    agents[id] = name.trim().slice(0, 100);
+    if (!agentsPath) return;
+    try {
+      writeFileSync(`${agentsPath}.tmp`, JSON.stringify(agents), { mode: 0o600 });
+      renameSync(`${agentsPath}.tmp`, agentsPath);
+    } catch { /* the Discord notices for this run fall back to the 5-minute rule */ }
+  }
+  const agentOf = id => agents[id] || null;
+  const agentIn = text => { try { return JSON.parse(text || "{}")?.agent; } catch { return null; } };
+
+  function sessionTitle(id) {
+    const find = nodes => { for (const s of nodes || []) { if (s.id === id) return s; const hit = find(s.children); if (hit) return hit; } return null; };
+    for (const projects of Object.values(snapshots)) for (const p of projects) { const hit = find(p.sessions); if (hit) return hit.title || null; }
+    return chatSnapshot.find(s => s.id === id)?.title || null;
+  }
 
   const call = (path, init = {}) => fetchImpl(`${url}/v1${path}`, { ...init, headers: { ...auth, ...(init.headers || {}) } });
   const workerPath = (name, rest) => `/workspaces/${encodeURIComponent(name)}/api${rest}`;
@@ -244,9 +275,10 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
 
   async function createChat(c) {
     await ensureChats();
-    const res = await call(workerPath(CHATS, "/chats"), { method: "POST", headers: { "content-type": "application/json" }, body: await c.req.text() || "{}" });
+    const text = await c.req.text() || "{}";
+    const res = await call(workerPath(CHATS, "/chats"), { method: "POST", headers: { "content-type": "application/json" }, body: text });
     const body = await res.json().catch(() => ({ error: "workspace_unavailable" }));
-    if (res.ok && body.id) owners.session.set(body.id, CHATS);
+    if (res.ok && body.id) { owners.session.set(body.id, CHATS); markAgent(body.id, agentIn(text)); }
     return c.json(body, res.status);
   }
 
@@ -373,9 +405,13 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     headers.delete("authorization");
     if (auth.authorization) headers.set("authorization", auth.authorization);
     const hasBody = !["GET", "HEAD"].includes(c.req.method);
+    // A new session may be an agent run; the body is small, so read it for `agent`.
+    const creating = c.req.method === "POST" && /^\/projects\/[^/]+\/sessions$/.test(rest);
+    const body = creating ? await c.req.text() : hasBody ? c.req.raw.body : undefined;
+    const agent = creating ? agentIn(body) : null;
     let res;
     try {
-      res = await fetchImpl(`${url}/v1${workerPath(name, rest)}${search}`, { method: c.req.method, headers, body: hasBody ? c.req.raw.body : undefined, duplex: "half", signal: c.req.raw.signal });
+      res = await fetchImpl(`${url}/v1${workerPath(name, rest)}${search}`, { method: c.req.method, headers, body, duplex: "half", signal: c.req.raw.signal });
     } catch {
       if (name === CHATS) chatsAwake = false;
       return c.json({ error: "workspace_unavailable", workspace: name }, 502);
@@ -383,6 +419,11 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     if (name === CHATS && res.status >= 502) chatsAwake = false;
     const out = new Headers(res.headers);
     for (const h of DROP_HEADERS) out.delete(h);
+    if (res.ok && agent) {
+      const created = await res.json().catch(() => ({}));
+      markAgent(created.id, agent);
+      return new Response(JSON.stringify(created), { status: res.status, headers: out });
+    }
     const closed = c.req.method === "POST" && rest.match(/^\/sessions\/([^/]+)\/close$/);
     if (res.ok && closed) forgetSession(name, decodeURIComponent(closed[1]));
     if (res.ok && c.req.method === "GET" && /^\/sessions\/[^/]+\/transcript$/.test(rest)) {
@@ -428,6 +469,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
                 if (type === "ping") continue; // the worker's keepalive; web sends its own
                 if (sessionId) owners.session.set(sessionId, name);
                 hub.emit(sessionId, type, rest);
+                try { onEvent?.(sessionId, type, rest); } catch { /* never breaks fan-in */ }
                 pairs.push([Number(seq), hub.currentSeq()]);
                 if (pairs.length > 5000) pairs.splice(0, 1000);
               } catch { /* malformed frame */ }
@@ -541,8 +583,16 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   };
   const syncedPreview = id => remoteConversationPreview(id);
 
+  // POST to a session's route on its worker, as the browser would (workspaced wakes a sleeping worker).
+  async function sessionPost(id, rest, body) {
+    const name = await owner("session", id);
+    if (!name) return { status: 404, body: { error: "no_such_session" } };
+    const res = await call(workerPath(name, `/sessions/${encodeURIComponent(id)}${rest}`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  }
+
   return {
-    wake, projectSynced, syncedPreview,
+    wake, projectSynced, syncedPreview, sessionPost, sessionTitle, agentOf, markAgent,
     projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };

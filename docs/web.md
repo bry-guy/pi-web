@@ -19,8 +19,19 @@ Web creates the chats worker with the first chat. Chats that web ran itself befo
 | `PI_WEB_GITHUB_CLIENT_ID` / `PI_WEB_GITHUB_TOKEN` | unset | GitHub sign-in (public OAuth client ID) or a fixed token. See [Configuration](configuration.md) |
 | `PI_WEB_PRESTART_COMMAND` | unset | Shell run before start, e.g. fetching dotfiles or seeding `config.json` (120 s limit) |
 | `PI_SYNC_SERVER_URL` | unset | Optional [pi-sync](https://github.com/bry-guy/pi-sync) server |
+| `PI_WEB_DISCORD_TOKEN`, `PI_WEB_DISCORD_USER` | unset | Discord contact (below): a bot token and the one Discord user id it DMs. Both or it stays off |
+| `PI_WEB_PUBLIC_URL` | unset | Web's public base URL, for links in Discord DMs (`<url>/?s=<session>`) |
 
 Everything else (default model, Pi profile and packages, repository source) is in **Settings** or [`config.json`](configuration.md).
+
+## Discord contact
+
+With `PI_WEB_DISCORD_TOKEN` and `PI_WEB_DISCORD_USER` set, web DMs that user from the bot when a session needs them. It reads every worker event as it passes through web; workers never see the token.
+
+- A question (an extension's select, confirm or input dialog) still open after 5 minutes: the session title, the question, numbered options and a link to the session.
+- For an agent run (a session created with `"agent": "<name>"` on `POST /api/chats` or `POST /api/projects/:id/sessions`; web keeps the mark in `PI_WEB_HOME/agent-sessions.json`): questions at once, and one line when a turn finishes or fails.
+
+Reply in the DM: to a question, a number or an exact option, yes or no, or the text for an input; to a finished turn, a message the session receives as your next prompt. Replying to a specific DM answers that one; a plain message answers the latest. The bot reacts ✅ when delivered, and says so when the question was already answered or the reply does not fit. Questions waiting for their 5 minutes are forgotten if web restarts. The bot needs no privileged intents (DMs carry message content).
 
 ## Chat header
 
