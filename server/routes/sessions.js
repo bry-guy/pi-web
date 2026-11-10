@@ -122,8 +122,10 @@ export function register(api, deps) {
 
   api.post("/sessions/:id/name", async c => {
     const id = c.req.param("id");
-    const { name } = await c.req.json();
+    const body = await c.req.json().catch(() => ({}));
+    const name = typeof body?.name === "string" ? body.name.trim() : "";
+    if (!name || name.length > 120) return err(c, 400, "invalid_session_name");
     await sup.setName(id, name);
-    return c.json({ ok: true, name: String(name || "").trim() || null });
+    return c.json({ ok: true, name });
   });
 }
