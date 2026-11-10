@@ -106,6 +106,7 @@ export const api = {
   context: id => fetch(`/api/sessions/${encodeURIComponent(id)}/context`).then(j),
   thinking: id => fetch(`/api/sessions/${encodeURIComponent(id)}/thinking`).then(j),
   setThinking: (id, level) => fetch(`/api/sessions/${encodeURIComponent(id)}/thinking`, { method: "POST", headers: JH, body: JSON.stringify({ level }) }).then(j),
+  setName: (id, name) => fetch(`/api/sessions/${encodeURIComponent(id)}/name`, { method: "POST", headers: JH, body: JSON.stringify({ name }) }).then(j),
   commands: id => fetch(`/api/sessions/${encodeURIComponent(id)}/commands`).then(j),
   command: (id, text, mode = "prompt") => fetch(`/api/sessions/${encodeURIComponent(id)}/command`, { method: "POST", headers: JH, body: JSON.stringify({ text, mode }) }).then(j),
   extensionUiResponse: (sessionId, requestId, body) => fetch(`/api/sessions/${encodeURIComponent(sessionId)}/extension-ui/${encodeURIComponent(requestId)}`, { method: "POST", headers: JH, body: JSON.stringify(body || {}) }).then(j),
@@ -458,7 +459,8 @@ function applyUiEvent(evt) {
     return true;
   }
   if (evt.type === "extension_ui_notify") {
-    store.set({ commandNotice: { sessionId: evt.sessionId, title: "Pi", message: evt.message || "", level: evt.level || "info" } });
+    // Extension notices are status, not something Pi said: they render as a muted line, not a "Pi" card.
+    store.set({ commandNotice: { sessionId: evt.sessionId, extension: true, message: evt.message || "", level: evt.level || "info" } });
     return true;
   }
   if (evt.type === "extension_ui_status") {

@@ -217,6 +217,7 @@ class PiSessionPicker extends HTMLElement {
       return;
     }
     if (act === "fork-session") { await this.submitFork(); return; }
+    if (act === "rename-session") { await this.rename(); return; }
     if (act === "toggle-history") {
       const picker = this.picker();
       const id = e.target.closest("[data-act]").dataset.id;
@@ -231,6 +232,24 @@ class PiSessionPicker extends HTMLElement {
     }
     if (act === "pull-branch") await this.pull();
     if (act === "push-branch") await this.push();
+  }
+
+  async rename() {
+    const picker = this.picker(); const project = this.project();
+    const id = picker?.sourceSessionId;
+    if (!id || !project || this.busy) return;
+    const session = this.flatten(project.sessions).find(item => item.id === id);
+    const entered = prompt("Session name", session?.name || session?.title || "");
+    if (entered === null) return;
+    const name = entered.trim();
+    if (!name || name.length > 120) { store.set({ sessionPickerError: "A session name is 1 to 120 characters." }); return; }
+    try {
+      await api.setName(id, name);
+      store.set({ sessionPickerError: null });
+      await refreshState();
+    } catch (err) {
+      store.set({ sessionPickerError: `Could not rename the session: ${err.error || err.message || err}` });
+    }
   }
 
   async submit(mode, forkBranch = null, nameOverride = undefined) {
@@ -471,6 +490,7 @@ class PiSessionPicker extends HTMLElement {
         const sessionSection = `<section class="session-picker-actions" aria-label="Session">
           <div class="session-context-heading"><span>Session</span></div>
           <div class="panel-rows session-picker-session-buttons">
+            ${actionRow("Rename", "Names this session; the name shows in the sidebar.", `<button class="btn btn-secondary" data-act="rename-session" ${this.busy ? "disabled" : ""}>Rename…</button>`)}
             ${actionRow("Fork", "Copies this conversation to a new branch and worktree.", `<button class="btn btn-secondary" data-act="open-fork" ${this.busy ? "disabled" : ""}>Fork…</button>`)}
             ${hookRows}
             ${actionRow("End session", "Stops it, withdraws it from sync on this server and archives it. Git is not touched.", `<button class="btn btn-caution" data-act="end-session" ${this.busy ? "disabled" : ""}>End</button>`)}

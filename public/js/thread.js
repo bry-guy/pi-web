@@ -623,6 +623,7 @@ class PiThread extends HTMLElement {
     const message = stats
       ? `Messages ${stats.messages} · user ${stats.user} · assistant ${stats.assistant} · tools ${stats.tools} · tokens ${stats.tokens?.total || 0} · cost ${Number(stats.cost || 0).toFixed(4)}`
       : notice.message || "";
+    if (notice.extension) return `<div class="extension-notice ${notice.level === "error" || notice.level === "warning" ? esc(notice.level) : ""}" role="status">${esc(message)}</div>`;
     return `<section class="command-notice" role="status"><strong>${esc(notice.title || "Pi")}</strong><span>${esc(message)}</span></section>`;
   }
 
