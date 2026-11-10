@@ -739,6 +739,7 @@ main.col.settings-open > pi-header { display: none; }
 .file-target { min-width: 88px; padding: 5px 7px; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: 11px var(--mono); outline: none; }
 .file-target:focus { box-shadow: 0 0 0 2px var(--accent-soft); }
 .file-scope-row { justify-content: flex-start; padding: 8px 12px 0 14px; margin-bottom: 0; }
+.file-scope-label { flex: 0 0 auto; }
 .file-repo, .file-branch, .group-repo-select { min-width: 0; max-width: 50%; padding: 5px 7px; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: 11px var(--mono); outline: none; }
 .file-repo:focus, .file-branch:focus, .group-repo-select:focus { box-shadow: 0 0 0 2px var(--accent-soft); }
 .group-repo-select { max-width: 140px; margin-right: 8px; }
@@ -864,6 +865,7 @@ main.col.settings-open > pi-header { display: none; }
 .session-context-check { width: 13px; flex: 0 0 13px; color: var(--accent); font: 14px var(--mono); text-align: center; }
 .session-context-users { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 3px; }
 .session-context-user { display: inline-flex; align-items: center; gap: 4px; max-width: 23ch; overflow: hidden; color: var(--muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.session-context-user-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .session-context-user i { width: 5px; height: 5px; flex: 0 0 auto; border-radius: 50%; background: var(--faint); }
 .session-context-user.working i { background: var(--pi-orange); animation: piBlink 2.4s steps(1) infinite; }
 .session-picker-empty { padding: 18px 8px; color: var(--muted); font-size: 12px; text-align: center; }
@@ -960,6 +962,8 @@ main.col.settings-open > pi-header { display: none; }
   .session-picker-body { max-height: none; flex: 1 1 auto; overflow-y: auto; }
   .session-picker-actions { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   .settings-actions-row { align-items: flex-start; flex-direction: column; }
+  /* Equal columns so a worker's last action doesn't sit alone on its own row. */
+  .worker-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); width: 100%; }
   /* On a phone Files covers the whole screen, header included; its own bar closes it. */
   aside.files {
     position: fixed; inset: 0; width: 100%; max-width: none; z-index: 45; box-shadow: none;

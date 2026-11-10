@@ -430,7 +430,10 @@ class PiSessionPicker extends HTMLElement {
     const onCurrent = !!current;
     const primarySelected = current === primary;
     const primaryReason = `Unavailable for ${primary}; ${primary} is the primary checkout.`;
-    const userText = users.length ? users.map(user => `<span class="session-context-user ${user.streaming ? "working" : ""}"><i></i>${esc(user.title)} · ${user.streaming ? "working" : "idle"}</span>`).join("") : `<span class="session-picker-help">No other sessions use this branch.</span>`;
+    const userText = users.length ? users.map(user => {
+      const label = `${user.title} · ${user.streaming ? "working" : "idle"}`;
+      return `<span class="session-context-user ${user.streaming ? "working" : ""}" title="${esc(label)}"><i></i><span class="session-context-user-name">${esc(label)}</span></span>`;
+    }).join("") : `<span class="session-picker-help">No other sessions use this branch.</span>`;
     const branchMeta = branch => {
       const item = contextFor(branch);
       if (!item) return "not checked out";
@@ -453,7 +456,7 @@ class PiSessionPicker extends HTMLElement {
         ${gitRows.length ? detailList(gitRows) : `<p class="session-picker-help">Git details are unavailable for this session.</p>`}
         <div class="session-context-users branch-user-list">${userText}</div>
         <div class="session-action-row">${gitButtons}</div>
-        ${onCurrent ? `<div class="session-action-row session-danger-row"><button class="btn btn-caution" data-act="delete-branch" ${primarySelected || this.busy ? "disabled" : ""} title="${primarySelected ? esc(primaryReason) : "Delete local branch"}">Delete branch</button><button class="btn btn-primary" data-act="merge-branch" ${primarySelected || this.busy ? "disabled" : ""} title="${primarySelected ? esc(primaryReason) : `Merge to ${esc(primary)}`}">Merge to ${esc(primary)}</button></div>` : ""}
+        ${onCurrent ? `<div class="session-action-row session-danger-row"><button class="btn btn-caution" data-act="delete-branch" ${primarySelected || this.busy ? "disabled" : ""} title="${primarySelected ? esc(primaryReason) : "Delete local branch"}">Delete branch</button><button class="btn btn-primary" data-act="merge-branch" ${primarySelected || this.busy ? "disabled" : ""} title="${primarySelected ? esc(primaryReason) : `Merge to ${esc(primary)}`}">Merge to ${esc(primary)}</button></div>${primarySelected ? `<p class="session-picker-help session-disabled-reason">${esc(primaryReason)}</p>` : ""}` : ""}
       </section>`;
       {
         const hookNames = picker.sourceSessionId ? Object.entries(project.hooks || {}).filter(([name, enabled]) => enabled && name).map(([name]) => name).sort((a, b) => (a === "setup" ? -1 : b === "setup" ? 1 : a.localeCompare(b))) : [];

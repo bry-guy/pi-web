@@ -36,7 +36,7 @@ export function workerCard(worker, usageAvailable, { canDelete = true } = {}) {
         ${grantFacts}
       </dl>
       <div class="settings-row settings-actions-row"><span class="settings-mono">${asleep ? "Asleep. Opening one of its projects wakes it." : ""}</span>
-        <div class="settings-actions">
+        <div class="settings-actions worker-actions">
           <button class="settings-action" data-act="reload-worker" data-name="${name}" ${asleep ? "disabled" : ""}>Reload</button>
           <button class="settings-action" data-act="restart-worker" data-name="${name}">Restart</button>
           <button class="settings-action" data-act="stop-worker" data-name="${name}" ${asleep ? "disabled" : ""} title="Put it to sleep now. Its disk is kept and it wakes on use.">Stop</button>
