@@ -10,4 +10,4 @@ resources:
   - service.yaml
 images:
   - name: ghcr.io/bry-guy/pi-ez-web
-    digest: sha256:37fb3f0ea6088b5ac6fecef04e99e77660981d784eb618f0ea0892fd31681f4a
+    digest: sha256:20aaf409441c9b18302d56525be8e15a0ec18ce352294a7c52444109591f252c
