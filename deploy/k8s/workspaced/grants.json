@@ -13,5 +13,25 @@
     ],
     "egress": "open",
     "description": "Infra only: cluster-admin, ghcr + platform secrets via operator-env (mise run selfhost:platform:pi-ez-operator:env:apply), open egress."
+  },
+  "labrat": {
+    "repos": [
+      "project:labrat"
+    ],
+    "provider": "openshell",
+    "packages": [
+      "npm:@gotgenes/pi-anthropic-auth@3.4.4"
+    ],
+    "environment": {
+      "KUBERNETES_MASTER": "http://labrat-kube.openshell.svc.cluster.local:8001",
+      "PI_SKIP_VERSION_CHECK": "1"
+    },
+    "egress": [
+      {
+        "host": "labrat-kube.openshell.svc.cluster.local",
+        "port": 8001
+      }
+    ],
+    "description": "labrat only: an OpenShell sandbox with Claude through the gateway and read-only cluster access through the labrat-kube relay. No GitHub, no secrets, no other network."
   }
 }

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -895,4 +895,38 @@ test("a pi project's worker is named after it and serves PI_PROJECTS_DIR from it
   assert.equal(env.PI_WEB_REPOS_ROOT, "/data/projects/eco/repos");
   const plain = Object.fromEntries(deploymentManifest({ name: "x", repository: "a/x", image: "img" }).spec.template.spec.containers[0].env.map(e => [e.name, e.value]));
   assert.equal(plain.PI_PROJECTS_DIR, undefined);
+});
+
+test("an OpenShell sandbox worker gets a marker login file in place of the link, and the shim swaps the marker for the placeholder", async () => {
+  const { linkModelAuth, SANDBOX_MODEL_AUTH } = await import("../server/index.js");
+  const dir = mkdtempSync(path.join(tmpdir(), "sandbox-auth-"));
+  const shared = path.join(dir, "shared.json");
+  writeFileSync(shared, '{"real":1}');
+  symlinkSync(shared, path.join(dir, "auth.json"));
+  const placeholderFile = path.join(dir, "openshell-placeholder");
+  linkModelAuth({ PI_WEB_MODEL_AUTH_FILE: shared, PI_CODING_AGENT_DIR: dir, PI_ANTHROPIC_PLACEHOLDER_FILE: placeholderFile });
+  assert.ok(lstatSync(path.join(dir, "auth.json")).isFile());
+  assert.deepEqual(JSON.parse(readFileSync(path.join(dir, "auth.json"), "utf8")), SANDBOX_MODEL_AUTH);
+  assert.equal(readFileSync(shared, "utf8"), '{"real":1}', "the link target is untouched");
+
+  const seen = [];
+  const original = globalThis.fetch;
+  const saved = [process.env.PI_ANTHROPIC_PLACEHOLDER_FILE, process.env.OPENSHELL_ANTHROPIC_PLACEHOLDER];
+  globalThis.fetch = async (input, init) => { seen.push(new Headers(init?.headers).get("authorization")); return new Response("{}"); };
+  delete globalThis.__openshellOauth;
+  try {
+    process.env.PI_ANTHROPIC_PLACEHOLDER_FILE = placeholderFile;
+    process.env.OPENSHELL_ANTHROPIC_PLACEHOLDER = "openshell:resolve:env:v1_OPENSHELL_ANTHROPIC_PLACEHOLDER";
+    (await import("../server/extensions/openshell-oauth.js")).default();
+    const marker = { headers: { authorization: `Bearer ${SANDBOX_MODEL_AUTH.anthropic.access}` } };
+    await fetch("https://api.anthropic.com/v1/messages", marker);
+    writeFileSync(placeholderFile, "openshell:resolve:env:v2_OPENSHELL_ANTHROPIC_PLACEHOLDER\n");
+    await fetch("https://api.anthropic.com/v1/messages", marker);
+    await fetch("https://example.com/", { headers: { authorization: "Bearer other" } });
+    assert.deepEqual(seen, ["Bearer openshell:resolve:env:v1_OPENSHELL_ANTHROPIC_PLACEHOLDER", "Bearer openshell:resolve:env:v2_OPENSHELL_ANTHROPIC_PLACEHOLDER", "Bearer other"]);
+  } finally {
+    globalThis.fetch = original;
+    delete globalThis.__openshellOauth;
+    [["PI_ANTHROPIC_PLACEHOLDER_FILE", saved[0]], ["OPENSHELL_ANTHROPIC_PLACEHOLDER", saved[1]]].forEach(([k, v]) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+  }
 });

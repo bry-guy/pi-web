@@ -4,9 +4,10 @@ import https from "node:https";
 import { tmpdir } from "node:os";
 import { createSecureContext } from "node:tls";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import YAML from "yaml";
-import { DEFAULT_GRANT, grantError } from "./grants.js";
+import { DEFAULT_GRANT, grantError, MODEL_PROVIDER } from "./grants.js";
 import { DATA, MANAGED_BY, pvcManifest, WORKSPACE_PORT, workerEnv } from "./manifests.js";
 
 // Workers as NVIDIA OpenShell sandboxes (CLI 0.1.7), driven through the `openshell` CLI. A sandbox
@@ -22,6 +23,15 @@ const NAME_LABEL = "pi-ez-workspace";
 const REPO_ANNOTATION = "pi-ez-repository";
 const GRANT_ANNOTATION = "pi-ez-grant";
 const IMAGE_ANNOTATION = "pi-ez-image";
+// Model login (docs/workspaced.md#model-login): the gateway provider MODEL_PROVIDER holds the Claude access
+// token; a sandbox sees only a placeholder in this variable, which the worker's shim sends as the bearer.
+const PLACEHOLDER_VAR = "OPENSHELL_ANTHROPIC_PLACEHOLDER";
+// In the worker's agent dir (workerEnv's PI_CODING_AGENT_DIR). The shim prefers it over its env.
+export const PLACEHOLDER_FILE = `${DATA}/pi-ez-agent/openshell-placeholder`;
+const PROFILE_FILE = fileURLToPath(new URL("./pi-web-anthropic.yaml", import.meta.url));
+// Placeholders are versioned and a running process keeps the one it started with; a new process (this exec)
+// sees the current one, so writing it to the file moves the running worker to it.
+const WRITE_PLACEHOLDER = `[ -n "$${PLACEHOLDER_VAR}" ] || exit 0; mkdir -p ${path.posix.dirname(PLACEHOLDER_FILE)} && printenv ${PLACEHOLDER_VAR} > ${PLACEHOLDER_FILE}.tmp && mv ${PLACEHOLDER_FILE}.tmp ${PLACEHOLDER_FILE}`;
 const PHASE_STATE = { Ready: "running", Stopped: "sleeping", Stopping: "sleeping", Suspended: "sleeping", Suspending: "sleeping", Error: "failed" };
 
 export function openshellConfig(env = process.env) {
@@ -45,8 +55,9 @@ export function openshellConfig(env = process.env) {
 }
 
 // Base (as the spike's worker-policy.yaml: the app read-only, /data the only writable data) plus the
-// grant's egress rules. No rule, no network: OpenShell denies by default.
-export function sandboxPolicy(grant) {
+// grant's egress rules, the model API when the model login is attached, and npm for npm: packages.
+// No rule, no network: OpenShell denies by default.
+export function sandboxPolicy(grant, { model = false } = {}) {
   const policy = {
     version: 1,
     filesystem_policy: {
@@ -57,26 +68,39 @@ export function sandboxPolicy(grant) {
     landlock: { compatibility: "best_effort" },
   };
   const rules = Array.isArray(grant?.egress) ? grant.egress : [];
-  if (rules.length) {
-    policy.network_policies = Object.fromEntries(rules.map((r, i) => [`egress-${i + 1}`, {
+  const named = (name, endpoint) => ({ name, endpoints: [{ protocol: "rest", enforcement: "enforce", ...endpoint }], binaries: [{ path: NODE }] });
+  const network = {
+    ...Object.fromEntries(rules.map((r, i) => [`egress-${i + 1}`, {
       name: `${r.host}:${r.port}`,
       endpoints: [{ host: r.host, port: r.port, protocol: "rest", enforcement: "enforce", access: "full", ...(r.allowEncodedSlash ? { allow_encoded_slash: true } : {}) }],
       binaries: (r.binaries || [NODE]).map(p => ({ path: p })),
-    }]));
-  }
+    }])),
+    ...(model ? { anthropic: named("anthropic", { host: "api.anthropic.com", port: 443, access: "read-write" }) } : {}),
+    // Scoped package names are %2F-encoded in registry paths.
+    ...(grant?.packages?.some(p => p.startsWith("npm:")) ? { npm: named("npm", { host: "registry.npmjs.org", port: 443, access: "read-write", allow_encoded_slash: true }) } : {}),
+  };
+  if (Object.keys(network).length) policy.network_policies = network;
   return policy;
 }
 
 // The argv after `openshell` that creates a worker's sandbox (flags as in the spike's run.sh t3).
-export function createArgs({ name, repository, grant, config, policyFile }) {
-  const env = [...workerEnv({ name, repository }), { name: "HOST", value: "127.0.0.1" }];
+// model: attach the fed model login (MODEL_PROVIDER) and tell the worker where its placeholder file is.
+export function createArgs({ name, repository, grant, config, policyFile, model = false }) {
+  const env = [
+    ...workerEnv({ name, repository }), { name: "HOST", value: "127.0.0.1" },
+    ...(model ? [{ name: "PI_ANTHROPIC_PLACEHOLDER_FILE", value: PLACEHOLDER_FILE }] : []),
+    ...(grant?.packages?.length ? [{ name: "PI_WEB_PACKAGES", value: JSON.stringify(grant.packages) }] : []),
+    ...Object.entries(grant?.environment || {}).map(([n, value]) => ({ name: n, value })),
+  ];
+  const providers = [...(model ? [MODEL_PROVIDER] : []), ...(grant?.providers || [])];
   const driver = { kubernetes: {
     volumes: [{ name: "data", persistent_volume_claim: { claim_name: `ws-${name}`, read_only: false } }],
     containers: { agent: { volume_mounts: [{ name: "data", mount_path: DATA, read_only: false }] } },
   } };
   return [
     "sandbox", "create", "--name", `ws-${name}`, "--from", config.image, "--policy", policyFile,
-    "--expose", String(WORKSPACE_PORT), "--detach", "--no-tty", "--restart-policy", "on-failure",
+    "--expose", String(WORKSPACE_PORT), "--detach", "--no-tty", "--restart-policy", "on-failure", "--no-auto-providers",
+    ...providers.flatMap(p => ["--provider", p]),
     "--label", `${MANAGED_LABEL}=${MANAGED_BY}`, "--label", `${NAME_LABEL}=${name}`,
     "--annotation", `${GRANT_ANNOTATION}=${grant?.name || DEFAULT_GRANT}`, "--annotation", `${IMAGE_ANNOTATION}=${config.image}`,
     ...(repository ? ["--annotation", `${REPO_ANNOTATION}=${repository}`] : []),
@@ -139,7 +163,8 @@ function toWorkspace(s) {
 }
 
 // exec(bin, args, {env, timeout}) resolves { stdout, stderr }: execFile's promise form, injectable for tests.
-export function openshellProvider({ kube, config, exec = promisify(execFile), waitMs = 90_000, pollMs = 2_000, log = console.log, tlsCheckMs = 30_000 }) {
+// reconcileMs: how often the model login is re-fed (if it changed) and every running sandbox's placeholder file rewritten.
+export function openshellProvider({ kube, config, exec = promisify(execFile), waitMs = 90_000, pollMs = 2_000, log = console.log, tlsCheckMs = 30_000, reconcileMs = 300_000 }) {
   // The CLI gets only what it reads: never workspaced's own token or the workers' secrets.
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(PATH|HOME|XDG_CONFIG_HOME|OPENSHELL_.*)$/.test(k)));
   const env = {
@@ -153,13 +178,69 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
   // shortcut: pins live in memory (the CLI cannot change a sandbox's annotations); persist them if pinning sandboxes matters.
   const pinned = new Set();
 
-  async function run(args, timeout = 120_000) {
+  // secret: the model access token, for the one call that stores it; the CLI reads it from its env.
+  async function run(args, timeout = 120_000, secret = null) {
     try {
-      return (await exec(config.bin, args, { env, timeout, maxBuffer: 16 * 1024 * 1024 })).stdout;
+      return (await exec(config.bin, args, { env: secret ? { ...env, [PLACEHOLDER_VAR]: secret } : env, timeout, maxBuffer: 16 * 1024 * 1024 })).stdout;
     } catch (e) {
-      const detail = String(e.stderr || (e.killed ? "timed out" : `exit ${e.code ?? "unknown"}`)).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").filter(Boolean).pop();
+      let detail = String(e.stderr || (e.killed ? "timed out" : `exit ${e.code ?? "unknown"}`)).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").filter(Boolean).pop();
+      if (secret) detail = String(detail).replaceAll(secret, "[redacted]");
       throw httpError(`openshell ${args.slice(0, 2).join(" ")} failed: ${detail}`, 502, "openshell_error");
     }
+  }
+  const succeeds = args => run(args, 30_000).then(() => true, () => false);
+
+  // The model feed. modelAuth is the last auth.json web shared with this process (none after a restart until web
+  // shares a changed one); fed is the access token this process last stored on the gateway.
+  let modelAuth = null, fed = null, providerExists = false, skipped = null;
+  let queue = Promise.resolve();
+  const serial = fn => (queue = queue.then(fn, fn));
+  function accessToken() {
+    let a = null;
+    try { a = JSON.parse(modelAuth || "{}")?.anthropic; } catch { /* not JSON: no login */ }
+    const why = a?.type !== "oauth" || typeof a.access !== "string" || !a.access ? "no Anthropic OAuth login" : !(a.expires > Date.now()) ? "the Anthropic login has expired" : null;
+    if (why && why !== skipped) log(`workspaced: OpenShell model feed skipped: ${why}`);
+    skipped = why;
+    return why ? null : a.access;
+  }
+  // Stores the access token on the gateway; true when it did.
+  async function feed() {
+    const token = accessToken();
+    if (!token || token === fed) return false;
+    providerExists ||= await succeeds(["provider", "get", MODEL_PROVIDER]);
+    if (providerExists) {
+      // Look again next time if this fails: the provider may have been deleted on the gateway.
+      try { await run(["provider", "update", MODEL_PROVIDER, "--credential", PLACEHOLDER_VAR, "--wait", "--timeout", "60"], 120_000, token); }
+      catch (e) { providerExists = false; throw e; }
+    } else {
+      // shortcut: an existing profile is never re-imported; delete it on the gateway if pi-web-anthropic.yaml changes.
+      if (!await succeeds(["profile", "describe", MODEL_PROVIDER])) await run(["profile", "import", "-f", PROFILE_FILE]);
+      await run(["provider", "create", "--name", MODEL_PROVIDER, "--type", MODEL_PROVIDER, "--credential", PLACEHOLDER_VAR], 120_000, token);
+      providerExists = true;
+    }
+    fed = token;
+    log("workspaced: OpenShell gateway has the current model login");
+    return true;
+  }
+  const placeholderArgs = name => ["sandbox", "exec", "-n", `ws-${name}`, "--no-login-shell", "--timeout", "60", "--", "sh", "-c", WRITE_PLACEHOLDER];
+  async function reconcile() {
+    if (fed === null) return;
+    for (const w of (await list()).filter(x => x.state === "running")) {
+      await run(placeholderArgs(w.name), 90_000).catch(e => log(`workspaced: could not refresh the model placeholder in ws-${w.name}: ${e.message}`));
+    }
+  }
+  const feedFailed = e => log(`workspaced: OpenShell model feed failed (retried in ${Math.round(reconcileMs / 60_000)} min): ${e.message}`);
+  const tick = () => serial(() => feed().then(() => reconcile()).catch(feedFailed));
+  if (reconcileMs) setInterval(tick, reconcileMs).unref?.();
+  // A sandbox just created or started accepts exec only after a few seconds; until then its worker uses its env.
+  function settle(name) {
+    if (fed === null && !providerExists) return;
+    (async () => {
+      for (let i = 0; i < 30; i++) {
+        try { await run(placeholderArgs(name), 90_000); return; } catch { await new Promise(r => setTimeout(r, pollMs)); }
+      }
+      log(`workspaced: could not write the model placeholder in ws-${name} yet; the next refresh retries`);
+    })();
   }
 
   async function list() {
@@ -207,28 +288,35 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
         return existing;
       }
       await ensurePvc(name, repository);
+      // First sandbox since this process started: store the model login first, or attach one an earlier process stored.
+      if (fed === null) await serial(() => feed().catch(feedFailed));
+      providerExists ||= fed === null && await succeeds(["provider", "get", MODEL_PROVIDER]);
+      const model = fed !== null || providerExists;
+      if (!model) log(`workspaced: ws-${name} starts without a model login (pi-web has not shared one with this workspaced yet)`);
       const dir = mkdtempSync(path.join(tmpdir(), "openshell-policy-"));
       try {
         const policyFile = path.join(dir, "policy.yaml");
-        writeFileSync(policyFile, YAML.stringify(sandboxPolicy(grant)));
+        writeFileSync(policyFile, YAML.stringify(sandboxPolicy(grant, { model })));
         // --detach returns once OpenShell has the sandbox (~7 s), not when the worker answers; wake waits for it.
-        await run(createArgs({ name, repository, grant, config, policyFile }), 600_000);
+        await run(createArgs({ name, repository, grant, config, policyFile, model }), 600_000);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+      if (model) settle(name);
       // What the gateway will list, until it does.
       return toWorkspace({ phase: "Provisioning", labels: { [NAME_LABEL]: name }, annotations: { [GRANT_ANNOTATION]: grant?.name || DEFAULT_GRANT, [IMAGE_ANNOTATION]: config.image, ...(repository ? { [REPO_ANNOTATION]: repository } : {}) } });
     },
     async scale(name, replicas) {
       const w = await mustFind(name);
       if (replicas === 0 && w.state !== "sleeping") await run(["sandbox", "stop", `ws-${name}`]);
-      if (replicas > 0 && w.state === "sleeping") await run(["sandbox", "start", `ws-${name}`]);
+      if (replicas > 0 && w.state === "sleeping") { await run(["sandbox", "start", `ws-${name}`]); settle(name); }
     },
     // New pod, same disk: stop, then start once it has stopped.
     async restart(name) {
       await run(["sandbox", "stop", `ws-${name}`]);
       await stopped(name);
       await run(["sandbox", "start", `ws-${name}`]);
+      settle(name);
     },
     // Wipe the disk: stop, drop and recreate the PVC, start. Stays awake, as the kubernetes provider's reset.
     async reset(name) {
@@ -238,6 +326,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       await deletePvc(name);
       await ensurePvc(name, w.repository);
       await run(["sandbox", "start", `ws-${name}`]);
+      settle(name);
     },
     // The PVC holds unpushed work; it goes only when purged.
     async remove(name, { purge = false } = {}) {
@@ -258,9 +347,15 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
         ...(error ? { error: { code: "openshell_tls_unavailable", message: `OpenShell client certificate unusable: ${error}` } } : {}),
       };
     },
-    // Role credentials for sandbox workers are a later step: they get no GitHub or model login yet.
+    // shortcut: no GitHub login for sandbox workers; add one when a role needs it.
     async setGitHubAuth() {},
-    async setModelAuth() {},
+    // Never waits on the CLI: the feed runs in the background and failures are retried by the next tick.
+    async setModelAuth(content) {
+      modelAuth = content;
+      serial(() => feed().then(changed => changed && reconcile()).catch(feedFailed));
+    },
+    // For tests: resolves once queued feeds and reconciles are done.
+    settled: () => serial(() => {}),
   };
 }
 
@@ -336,7 +431,10 @@ export function withOpenShell(primary, openshell, { log = console.log, refreshMs
     },
     upstream: name => ownerOf(name).upstream(name),
     async setGitHubAuth(auth) { await primary.setGitHubAuth(auth); await openshell.setGitHubAuth(auth); },
-    async setModelAuth(content) { await primary.setModelAuth(content); await openshell.setModelAuth(content); },
+    async setModelAuth(content) {
+      await primary.setModelAuth(content);
+      try { await openshell.setModelAuth(content); } catch (e) { log(`workspaced: OpenShell model feed failed: ${e.message}`); }
+    },
   };
   if (primary.upgrade) overrides.upgrade = async name => { if (ownerOf(name) === primary) return primary.upgrade(name); };
   // Score resources are sidecars, which only Deployment workers have.

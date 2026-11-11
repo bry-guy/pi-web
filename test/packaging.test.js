@@ -30,10 +30,12 @@ test("production image installs the Pi SDK and browser Markdown libraries as run
   assert.equal(pkg.scripts.pretest, "scripts/install-pi-sync.sh");
   assert.equal(fs.existsSync(path.join(root, "vendor")), false, "pi-sync is installed from its own repository, not copied");
   assert.doesNotMatch(dockerfile, /git clone/);
-  // mise and yadm are credential-free prestart tools; secret and cluster tools stay out.
+  // mise and yadm are credential-free prestart tools; secret tools stay out. kubectl is in for OpenShell agent
+  // workers, whose cluster credential stays on the gateway (docs/workspaced.md).
   assert.match(dockerfile, /install -m 0755 "\$tmp\/mise" \/usr\/local\/bin\/mise/);
   assert.match(dockerfile, /install -m 0755 "\$tmp\/yadm-3\.5\.0\/yadm" \/usr\/local\/bin\/yadm/);
-  assert.doesNotMatch(dockerfile, /\b(fnox|tofu|kubectl)\b/i);
+  assert.match(dockerfile, /install -m 0755 "\$tmp\/kubernetes\/client\/bin\/kubectl" \/usr\/local\/bin\/kubectl/);
+  assert.doesNotMatch(dockerfile, /\b(fnox|tofu)\b/i);
   assert.doesNotMatch(dockerfile, /\bop\b/);
   assert.doesNotMatch(dockerfile, /MISE_|FNOX_|OP_VERSION|OPENTOFU_|KUBECTL_/);
   assert.match(dockerfile, /build-essential/);

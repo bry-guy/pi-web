@@ -30,7 +30,8 @@ RUN apt-get update \
 
 # mise and yadm let deployment prestart hooks install the operator's dotfiles
 # and project tools; workspaced drives OpenShell sandboxes with the openshell
-# CLI (a static musl build). Downloads are pinned by SHA-256.
+# CLI (a static musl build); kubectl matches the cluster (v1.34). Downloads are
+# pinned by SHA-256, kubectl by the SHA-512 its release notes publish.
 RUN set -eu; \
     tmp="$(mktemp -d)"; \
     curl -fsSL --proto '=https' --tlsv1.2 --max-time 60 -o "$tmp/mise" \
@@ -44,9 +45,14 @@ RUN set -eu; \
       'https://github.com/NVIDIA/OpenShell/releases/download/v0.1.7/openshell-x86_64-unknown-linux-musl.tar.gz'; \
     echo "5c1adfcae797eac9b2e8b9280c66c1f75e4e84d9e31ce6938c5b994314ef6098  $tmp/openshell.tar.gz" | sha256sum -c -; \
     tar -xzf "$tmp/openshell.tar.gz" -C "$tmp" openshell; \
+    curl -fsSL --proto '=https' --tlsv1.2 --max-time 120 -o "$tmp/kubernetes-client.tar.gz" \
+      'https://dl.k8s.io/v1.34.5/kubernetes-client-linux-amd64.tar.gz'; \
+    echo "293977e3cb48e669a1354d643a61ff736337e6869a6ce5e109428fadda8e1fcf8597ebdbedfafd60fd096e1521fab4dfade6430c1911d1f4f05f7737dc5c453a  $tmp/kubernetes-client.tar.gz" | sha512sum -c -; \
+    tar -xzf "$tmp/kubernetes-client.tar.gz" -C "$tmp" kubernetes/client/bin/kubectl; \
     install -m 0755 "$tmp/mise" /usr/local/bin/mise; \
     install -m 0755 "$tmp/yadm-3.5.0/yadm" /usr/local/bin/yadm; \
     install -m 0755 "$tmp/openshell" /usr/local/bin/openshell; \
+    install -m 0755 "$tmp/kubernetes/client/bin/kubectl" /usr/local/bin/kubectl; \
     rm -rf "$tmp"
 
 COPY package.json package-lock.json ./
