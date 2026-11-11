@@ -116,9 +116,10 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
     if (refusal) return refusal;
     const up = upstreamOf(provider, name);
     if (!up) return c.json({ error: "workspace_unavailable", name }, 502);
+    if (up.error) return c.json({ error: up.error.code, name, message: up.error.message }, 502);
     lifecycle.begin(name);
     try {
-      const res = await fetchImpl(`${up.url}/api/pi/reload`, { method: "POST", headers: up.headers, signal: AbortSignal.timeout(120_000) });
+      const res = await fetchImpl(`${up.url}/api/pi/reload`, { method: "POST", headers: up.headers, agent: up.agent, signal: AbortSignal.timeout(120_000) });
       return c.json(await res.json().catch(() => ({ error: "workspace_unavailable", name })), res.status);
     } catch {
       return c.json({ error: "workspace_unavailable", name }, 502);
@@ -171,14 +172,15 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
     if (!validName(name)) return c.json({ error: "invalid_name" }, 400);
     const rest = c.req.path.slice(`/v1/workspaces/${name}`.length);
     // Web's own polling never wakes a worker; anything the user does does.
+    const w = PASSIVE.test(rest) ? await lifecycle.info(name) : null;
     if (PASSIVE.test(rest)) {
-      const w = await lifecycle.info(name);
       if (w?.state === "sleeping") return c.json({ error: "workspace_sleeping", name }, 503);
       // A failed worker would otherwise pass its gateway's own 412 to web's polling.
       if (w?.provider === "openshell" && w?.problem?.fatal) return await starting(c, name);
     } else if (!await lifecycle.ensureAwake(name)) return await starting(c, name);
     const up = upstreamOf(provider, name);
     if (!up) return c.json({ error: "workspace_unavailable", name }, 502);
+    if (up.error) return c.json({ error: up.error.code, name, message: up.error.message }, 502);
     const raw = c.req.url;
     const search = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
     const target = up.url + rest + search;
@@ -190,11 +192,16 @@ export function createWorkspaced({ provider, grants = parseGrants(""), token, au
     let upstream;
     if (active) lifecycle.begin(name);
     try {
-      upstream = await fetchImpl(target, { method: c.req.method, headers, body: hasBody ? c.req.raw.body : undefined, duplex: "half", signal: c.req.raw.signal, redirect: "manual" });
+      upstream = await fetchImpl(target, { method: c.req.method, headers, agent: up.agent, body: hasBody ? c.req.raw.body : undefined, duplex: "half", signal: c.req.raw.signal, redirect: "manual" });
     } catch {
       return c.json({ error: "workspace_unavailable", name }, 502);
     } finally {
       if (active) lifecycle.end(name);
+    }
+    // The gateway answers 412 for a sandbox that isn't serving yet; web's polling should see a starting worker.
+    if (!active && w?.provider === "openshell" && upstream.status === 412) {
+      await upstream.body?.cancel().catch(() => {});
+      return await starting(c, name);
     }
     const out = new Headers(upstream.headers);
     for (const h of DROP_HEADERS) out.delete(h);

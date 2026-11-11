@@ -5,29 +5,40 @@
 // than the passive ones web makes on its own (state, events, health).
 import http from "node:http";
 import https from "node:https";
+import { isIP } from "node:net";
 import { Readable } from "node:stream";
 
 export const PASSIVE = /^\/api\/(events|state|health)$/;
 
 // provider.upstream(name) is a base URL, or { url, headers } when the worker sits behind a
-// gateway that routes by header (OpenShell routes by Host). Null when it has no address.
+// gateway that routes by header (OpenShell routes by Host), with an optional https agent (client
+// certificate) and error ({ code, message }: the worker can't be reached, e.g. no certificate).
+// Null when it has no address.
 export function upstreamOf(provider, name) {
   const u = provider.upstream(name);
   if (!u) return null;
-  return typeof u === "string" ? { url: u, headers: {} } : { url: u.url, headers: u.headers || {} };
+  return typeof u === "string" ? { url: u, headers: {} } : { url: u.url, headers: u.headers || {}, agent: u.agent, error: u.error };
 }
 
-// fetch() ignores a Host header, so a request that sets one goes through node:http instead.
+// fetch() ignores a Host header and an agent, so a request that sets either goes through node:http(s).
 export function upstreamFetch(url, init = {}) {
   const headers = new Headers(init.headers);
-  if (!headers.has("host")) return globalThis.fetch(url, init);
+  if (!headers.has("host") && !init.agent) return globalThis.fetch(url, init);
   const u = new URL(url);
+  const tls = u.protocol === "https:";
+  // The certificate is the gateway's, not the Host header's (node would take SNI from it); no SNI for an IP.
+  const servername = tls ? (isIP(u.hostname) ? "" : u.hostname) : undefined;
   return new Promise((resolve, reject) => {
-    const req = (u.protocol === "https:" ? https : http).request(u, { method: init.method || "GET", headers: Object.fromEntries(headers), signal: init.signal }, res => {
-      const out = new Headers();
-      for (const [k, v] of Object.entries(res.headers)) for (const x of [].concat(v)) out.append(k, x);
-      const empty = init.method === "HEAD" || [204, 205, 304].includes(res.statusCode);
-      resolve(new Response(empty ? null : Readable.toWeb(res), { status: res.statusCode, statusText: res.statusMessage, headers: out }));
+    const req = (tls ? https : http).request(u, { method: init.method || "GET", headers: Object.fromEntries(headers), signal: init.signal, agent: init.agent, servername }, res => {
+      try {
+        const out = new Headers();
+        for (const [k, v] of Object.entries(res.headers)) for (const x of [].concat(v)) out.append(k, x);
+        const empty = init.method === "HEAD" || [204, 205, 304].includes(res.statusCode);
+        resolve(new Response(empty ? null : Readable.toWeb(res), { status: res.statusCode, statusText: res.statusMessage, headers: out }));
+      } catch (e) { // e.g. a status Response refuses (outside 200-599)
+        res.destroy();
+        reject(e);
+      }
     });
     req.on("error", reject);
     const body = init.body;
@@ -66,9 +77,9 @@ export function createLifecycle({
 
   async function health(name) {
     const up = upstreamOf(provider, name);
-    if (!up) return null;
+    if (!up || up.error) return null;
     try {
-      const res = await fetchImpl(`${up.url}/api/health`, { headers: up.headers, signal: AbortSignal.timeout(2_000) });
+      const res = await fetchImpl(`${up.url}/api/health`, { headers: up.headers, agent: up.agent, signal: AbortSignal.timeout(2_000) });
       return res.ok ? await res.json() : null;
     } catch { return null; }
   }

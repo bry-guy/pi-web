@@ -72,7 +72,9 @@ A grant with `"provider": "openshell"` creates its workers as [NVIDIA OpenShell]
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENSHELL_GATEWAY_ENDPOINT` | unset (off) | Gateway URL, e.g. `http://openshell.openshell.svc.cluster.local:8080`. Also where workspaced proxies sandbox workers |
+| `OPENSHELL_GATEWAY_ENDPOINT` | unset (off) | Gateway URL, e.g. `https://openshell.openshell.svc.cluster.local:8080`. Also where workspaced proxies sandbox workers. `https://` means mutual TLS (below) |
+| `OPENSHELL_GATEWAY` | unset | Gateway name: the CLI's config entry, and where the client bundle lives. Required with `https://` |
+| `XDG_CONFIG_HOME` | `$HOME/.config` | Where the CLI and workspaced look for `openshell/gateways/<OPENSHELL_GATEWAY>/mtls/` |
 | `OPENSHELL_WORKSPACE` | `default` | OpenShell workspace for the sandboxes and their PVCs' attach label |
 | `OPENSHELL_NAMESPACE` | `openshell` | Namespace the gateway puts sandboxes in; workers' PVCs go there |
 | `OPENSHELL_SERVICE_DOMAIN` | `openshell.localhost` | Host the gateway routes exposed services by: `<workspace>--ws-<name>.<domain>[:port]` |
@@ -80,6 +82,10 @@ A grant with `"provider": "openshell"` creates its workers as [NVIDIA OpenShell]
 | `WORKSPACED_KUBE_URL` | unset | Kubernetes API through `kubectl proxy` instead of in-cluster credentials (running workspaced off-cluster) |
 
 `WORKSPACE_IMAGE`, `WORKSPACE_STORAGE` and `WORKSPACE_STORAGE_CLASS` apply as for Deployment workers. Other `OPENSHELL_*` variables the CLI reads (such as `OPENSHELL_GATEWAY_INSECURE`) pass through.
+
+With an `https://` endpoint, workspaced proxies worker traffic and health checks over TLS with the CLI's client bundle: `ca.crt` (the gateway's CA), `tls.crt` and `tls.key` in `$XDG_CONFIG_HOME/openshell/gateways/$OPENSHELL_GATEWAY/mtls/`, the keys of the chart's `openshell-client-tls` Secret. It checks the files at most every 30 s and re-reads them when they change, so a rotated, remounted Secret is picked up without a restart. A missing or broken bundle is one log line at startup (and one when it is fixed); meanwhile sandbox workers answer `502 openshell_tls_unavailable` and nothing else is affected. The certificate is checked against the endpoint's host name, not the `Host` header the gateway routes by.
+
+workspaced lists sandboxes in the background (every 10 s, and right after it creates, removes, sleeps or wakes one), so listing and routing never wait on the CLI. A gateway that can't be reached keeps the last list and logs once when it goes away and once when it is back.
 
 A sandbox worker is `ws-<name>`: the worker image running `node /app/server/index.js` with the plain environment a Deployment worker gets (plus `HOST=127.0.0.1`) but none of its Secrets (no `PI_SYNC_TOKEN`, GitHub or model sign-in yet), the PVC `ws-<name>` at `/data` (created with the labels OpenShell requires, or used as is if it exists), port 3141 exposed through the gateway, and a policy: `/app` and the system read-only, `/data` and `/tmp` read-write, and no network except the grant's `egress`:
 
@@ -96,11 +102,12 @@ Sleep is `sandbox stop` (the disk stays), wake is `sandbox start`, restart is bo
 
 The deployer adds:
 
+- The `openshell-client-tls` Secret (copied into workspaced's namespace) mounted at `$XDG_CONFIG_HOME/openshell/gateways/$OPENSHELL_GATEWAY/mtls/`, with `OPENSHELL_GATEWAY` and `XDG_CONFIG_HOME` set to match. Mount the Secret as a directory (not `subPath`), or rotations never reach the pod.
 - RBAC for workspaced's ServiceAccount in `OPENSHELL_NAMESPACE`: get, create, delete on `persistentvolumeclaims`.
 - NetworkPolicy: egress from workspaced to the gateway's port 8080, and ingress to the gateway from workspaced (the spike's policy admits only its own namespace).
-- Gateway chart values `server.auth.allowUnauthenticatedUsers` and `server.drivers.kubernetes.allowDriverConfig`, and the worker image pull secret in that namespace.
+- Gateway chart value `server.drivers.kubernetes.allowDriverConfig`, and the worker image pull secret in that namespace. (The plaintext spike also set `server.auth.allowUnauthenticatedUsers`; the mTLS gateway does not need it.)
 
-Not done yet: credentials for sandbox workers (no GitHub or model login, no grant Secrets; `setGitHubAuth` and `setModelAuth` skip them), gateway authentication and TLS (the gateway is plaintext and unauthenticated, so only its NetworkPolicy protects it), pins that survive a workspaced restart, resource limits, and usage figures.
+Not done yet: credentials for sandbox workers (no GitHub or model login, no grant Secrets; `setGitHubAuth` and `setModelAuth` skip them), a test against the real mTLS gateway (the TLS path is tested against a local server only), pins that survive a workspaced restart, resource limits, and usage figures.
 
 ## API
 
