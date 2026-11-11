@@ -29,9 +29,12 @@ Everything else (default model, Pi profile and packages, repository source) is i
 With `PI_WEB_DISCORD_TOKEN` and `PI_WEB_DISCORD_USER` set, web DMs that user from the bot when a session needs them. It reads every worker event as it passes through web; workers never see the token.
 
 - A question (an extension's select, confirm or input dialog) still open after 5 minutes: the session title, the question, numbered options and a link to the session.
-- For an agent run (a session created with `"agent": "<name>"` on `POST /api/chats` or `POST /api/projects/:id/sessions`; web keeps the mark in `PI_WEB_HOME/agent-sessions.json`): questions at once, and one line when a turn finishes or fails.
+- For an agent run (a session created with `"agent": "<name>"` on `POST /api/chats` or `POST /api/projects/:id/sessions`; web keeps the mark in `PI_WEB_HOME/agent-sessions.json`): questions at once, and every finished turn.
+- For any other session whose latest user message came from a DM: every finished turn, until a message is typed in the browser.
 
-Reply in the DM: to a question, a number or an exact option, yes or no, or the text for an input; to a finished turn, a message the session receives as your next prompt. Replying to a specific DM answers that one; a plain message answers the latest. The bot reacts ✅ when delivered, and says so when the question was already answered or the reply does not fit. Questions waiting for their 5 minutes are forgotten if web restarts. The bot needs no privileged intents (DMs carry message content).
+A finished turn DMs a header line (title and link) and the turn's final reply: the last assistant message's text, without thinking, tool calls or earlier notes. Replies over Discord's 2000 characters are split at paragraphs, lines or spaces, closing and reopening a cut code fence. A failed turn DMs its error; a turn with no final text, one line.
+
+Write in the DM to carry on: a reply to one of the bot's messages goes to that message's session, any other message to the session the bot DMed about last. Web finds the session from the link in the bot's message (the replied-to one, or the newest in the DM channel), so this keeps working after a restart. The message is delivered like one typed in the browser (it wakes a sleeping worker and is queued if a turn is running). While a question is open in that session, the message answers it instead: a number or an exact option, yes or no, or the text for an input. The bot reacts ✅ when delivered, and says so when the question was already answered, the reply does not fit, no session is found, or the session is gone. Only DMs from `PI_WEB_DISCORD_USER` are read. Questions waiting for their 5 minutes are forgotten if web restarts. The bot needs no privileged intents (DMs carry message content).
 
 ## Chat header
 
