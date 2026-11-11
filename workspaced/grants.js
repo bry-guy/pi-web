@@ -7,12 +7,42 @@
 //     "operator": { "repos": ["bry-guy/infra"], "namespace": "pi-ez-operator",
 //                   "serviceAccount": "infra-operator", "env": ["operator-env"], "egress": "open" },
 //     "agent":    { "anyProject": true, "provider": "openshell",
-//                   "egress": [{ "host": "api.github.com", "port": 443 }] } }
+//                   "egress": [{ "host": "api.github.com", "port": 443 }],
+//                   "providers": ["labrat-kube"], "environment": { "TZ": "UTC" },
+//                   "packages": ["npm:@gotgenes/pi-anthropic-auth@3.4.4"] } }
+import { workerEnv } from "./manifests.js";
+
 const K8S_NAME = /^[a-z0-9]([a-z0-9.-]{0,61}[a-z0-9])?$/;
 const LABEL_VALUE = /^[a-zA-Z0-9]([a-zA-Z0-9._-]{0,61}[a-zA-Z0-9])?$/;
 export const DEFAULT_GRANT = "default";
 export const PROVIDERS = ["openshell"];
 const HOST = /^[A-Za-z0-9*]([A-Za-z0-9*.-]{0,252})$/;
+const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const GATEWAY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
+// The gateway provider workspaced feeds the model login into, attached to every sandbox when fed.
+export const MODEL_PROVIDER = "pi-web-anthropic";
+// Sandbox variables workspaced sets itself, beside workerEnv.
+export const SANDBOX_ENV = ["HOST", "PI_ANTHROPIC_PLACEHOLDER_FILE", "PI_WEB_PACKAGES"];
+const RESERVED_ENV = new Set([...workerEnv({ name: "x", repository: "project:x" }).map(e => e.name), ...SANDBOX_ENV]);
+const KNOWN_KEYS = new Set(["anyProject", "repos", "env", "namespace", "serviceAccount", "runtimeClass", "provider", "egress", "description", "providers", "environment", "packages"]);
+const OPENSHELL_ONLY = ["providers", "environment", "packages"];
+
+// An OpenShell grant's gateway providers, plain environment and pi packages.
+function parseSandboxFields(name, g) {
+  const providers = g.providers ?? [];
+  if (!Array.isArray(providers) || !providers.every(p => typeof p === "string" && GATEWAY_NAME.test(p))) fail(`${name}.providers must be gateway provider names`);
+  if (providers.includes(MODEL_PROVIDER)) fail(`${name}.providers: ${MODEL_PROVIDER} is attached by workspaced; remove it`);
+  const environment = g.environment ?? {};
+  if (!environment || typeof environment !== "object" || Array.isArray(environment)) fail(`${name}.environment must be an object of strings`);
+  for (const [k, v] of Object.entries(environment)) {
+    if (!ENV_KEY.test(k) || typeof v !== "string") fail(`${name}.environment.${k} must be a variable name with a string value`);
+    // The CLI refuses OPENSHELL_* (reserved), and workspaced's own variables must not be overridden.
+    if (k.startsWith("OPENSHELL_") || RESERVED_ENV.has(k)) fail(`${name}.environment.${k} is reserved`);
+  }
+  const packages = g.packages ?? [];
+  if (!Array.isArray(packages) || !packages.every(p => typeof p === "string" && /^\S+$/.test(p) && !/^[./~]/.test(p))) fail(`${name}.packages must be pi package sources (npm:, git:, https:)`);
+  return { providers: [...new Set(providers)], environment: { ...environment }, packages: [...new Set(packages)] };
+}
 
 // An OpenShell grant's egress: default deny, plus these endpoints.
 function parseEgressRules(name, rules) {
@@ -32,13 +62,14 @@ function parseEgressRules(name, rules) {
 
 function fail(message) { throw new Error(`WORKSPACED_GRANTS: ${message}`); }
 
-export function parseGrants(text) {
+export function parseGrants(text, { log = console.log } = {}) {
   const raw = text ? JSON.parse(text) : { [DEFAULT_GRANT]: { anyProject: true } };
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail("must be an object of grants");
   const grants = {};
   for (const [name, g] of Object.entries(raw)) {
     if (!K8S_NAME.test(name)) fail(`invalid grant name ${name}`);
     if (!g || typeof g !== "object") fail(`${name} must be an object`);
+    for (const key of Object.keys(g)) if (!KNOWN_KEYS.has(key)) log(`workspaced: grant ${name} has an unknown field ${key}; it is ignored`);
     const repos = g.repos ?? [];
     const env = g.env ?? [];
     if (!Array.isArray(repos) || !repos.every(r => typeof r === "string" && r)) fail(`${name}.repos must be strings`);
@@ -51,6 +82,8 @@ export function parseGrants(text) {
       // Refuse what an OpenShell worker cannot hold yet, rather than run without it.
       for (const key of ["namespace", "serviceAccount"]) if (g[key] != null) fail(`${name}.${key} is not supported with provider openshell`);
       if (env.length) fail(`${name}.env is not supported with provider openshell`);
+    } else if (OPENSHELL_ONLY.some(k => g[k] != null)) {
+      fail(`${name}.${OPENSHELL_ONLY.find(k => g[k] != null)} needs provider openshell`);
     } else if (g.egress != null && (typeof g.egress !== "string" || !LABEL_VALUE.test(g.egress))) fail(`${name}.egress is not a valid label value`);
     if (!g.anyProject && !repos.length) fail(`${name} needs anyProject or repos`);
     grants[name] = {
@@ -58,6 +91,7 @@ export function parseGrants(text) {
       namespace: g.namespace || null, serviceAccount: g.serviceAccount || null,
       egress: g.provider === "openshell" ? parseEgressRules(name, g.egress ?? []) : g.egress || null,
       provider: g.provider || null,
+      ...(g.provider === "openshell" ? parseSandboxFields(name, g) : {}),
       description: typeof g.description === "string" ? g.description : "",
     };
   }

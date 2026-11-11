@@ -87,16 +87,32 @@ With an `https://` endpoint, workspaced proxies worker traffic and health checks
 
 workspaced lists sandboxes in the background (every 10 s, and right after it creates, removes, sleeps or wakes one), so listing and routing never wait on the CLI. A gateway that can't be reached keeps the last list and logs once when it goes away and once when it is back.
 
-A sandbox worker is `ws-<name>`: the worker image running `node /app/server/index.js` with the plain environment a Deployment worker gets (plus `HOST=127.0.0.1`) but none of its Secrets (no `PI_SYNC_TOKEN`, GitHub or model sign-in yet), the PVC `ws-<name>` at `/data` (created with the labels OpenShell requires, or used as is if it exists), port 3141 exposed through the gateway, and a policy: `/app` and the system read-only, `/data` and `/tmp` read-write, and no network except the grant's `egress`:
+A sandbox worker is `ws-<name>`: the worker image running `node /app/server/index.js`, the PVC `ws-<name>` at `/data` (created with the labels OpenShell requires, or used as is if it exists), port 3141 exposed through the gateway, and a policy: `/app` and the system read-only, `/data` and `/tmp` read-write, and no network except the grant's `egress` and the rules below.
+
+What it gets: the variables of `workerEnv` (paths, port, project; the same `HOME` and `PI_*` layout as a Deployment worker), `HOST=127.0.0.1`, the grant's `environment`, its `packages` as `PI_WEB_PACKAGES`, the model login (below), and the credentials of the grant's gateway `providers`, as placeholders the gateway swaps for real values on the way out. What it does not get: the `WORKSPACE_ENV_CONFIGMAP` ConfigMap and Secret (so no `PI_SYNC_TOKEN` or prestart command), grant Secrets, a ServiceAccount token, a GitHub login, a dotfiles profile, or any provider the grant does not name (`--no-auto-providers`).
 
 ```json
-"agent": { "anyProject": true, "provider": "openshell", "egress": [
-  { "host": "pi-syncd.pi-sync.svc.cluster.local", "port": 8080 },
-  { "host": "registry.npmjs.org", "port": 443, "allowEncodedSlash": true }
-] }
+"agent": { "anyProject": true, "provider": "openshell",
+  "egress": [{ "host": "github.com", "port": 443 }],
+  "providers": ["labrat-kube"],
+  "environment": { "TZ": "UTC" },
+  "packages": ["npm:@gotgenes/pi-anthropic-auth@3.4.4"] }
 ```
 
-Each endpoint becomes a `rest`, `enforce`, `access: full` rule for `binaries` (default `/usr/local/bin/node`, which covers every process the worker starts). `allowEncodedSlash` is for npm scoped packages. A recommended base list, none of it built in: pi-syncd by its full cluster name (the sandbox resolver has no search domains), the model API hosts you use (`api.anthropic.com`, …), `github.com` and `api.github.com`, and `registry.npmjs.org` with `allowEncodedSlash`. An OpenShell grant may not set `namespace`, `serviceAccount` or `env`.
+| Field (OpenShell grants only; others refuse them) | Effect |
+| --- | --- |
+| `egress` | Each endpoint becomes a `rest`, `enforce`, `access: full` rule for `binaries` (default `/usr/local/bin/node`, which covers every process the worker starts). `allowEncodedSlash` is for npm scoped packages. The sandbox resolver has no search domains, so name cluster hosts in full |
+| `providers` | Gateway provider names, each attached with `--provider`. You create them on the gateway. `pi-web-anthropic` is workspaced's own and may not be listed |
+| `environment` | Plain, non-secret variables (`--env`). Names starting with `OPENSHELL_` (the CLI's) and the ones workspaced sets are refused |
+| `packages` | pi package sources the worker loads on top of its config (a sandbox worker has no dotfiles profile). Any `npm:` source adds a `registry.npmjs.org` rule |
+
+An OpenShell grant may not set `namespace`, `serviceAccount` or `env`. An unknown field in any grant logs one warning and is ignored.
+
+### Model login
+
+pi-web stays the only refresher of the Claude login; the gateway holds only its current access token. On each model login web shares (`PUT /v1/model-auth`), workspaced takes the `anthropic` OAuth entry's access token (skipped, with a log line, when missing or expired) and stores it in the gateway provider `pi-web-anthropic`: the first time it imports the profile `workspaced/pi-web-anthropic.yaml` if the gateway lacks it and creates the provider, later it runs `provider update` in place. The token reaches the CLI only through its environment, never its arguments, logs or error text, and an unchanged token makes no call. This runs in the background: the request never waits on the CLI, and a failure is logged and never fails storing the login for Deployment workers.
+
+A sandbox created while a login is stored (by this process, or by an earlier one: the provider is on the gateway) gets `--provider pi-web-anthropic`, a rule for `api.anthropic.com:443`, and `PI_ANTHROPIC_PLACEHOLDER_FILE=/data/pi-ez-agent/openshell-placeholder`. With that variable the worker writes an `auth.json` whose Claude access token is the marker `sk-ant-oat01-openshell` (no real token in the sandbox) and loads `server/extensions/openshell-oauth.js`, which sends the gateway's placeholder in its place. Placeholders are versioned and a running process keeps the one it started with, so workspaced writes the current one to that file with one `sandbox exec` per running sandbox after each stored login, every 5 minutes, and right after it creates or wakes a sandbox; the extension reads the file on every request. Failures are logged and retried on the next pass. A sandbox created before any login reached the gateway has no model; remove and re-add the project once web has shared one (web shares a login when it changes, so after a workspaced restart the first one may come at the next refresh).
 
 Sleep is `sandbox stop` (the disk stays), wake is `sandbox start`, restart is both, reset also recreates the PVC, delete removes the sandbox and, when purged, the PVC. OpenShell also makes a `/sandbox` PVC (`workspace-default--ws-<name>`) for each sandbox and deletes it with the sandbox. A worker whose main process exits is restarted by OpenShell (`--restart-policy on-failure`, about 6 s on the same disk); one that keeps failing shows as failed, with the failing condition as its message, until restarted. Create returns once OpenShell accepts the sandbox (about 7 s); the worker answered 6 to 27 s after create in the tests, and the first request or wake waits up to 45 s for it before answering 503. Such a worker keeps its grant (change it by removing and re-adding the project), has no score resources, and does not move to a new image on its own.
 
@@ -107,7 +123,7 @@ The deployer adds:
 - NetworkPolicy: egress from workspaced to the gateway's port 8080, and ingress to the gateway from workspaced (the spike's policy admits only its own namespace).
 - Gateway chart value `server.drivers.kubernetes.allowDriverConfig`, and the worker image pull secret in that namespace. (The plaintext spike also set `server.auth.allowUnauthenticatedUsers`; the mTLS gateway does not need it.)
 
-Not done yet: credentials for sandbox workers (no GitHub or model login, no grant Secrets; `setGitHubAuth` and `setModelAuth` skip them), a test against the real mTLS gateway (the TLS path is tested against a local server only), pins that survive a workspaced restart, resource limits, and usage figures.
+Not done yet: a GitHub login and grant Secrets for sandbox workers (`setGitHubAuth` skips them), a test against the real mTLS gateway (the TLS path is tested against a local server only), pins that survive a workspaced restart, resource limits, and usage figures.
 
 ## API
 

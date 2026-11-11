@@ -1,0 +1,21 @@
+# Gateway profile for the Claude access token workspaced feeds from pi-web's model login (docs/workspaced.md).
+# The gateway holds only the access token: pi-web stays the only refresher.
+id: pi-web-anthropic
+display_name: pi-web Claude access token
+description: fed by workspaced from pi-web's model login; sandboxes hold only a placeholder
+category: inference
+inference_capable: true
+credentials:
+  - name: access_token
+    description: Anthropic OAuth access token copied from pi-web model auth
+    env_vars: [OPENSHELL_ANTHROPIC_PLACEHOLDER]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+endpoints:
+  - host: api.anthropic.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries: [/usr/local/bin/node]

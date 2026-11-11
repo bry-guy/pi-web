@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
@@ -279,4 +279,41 @@ test("web remembers agent sessions, passes worker events on, and posts to sessio
   const again = createRemoteWorkspaces({ ...opts, onEvent: null });
   assert.equal(again.agentOf("s1"), "nightly", "survives a restart");
   again.stop();
+});
+
+test("after a restart with no browser, forwarding a create or a message subscribes web to that worker's events", async () => {
+  const cachePath = path.join(mkdtempSync(path.join(tmpdir(), "discord-")), "remote-projects.json");
+  // The cached sidebar makes the owners known, so nothing polls /api/state.
+  writeFileSync(cachePath, JSON.stringify({ ws1: [{ id: "p1", sessions: [{ id: "s0", title: "Hello" }] }] }));
+  let streams = 0;
+  const frame = `data: ${JSON.stringify({ seq: 1, sessionId: "s0", type: "turn_end", reason: "done" })}\n\n`;
+  const fetchImpl = async (url, init = {}) => {
+    const p = new URL(url).pathname.replace("/v1/workspaces", "");
+    if (p === "/ws1/api/events") { streams++; return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(frame)); } })); }
+    if ((init.method || "GET") === "POST") return Response.json(p.endsWith("/sessions") ? { id: "s1" } : { ok: true });
+    return Response.json({ error: "unexpected" }, { status: 500 });
+  };
+  const events = [];
+  const remote = createRemoteWorkspaces({ url: "http://w", hub: new EventHub(), fetchImpl, cachePath, modelAuthSyncMs: 0, retryMs: 60_000, onEvent: (...a) => events.push(a) });
+  try {
+    const api = new Hono();
+    registerRemoteRoutes(api, remote);
+    await api.request("/sessions/s0/stop", { method: "POST" });
+    await flush();
+    assert.equal(streams, 0, "other calls do not subscribe");
+    assert.equal((await api.request("/sessions/s0/message", { method: "POST", body: JSON.stringify({ text: "go" }) })).status, 200);
+    await flush();
+    assert.equal(streams, 1);
+    assert.deepEqual(events, [["s0", "turn_end", { reason: "done" }]]);
+    await api.request("/projects/p1/sessions", { method: "POST", body: JSON.stringify({ agent: "nightly" }) });
+    await flush();
+    assert.equal(streams, 1, "one stream per worker");
+  } finally { remote.stop(); }
+
+  const answer = createRemoteWorkspaces({ url: "http://w", hub: new EventHub(), fetchImpl, cachePath, modelAuthSyncMs: 0, retryMs: 60_000 });
+  try {
+    await answer.sessionPost("s0", "/extension-ui/answer", {});
+    await flush();
+    assert.equal(streams, 2, "a Discord answer subscribes too");
+  } finally { answer.stop(); }
 });

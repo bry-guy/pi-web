@@ -114,13 +114,27 @@ function prepareProfileSettings(value, { baseDir, remote, warnings }) {
   return settings;
 }
 
+export const OPENSHELL_OAUTH_EXTENSION = path.join(path.dirname(fileURLToPath(import.meta.url)), "extensions", "openshell-oauth.js");
+
+/** What an OpenShell sandbox worker loads besides its config: the grant's packages (PI_WEB_PACKAGES, JSON) and, with a model login, the shim. */
+export function sandboxResources(env = process.env, warnings = []) {
+  let packages = [];
+  try {
+    const parsed = env.PI_WEB_PACKAGES ? JSON.parse(env.PI_WEB_PACKAGES) : [];
+    if (!Array.isArray(parsed) || parsed.some(p => typeof p !== "string")) throw new Error("not a list of strings");
+    packages = parsed;
+  } catch (error) { warnings.push(`Ignored PI_WEB_PACKAGES: ${error.message}`); }
+  return { packages, extensions: env.PI_ANTHROPIC_PLACEHOLDER_FILE ? [OPENSHELL_OAUTH_EXTENSION] : [] };
+}
+
 function inlineSettings(piConfig, warnings) {
   const baseDir = appHome();
+  const sandbox = sandboxResources(process.env, warnings);
   return {
-    packages: piConfig.packages
+    packages: [...piConfig.packages, ...sandbox.packages]
       .map(entry => resolveEntry(entry, baseDir, false, warnings, "package"))
       .filter(Boolean),
-    extensions: piConfig.extensions
+    extensions: [...piConfig.extensions, ...sandbox.extensions]
       .map(entry => resolveEntry(entry, baseDir, false, warnings, "extension"))
       .filter(Boolean),
   };

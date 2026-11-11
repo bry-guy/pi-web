@@ -419,6 +419,8 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       return c.json({ error: "workspace_unavailable", workspace: name }, 502);
     }
     if (name === CHATS && res.status >= 502) chatsAwake = false;
+    // Turn-end and question notices (Discord) need this worker's events even with no browser polling /api/state.
+    if (res.ok && (creating || (c.req.method === "POST" && /^\/sessions\/[^/]+\/message$/.test(rest)))) subscribe(name);
     const out = new Headers(res.headers);
     for (const h of DROP_HEADERS) out.delete(h);
     if (res.ok && agent) {
@@ -590,6 +592,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     const name = await owner("session", id);
     if (!name) return { status: 404, body: { error: "no_such_session" } };
     const res = await call(workerPath(name, `/sessions/${encodeURIComponent(id)}${rest}`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+    if (res.ok) subscribe(name);
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
 

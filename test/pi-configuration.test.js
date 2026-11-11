@@ -348,3 +348,25 @@ test("the profile's pi-sync is left out while pi-web's bundled pi-sync is in use
     else process.env.PI_SYNC_SERVER_URL = previous;
   }
 });
+
+test("an OpenShell sandbox worker loads its grant's packages and the model shim from the environment", async () => {
+  const keys = ["PI_WEB_PACKAGES", "PI_ANTHROPIC_PLACEHOLDER_FILE"];
+  const previous = keys.map(k => process.env[k]);
+  try {
+    for (const k of keys) delete process.env[k];
+    const plain = await new PiConfiguration().resolve({ profile: null, packages: ["npm:own"], extensions: [] }, { force: true });
+    assert.deepEqual([plain.settings.packages, plain.settings.extensions ?? []], [["npm:own"], []], "unchanged without the variables");
+    process.env.PI_WEB_PACKAGES = JSON.stringify(["npm:@gotgenes/pi-anthropic-auth@3.4.4"]);
+    process.env.PI_ANTHROPIC_PLACEHOLDER_FILE = "/data/pi-ez-agent/openshell-placeholder";
+    const sandboxed = await new PiConfiguration().resolve({ profile: null, packages: ["npm:own"], extensions: [] }, { force: true });
+    assert.deepEqual(sandboxed.settings.packages, ["npm:own", "npm:@gotgenes/pi-anthropic-auth@3.4.4"]);
+    assert.equal(sandboxed.settings.extensions.length, 1);
+    assert.match(sandboxed.settings.extensions[0], /server\/extensions\/openshell-oauth\.js$/);
+    assert.ok(fs.existsSync(sandboxed.settings.extensions[0]));
+    process.env.PI_WEB_PACKAGES = "{bad";
+    const bad = await new PiConfiguration().resolve({ profile: null, packages: [], extensions: [] }, { force: true });
+    assert.ok(bad.warnings.some(w => w.startsWith("Ignored PI_WEB_PACKAGES")));
+  } finally {
+    keys.forEach((k, i) => { if (previous[i] === undefined) delete process.env[k]; else process.env[k] = previous[i]; });
+  }
+});
