@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { readFileSync } from "node:fs";
+import https from "node:https";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { makeCert } from "./helpers/certs.js";
 import YAML from "yaml";
 import { createWorkspaced } from "../workspaced/index.js";
 import { createLifecycle } from "../workspaced/lifecycle.js";
@@ -97,7 +101,7 @@ test("grants: provider openshell takes an egress list; other grants keep the lab
 
 test("openshell is configured only by its gateway endpoint", () => {
   assert.equal(openshellConfig({}), null);
-  assert.deepEqual({ ...CONFIG, image: undefined }, { endpoint: "http://127.0.0.1:8080", workspace: "default", bin: "/opt/openshell", namespace: "openshell", serviceDomain: "openshell.localhost", image: undefined, storage: "20Gi", storageClassName: null });
+  assert.deepEqual({ ...CONFIG, image: undefined }, { endpoint: "http://127.0.0.1:8080", gateway: null, configHome: null, tlsDir: null, workspace: "default", bin: "/opt/openshell", namespace: "openshell", serviceDomain: "openshell.localhost", image: undefined, storage: "20Gi", storageClassName: null });
 });
 
 test("the policy is the worker base plus the grant's egress, default deny", () => {
@@ -178,7 +182,8 @@ test("openshell scale stops and starts, restart is stop + start, remove keeps th
 test("workspaced routes each worker to its provider, merges lists, and keeps names unique", async () => {
   const cli = fakeCli([sandbox("agent")]);
   const primary = fakePrimary(["plain"]);
-  const provider = withOpenShell(primary, openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec }), { log: () => {} });
+  const provider = withOpenShell(primary, openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec }), { log: () => {}, refreshMs: 0 });
+  await provider.refreshSandboxes();
   const lifecycle = createLifecycle({ provider, idleMs: 0, sweepMs: 0, log: () => {} });
   const app = createWorkspaced({ provider, grants: GRANTS, token: TOKEN, lifecycle });
   const list = (await (await app.request("/v1/workspaces", { headers: auth })).json()).workspaces;
@@ -225,7 +230,8 @@ test("a failed sandbox names the condition that failed; every call answers 503 w
     { type: "PodScheduled", status: "True", reason: "PodScheduled", message: "" },
   ];
   const cli = fakeCli([{ ...sandbox("agent", "Error"), conditions }]);
-  const provider = withOpenShell(fakePrimary([]), openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec }), { log: () => {} });
+  const provider = withOpenShell(fakePrimary([]), openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec }), { log: () => {}, refreshMs: 0 });
+  await provider.refreshSandboxes();
   const lifecycle = createLifecycle({ provider, idleMs: 0, sweepMs: 0, log: () => {} });
   const app = createWorkspaced({ provider, grants: GRANTS, token: TOKEN, lifecycle });
   try {
@@ -276,4 +282,166 @@ test("the proxy, reload and health checks send the provider's headers (OpenShell
     assert.deepEqual(seen.map(([u, h]) => [u, h]), [
       ["/api/sessions/s1/message?x=1", host], ["/api/events", host], ["/api/health", host], ["/api/pi/reload", host]]);
   } finally { gateway.close(); lifecycle.stop(); }
+});
+
+const within = (ms, p) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`no answer in ${ms}ms`)), ms))]);
+
+test("listing and waking ordinary workers never wait on a hung CLI", async () => {
+  const primary = fakePrimary(["plain"]);
+  const hung = openshellProvider({ kube: fakeKube(), config: CONFIG, exec: () => new Promise(() => {}) });
+  const provider = withOpenShell(primary, hung, { log: () => {}, refreshMs: 0 });
+  const lifecycle = createLifecycle({ provider, idleMs: 0, sweepMs: 0, log: () => {} });
+  const app = createWorkspaced({ provider, grants: GRANTS, token: TOKEN, lifecycle });
+  try {
+    const list = await within(500, app.request("/v1/workspaces", { headers: auth }));
+    assert.deepEqual((await list.json()).workspaces.map(w => w.name), ["plain"]);
+    assert.equal((await within(500, app.request("/v1/workspaces/plain/wake", { method: "POST", headers: auth }))).status, 200);
+    await within(500, provider.scale("plain", 0));
+    assert.deepEqual(primary.calls, [["scale", "plain", 0]]);
+  } finally { lifecycle.stop(); }
+});
+
+test("the sandbox cache: a created sandbox shows at once, a vanished one goes on the next refresh, outages log per change", async () => {
+  const cli = fakeCli([sandbox("old")]);
+  let hang = false;
+  const exec = async (bin, args, opts) => {
+    if (hang && args[1] === "list") return new Promise(() => {});
+    const out = await cli.exec(bin, args, opts);
+    if (args[1] === "create") hang = true; // the refresh after create never lands
+    return out;
+  };
+  const provider = withOpenShell(fakePrimary([]), openshellProvider({ kube: fakeKube(), config: CONFIG, exec }), { log: () => {}, refreshMs: 0 });
+  await provider.refreshSandboxes();
+  await provider.create({ name: "agent", repository: "project:agent", grant: GRANTS.sandboxed });
+  assert.deepEqual((await provider.list()).map(w => [w.name, w.state]), [["old", "running"], ["agent", "starting"]]);
+  assert.equal(provider.upstream("agent").headers.host, "default--ws-agent.openshell.localhost:8080");
+
+  const fresh = fakeCli([sandbox("old"), sandbox("agent")]);
+  const lines = [];
+  let fail = false;
+  const flaky = withOpenShell(fakePrimary([]), openshellProvider({ kube: fakeKube(), config: CONFIG, exec: (b, a, o) => fail ? Promise.reject(Object.assign(new Error("x"), { stderr: "connect error" })) : fresh.exec(b, a, o) }), { log: l => lines.push(l), refreshMs: 0 });
+  await flaky.refreshSandboxes();
+  fresh.sandboxes.splice(0, 1);
+  await flaky.refreshSandboxes();
+  assert.deepEqual((await flaky.list()).map(w => w.name), ["agent"]);
+  fail = true;
+  for (let i = 0; i < 3; i++) await flaky.refreshSandboxes();
+  assert.deepEqual((await flaky.list()).map(w => w.name), ["agent"], "an outage keeps the last list");
+  fail = false;
+  await flaky.refreshSandboxes();
+  await flaky.refreshSandboxes();
+  assert.deepEqual(lines, ["workspaced: could not list OpenShell sandboxes: openshell sandbox list failed: connect error", "workspaced: OpenShell gateway is reachable again"]);
+});
+
+test("passive polling of a sandbox the gateway isn't serving yet (412) answers starting; a bad status is a 502, not a crash", async () => {
+  let status = 412;
+  const gateway = http.createServer((req, res) => { res.writeHead(status); res.end("precondition"); });
+  await new Promise(r => gateway.listen(0, "127.0.0.1", r));
+  const provider = {
+    list: async () => [{ name: "agent", provider: "openshell", state: "starting", pinned: false }],
+    upstream: () => ({ url: `http://127.0.0.1:${gateway.address().port}`, headers: { host: "default--ws-agent.openshell.localhost" } }),
+  };
+  const lifecycle = createLifecycle({ provider, idleMs: 0, sweepMs: 0, log: () => {} });
+  const app = createWorkspaced({ provider, token: TOKEN, lifecycle });
+  try {
+    const res = await app.request("/v1/workspaces/agent/api/health", { headers: auth });
+    assert.deepEqual([res.status, (await res.json()).error, res.headers.get("retry-after")], [503, "workspace_starting", "5"]);
+    status = 600;
+    const bad = await app.request("/v1/workspaces/agent/api/state", { headers: auth });
+    assert.deepEqual([bad.status, (await bad.json()).error], [502, "workspace_unavailable"]);
+  } finally { gateway.close(); lifecycle.stop(); }
+});
+
+// A gateway that demands a client certificate, as the production one does.
+async function mtlsGateway() {
+  const ca = makeCert({ cn: "test-ca", ca: true });
+  const server = makeCert({ cn: "gateway", issuer: ca, ip: "127.0.0.1" });
+  const seen = [];
+  const gateway = https.createServer({ ...server, ca: ca.cert, requestCert: true, rejectUnauthorized: true }, (req, res) => {
+    seen.push([req.url, req.headers.host, req.socket.getPeerCertificate().subject.CN]);
+    if (req.url === "/api/health") return res.end(JSON.stringify({ ok: true, busy: false }));
+    if (req.url === "/api/events") {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write("data: one\n\n");
+      setTimeout(() => res.end("data: two\n\n"), 50);
+      return undefined;
+    }
+    let body = "";
+    req.on("data", c => { body += c; }).on("end", () => res.end(JSON.stringify({ path: req.url, body })));
+  });
+  await new Promise(r => gateway.listen(0, "127.0.0.1", r));
+  const home = mkdtempSync(path.join(tmpdir(), "openshell-mtls-"));
+  const dir = path.join(home, "openshell", "gateways", "prod", "mtls");
+  const writeBundle = cn => {
+    const client = makeCert({ cn, issuer: ca });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "ca.crt"), ca.cert);
+    writeFileSync(path.join(dir, "tls.crt"), client.cert);
+    writeFileSync(path.join(dir, "tls.key"), client.key);
+  };
+  const config = openshellConfig({ OPENSHELL_GATEWAY_ENDPOINT: `https://127.0.0.1:${gateway.address().port}`, OPENSHELL_GATEWAY: "prod", XDG_CONFIG_HOME: home, OPENSHELL_BIN: "/opt/openshell" });
+  const close = () => { gateway.close(); rmSync(home, { recursive: true, force: true }); };
+  return { gateway, seen, dir, writeBundle, config, close };
+}
+
+test("over https the proxy, SSE and health use the CLI's client certificate, re-read when it is rotated", async () => {
+  const gw = await mtlsGateway();
+  gw.writeBundle("workspaced");
+  const envs = [];
+  const exec = async (_bin, args, opts) => { envs.push(opts.env); return { stdout: JSON.stringify({ sandboxes: args[1] === "list" ? [sandbox("agent")] : [] }), stderr: "" }; };
+  const lines = [];
+  const openshell = openshellProvider({ kube: fakeKube(), config: gw.config, exec, log: l => lines.push(l), tlsCheckMs: 0 });
+  const provider = withOpenShell(fakePrimary([]), openshell, { log: () => {}, refreshMs: 0 });
+  await provider.refreshSandboxes();
+  const lifecycle = createLifecycle({ provider, idleMs: 0, sweepMs: 0, log: () => {} });
+  const app = createWorkspaced({ provider, grants: GRANTS, token: TOKEN, lifecycle });
+  try {
+    assert.equal(envs[0].OPENSHELL_GATEWAY, "prod");
+    assert.equal(envs[0].XDG_CONFIG_HOME, path.dirname(path.dirname(path.dirname(path.dirname(gw.dir)))));
+    const res = await app.request("/v1/workspaces/agent/api/sessions/s1/message", { method: "POST", headers: auth, body: "{\"a\":1}" });
+    assert.deepEqual(await res.json(), { path: "/api/sessions/s1/message", body: "{\"a\":1}" });
+    const events = await app.request("/v1/workspaces/agent/api/events", { headers: auth });
+    const reader = events.body.getReader();
+    assert.match(new TextDecoder().decode((await reader.read()).value), /data: one/, "the first event arrives before the stream ends");
+    let rest = "";
+    for (let r; !(r = await reader.read()).done;) rest += new TextDecoder().decode(r.value);
+    assert.match(rest, /data: two/);
+    assert.equal((await lifecycle.busy("agent")), false);
+    assert.ok(gw.seen.some(([u]) => u === "/api/health"), "health went through the TLS path");
+    assert.ok(gw.seen.every(([, host, cn]) => host === `default--ws-agent.openshell.localhost:${gw.gateway.address().port}` && cn === "workspaced"));
+
+    gw.writeBundle("workspaced-rotated");
+    await app.request("/v1/workspaces/agent/api/state", { headers: auth });
+    assert.equal(gw.seen.at(-1)[2], "workspaced-rotated");
+    assert.deepEqual(lines, []);
+  } finally { gw.close(); lifecycle.stop(); }
+});
+
+test("an https gateway without a usable bundle logs it once and answers 502 for sandbox workers only", async () => {
+  const gw = await mtlsGateway();
+  const lines = [];
+  const exec = async () => ({ stdout: JSON.stringify({ sandboxes: [sandbox("agent")] }), stderr: "" });
+  const openshell = openshellProvider({ kube: fakeKube(), config: gw.config, exec, log: l => lines.push(l), tlsCheckMs: 0 });
+  const primary = fakePrimary(["plain"]);
+  const provider = withOpenShell(primary, openshell, { log: () => {}, refreshMs: 0 });
+  await provider.refreshSandboxes();
+  const lifecycle = createLifecycle({ provider, idleMs: 0, sweepMs: 0, log: () => {} });
+  const app = createWorkspaced({ provider, grants: GRANTS, token: TOKEN, lifecycle });
+  try {
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /OpenShell mTLS bundle at .*\/openshell\/gateways\/prod\/mtls is unusable \(ENOENT.*ca\.crt'\); sandbox workers answer 502 openshell_tls_unavailable/);
+    for (const p of ["/api/sessions/s1/message", "/api/health"]) {
+      const res = await app.request(`/v1/workspaces/agent${p}`, { method: "POST", headers: auth, body: "{}" });
+      assert.deepEqual([res.status, (await res.json()).error], [502, "openshell_tls_unavailable"], p);
+    }
+    assert.equal((await app.request("/v1/workspaces/agent/reload", { method: "POST", headers: auth })).status, 502);
+    assert.equal(provider.upstream("plain"), "http://primary/plain");
+    assert.equal(lines.length, 1, "logged once, not per request");
+
+    gw.writeBundle("workspaced");
+    const res = await app.request("/v1/workspaces/agent/api/sessions/s1/message", { method: "POST", headers: auth, body: "{}" });
+    assert.equal(res.status, 200);
+    assert.match(lines[1], /is usable again/);
+    assert.equal(openshellConfig({ OPENSHELL_GATEWAY_ENDPOINT: "https://gw:8080" }).tlsDir, null, "no gateway name, no bundle");
+  } finally { gw.close(); lifecycle.stop(); }
 });

@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import https from "node:https";
 import { tmpdir } from "node:os";
+import { createSecureContext } from "node:tls";
 import path from "node:path";
 import { promisify } from "node:util";
 import YAML from "yaml";
@@ -24,8 +26,14 @@ const PHASE_STATE = { Ready: "running", Stopped: "sleeping", Stopping: "sleeping
 
 export function openshellConfig(env = process.env) {
   if (!env.OPENSHELL_GATEWAY_ENDPOINT) return null;
+  const endpoint = env.OPENSHELL_GATEWAY_ENDPOINT.replace(/\/+$/, "");
+  const configHome = env.XDG_CONFIG_HOME || path.join(env.HOME || "", ".config");
   return {
-    endpoint: env.OPENSHELL_GATEWAY_ENDPOINT.replace(/\/+$/, ""),
+    endpoint,
+    gateway: env.OPENSHELL_GATEWAY || null,
+    configHome: env.XDG_CONFIG_HOME || null,
+    // The CLI's own client bundle for that gateway: an https endpoint is mutual TLS.
+    tlsDir: endpoint.startsWith("https:") && env.OPENSHELL_GATEWAY ? path.join(configHome, "openshell", "gateways", env.OPENSHELL_GATEWAY, "mtls") : null,
     workspace: env.OPENSHELL_WORKSPACE || "default",
     bin: env.OPENSHELL_BIN || "openshell",
     namespace: env.OPENSHELL_NAMESPACE || "openshell",
@@ -80,6 +88,34 @@ export function createArgs({ name, repository, grant, config, policyFile }) {
 
 const httpError = (message, status, code) => Object.assign(new Error(message), { status, code });
 
+// The client bundle as the CLI lays it out (a kubernetes.io/tls Secret's keys). Returns a getter for
+// { agent, error }: files are re-read only when a stat (at most every checkMs) shows they changed,
+// as when a rotated Secret is remounted. One log line per change between usable and not.
+export function mtlsAgent(dir, { log = console.log, checkMs = 30_000, now = Date.now } = {}) {
+  const files = ["ca.crt", "tls.crt", "tls.key"].map(f => path.join(dir || "", f));
+  let checked = -Infinity;
+  let state = { sig: null, agent: null, error: null };
+  function load() {
+    try {
+      if (!dir) throw new Error("OPENSHELL_GATEWAY is not set");
+      const sig = files.map(f => { const s = statSync(f); return `${s.ino}:${s.mtimeMs}:${s.size}`; }).join();
+      if (sig === state.sig) return;
+      const [ca, cert, key] = files.map(f => readFileSync(f));
+      createSecureContext({ ca, cert, key }); // throws on unparsable PEM or a key that isn't the cert's
+      if (state.error) log(`workspaced: OpenShell mTLS bundle at ${dir} is usable again`);
+      // Old agents are left to finish their streams; without keepAlive they hold no idle sockets.
+      state = { sig, agent: new https.Agent({ ca, cert, key }), error: null };
+    } catch (e) {
+      if (!state.error) log(`workspaced: OpenShell mTLS bundle at ${dir} is unusable (${e.message}); sandbox workers answer 502 openshell_tls_unavailable until it is fixed`);
+      state = { sig: null, agent: null, error: e.message };
+    }
+  }
+  return () => {
+    if (now() - checked >= checkMs) { checked = now(); load(); }
+    return state;
+  };
+}
+
 // One `sandbox list -o json` entry as a workspace.
 function toWorkspace(s) {
   const state = PHASE_STATE[s.phase] || "starting";
@@ -103,12 +139,17 @@ function toWorkspace(s) {
 }
 
 // exec(bin, args, {env, timeout}) resolves { stdout, stderr }: execFile's promise form, injectable for tests.
-export function openshellProvider({ kube, config, exec = promisify(execFile), waitMs = 90_000, pollMs = 2_000 }) {
+export function openshellProvider({ kube, config, exec = promisify(execFile), waitMs = 90_000, pollMs = 2_000, log = console.log, tlsCheckMs = 30_000 }) {
   // The CLI gets only what it reads: never workspaced's own token or the workers' secrets.
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(PATH|HOME|XDG_CONFIG_HOME|OPENSHELL_.*)$/.test(k)));
-  const env = { ...own, OPENSHELL_GATEWAY_ENDPOINT: config.endpoint, OPENSHELL_WORKSPACE: config.workspace, OPENSHELL_COLOR: "never" };
+  const env = {
+    ...own, OPENSHELL_GATEWAY_ENDPOINT: config.endpoint, OPENSHELL_WORKSPACE: config.workspace, OPENSHELL_COLOR: "never",
+    ...(config.gateway ? { OPENSHELL_GATEWAY: config.gateway } : {}), ...(config.configHome ? { XDG_CONFIG_HOME: config.configHome } : {}),
+  };
   const pvcs = `/api/v1/namespaces/${config.namespace}/persistentvolumeclaims`;
   const endpoint = new URL(config.endpoint);
+  const tls = endpoint.protocol === "https:" ? mtlsAgent(config.tlsDir, { log, checkMs: tlsCheckMs }) : null;
+  tls?.(); // logs a bad bundle at startup
   // shortcut: pins live in memory (the CLI cannot change a sandbox's annotations); persist them if pinning sandboxes matters.
   const pinned = new Set();
 
@@ -122,7 +163,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
   }
 
   async function list() {
-    const out = JSON.parse(await run(["sandbox", "list", "-o", "json", "--selector", `${MANAGED_LABEL}=${MANAGED_BY}`]) || "{}");
+    const out = JSON.parse(await run(["sandbox", "list", "-o", "json", "--selector", `${MANAGED_LABEL}=${MANAGED_BY}`], 10_000) || "{}");
     // shortcut: one page (100 sandboxes); follow next_page_token if a gateway ever holds more workers.
     return (out.sandboxes || []).map(toWorkspace).filter(w => w.name).map(w => ({ ...w, pinned: pinned.has(w.name) }));
   }
@@ -163,7 +204,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       const existing = (await list()).find(w => w.name === name);
       if (existing) {
         if ((existing.repository ?? null) !== (repository ?? null)) throw httpError("workspace name taken", 409, "workspace_name_taken");
-        return;
+        return existing;
       }
       await ensurePvc(name, repository);
       const dir = mkdtempSync(path.join(tmpdir(), "openshell-policy-"));
@@ -175,6 +216,8 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+      // What the gateway will list, until it does.
+      return toWorkspace({ phase: "Provisioning", labels: { [NAME_LABEL]: name }, annotations: { [GRANT_ANNOTATION]: grant?.name || DEFAULT_GRANT, [IMAGE_ANNOTATION]: config.image, ...(repository ? { [REPO_ANNOTATION]: repository } : {}) } });
     },
     async scale(name, replicas) {
       const w = await mustFind(name);
@@ -206,10 +249,15 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       if (on) pinned.add(name); else pinned.delete(name);
     },
     // The gateway routes an exposed service by Host: <workspace>--<sandbox>.<domain>[:gateway port].
-    upstream: name => ({
-      url: config.endpoint,
-      headers: { host: `${config.workspace}--ws-${name}.${config.serviceDomain}${endpoint.port ? `:${endpoint.port}` : ""}` },
-    }),
+    upstream: name => {
+      const { agent, error } = tls?.() || {};
+      return {
+        url: config.endpoint,
+        headers: { host: `${config.workspace}--ws-${name}.${config.serviceDomain}${endpoint.port ? `:${endpoint.port}` : ""}` },
+        ...(tls ? { agent } : {}),
+        ...(error ? { error: { code: "openshell_tls_unavailable", message: `OpenShell client certificate unusable: ${error}` } } : {}),
+      };
+    },
     // Role credentials for sandbox workers are a later step: they get no GitHub or model login yet.
     async setGitHubAuth() {},
     async setModelAuth() {},
@@ -219,7 +267,9 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
 // Routes each workspace to the provider that owns it: OpenShell for sandboxes it lists, the primary
 // (local or kubernetes) for the rest. A grant with provider "openshell" creates a sandbox; without
 // an OpenShell provider such a grant fails create. Names are unique across both.
-export function withOpenShell(primary, openshell, { log = console.log } = {}) {
+// Sandboxes come from a cached list refreshed every refreshMs and after each change made here, so
+// listing and routing never wait on the CLI.
+export function withOpenShell(primary, openshell, { log = console.log, refreshMs = 10_000 } = {}) {
   const unconfigured = grant => grantError(`grant ${grant.name} needs the ${grant.provider} provider, which is not configured (set OPENSHELL_GATEWAY_ENDPOINT)`, 501, "provider_unconfigured");
   const mismatch = () => grantError("that grant uses another provider; remove the project and add it again with it", 409, "grant_provider_mismatch");
   if (!openshell) {
@@ -228,51 +278,72 @@ export function withOpenShell(primary, openshell, { log = console.log } = {}) {
     return Object.assign(Object.create(primary), overrides);
   }
 
-  let sandboxes = new Set(); // names OpenShell owns, from its last good list
-  async function listSandboxes() {
-    const found = await openshell.list();
-    sandboxes = new Set(found.map(w => w.name));
-    return found;
+  let sandboxes = new Map(); // name → workspace, from OpenShell's last good list
+  let seq = 0, changedAt = 0, running = false, down = null;
+  // A list that started before a change made here is stale when it lands, so it is dropped.
+  async function refresh() {
+    const started = ++seq;
+    running = true;
+    try {
+      const found = await openshell.list();
+      if (started > changedAt) sandboxes = new Map(found.map(w => [w.name, w]));
+      if (down) log("workspaced: OpenShell gateway is reachable again");
+      down = null;
+    } catch (e) {
+      // A gateway outage keeps the last list and never touches the primary's workers.
+      if (!down) log(`workspaced: could not list OpenShell sandboxes: ${e.message}`);
+      down = e.message;
+    } finally { if (started === seq) running = false; }
   }
-  async function ownerOf(name) {
-    if (!sandboxes.has(name)) await listSandboxes().catch(() => {});
-    return sandboxes.has(name) ? openshell : primary;
-  }
-  const routed = method => async (name, ...args) => (await ownerOf(name))[method](name, ...args);
+  const changed = () => { changedAt = ++seq; refresh(); };
+  refresh();
+  if (refreshMs) setInterval(() => { if (!running) refresh(); }, refreshMs).unref?.();
+
+  const ownerOf = name => (sandboxes.has(name) ? openshell : primary);
+  const routed = method => async (name, ...args) => {
+    const owner = ownerOf(name);
+    try { return await owner[method](name, ...args); } finally { if (owner === openshell) changed(); }
+  };
 
   const overrides = {
+    refreshSandboxes: refresh,
     async list() {
-      // A gateway outage hides sandboxes from the list but never breaks the primary's workers.
-      const [mine, theirs] = await Promise.all([primary.list(), listSandboxes().catch(e => { log(`workspaced: could not list OpenShell sandboxes: ${e.message}`); return []; })]);
-      return [...mine, ...theirs.filter(w => !mine.some(m => m.name === w.name))];
+      const mine = await primary.list();
+      return [...mine, ...[...sandboxes.values()].filter(w => !mine.some(m => m.name === w.name))];
     },
     async create(args) {
       const target = args.grant?.provider === "openshell" ? openshell : primary;
-      const taken = target === openshell
-        ? (await primary.list()).some(w => w.name === args.name)
-        : (await listSandboxes().catch(() => null))?.some(w => w.name === args.name) ?? sandboxes.has(args.name);
+      const taken = target === openshell ? (await primary.list()).some(w => w.name === args.name) : sandboxes.has(args.name);
       if (taken) throw grantError("workspace name taken", 409, "workspace_name_taken");
-      await target.create(args);
-      if (target === openshell) sandboxes.add(args.name);
+      const made = await target.create(args);
+      if (target === openshell) {
+        if (made && !sandboxes.has(args.name)) sandboxes = new Map(sandboxes).set(args.name, made);
+        changed();
+      }
     },
     scale: routed("scale"),
     restart: routed("restart"),
     reset: routed("reset"),
     setPinned: routed("setPinned"),
     async remove(name, opts) {
-      await (await ownerOf(name)).remove(name, opts);
-      sandboxes.delete(name);
+      const owner = ownerOf(name);
+      await owner.remove(name, opts);
+      if (owner === openshell) {
+        sandboxes = new Map(sandboxes);
+        sandboxes.delete(name);
+        changed();
+      }
     },
-    upstream: name => (sandboxes.has(name) ? openshell : primary).upstream(name),
+    upstream: name => ownerOf(name).upstream(name),
     async setGitHubAuth(auth) { await primary.setGitHubAuth(auth); await openshell.setGitHubAuth(auth); },
     async setModelAuth(content) { await primary.setModelAuth(content); await openshell.setModelAuth(content); },
   };
-  if (primary.upgrade) overrides.upgrade = async name => { if (await ownerOf(name) === primary) return primary.upgrade(name); };
+  if (primary.upgrade) overrides.upgrade = async name => { if (ownerOf(name) === primary) return primary.upgrade(name); };
   // Score resources are sidecars, which only Deployment workers have.
-  if (primary.setScore) overrides.setScore = async (name, ...args) => { if (await ownerOf(name) === primary) return primary.setScore(name, ...args); };
+  if (primary.setScore) overrides.setScore = async (name, ...args) => { if (ownerOf(name) === primary) return primary.setScore(name, ...args); };
   if (primary.setGrant) {
     overrides.setGrant = async (name, grant) => {
-      if (await ownerOf(name) === openshell) throw grantError("an OpenShell worker keeps the grant it was created with; remove the project and add it again", 409, "grant_provider_mismatch");
+      if (ownerOf(name) === openshell) throw grantError("an OpenShell worker keeps the grant it was created with; remove the project and add it again", 409, "grant_provider_mismatch");
       if (grant?.provider) throw mismatch();
       return primary.setGrant(name, grant);
     };
