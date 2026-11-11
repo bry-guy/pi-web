@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
-import { createNotifier, discordFromEnv, questionText, replyAction, truncate, turnEndText } from "../server/discord.js";
+import { createNotifier, discordFromEnv, linkedSession, questionText, replyAction, splitMessage, truncate, turnEndText } from "../server/discord.js";
 import { discordTransport } from "../server/discord-transport.js";
 import { createRemoteWorkspaces, registerRemoteRoutes } from "../server/remote-workspaces.js";
 import { EventHub } from "../server/events.js";
@@ -12,14 +12,15 @@ import { EventHub } from "../server/events.js";
 const USER = "42";
 const flush = () => new Promise(r => setImmediate(r));
 
-function setup({ agents = {}, post } = {}) {
-  const sent = [];
+function setup({ agents = {}, post, sent = [] } = {}) {
   const reactions = [];
   const posts = [];
   let next = 0;
   const transport = {
     send: async (content, opts = {}) => { const id = `m${++next}`; sent.push({ id, content, ...opts }); return { id }; },
     react: async (id, emoji) => { reactions.push([id, emoji]); },
+    // The DM channel's history: the bot's messages (the owner's are not needed here).
+    recent: async () => sent.map(m => ({ id: m.id, content: m.content, author: { bot: true } })).reverse(),
   };
   const notifier = createNotifier({
     userId: USER, baseUrl: "https://pi.example/", transport,
@@ -59,8 +60,8 @@ test("agent runs get questions at once and turn-end notices; other sessions get 
   await flush();
   assert.deepEqual(sent.map(m => m.content), [
     "**Title a1** (nightly) needs an answer\nDeploy?\nto prod\n_Reply yes or no._\nhttps://pi.example/?s=a1",
-    "**Title a1** (nightly) finished.\nhttps://pi.example/?s=a1",
-    "**Title a1** (nightly) failed: boom\nhttps://pi.example/?s=a1",
+    "**Title a1** (nightly) finished. <https://pi.example/?s=a1>",
+    "**Title a1** (nightly) failed <https://pi.example/?s=a1>\nboom",
   ]);
   notifier.stop();
 });
@@ -76,7 +77,7 @@ test("replies map to a select, confirm, input or message", () => {
   assert.deepEqual(replyAction(q("confirm"), "no"), { rest, body: { confirmed: false } });
   assert.ok(replyAction(q("confirm"), "maybe").hint);
   assert.deepEqual(replyAction(q("input"), "hello there"), { rest, body: { value: "hello there" } });
-  assert.deepEqual(replyAction({ kind: "turn", sessionId: "s" }, "carry on"), { rest: "/message", body: { text: "carry on" } });
+  assert.deepEqual(replyAction({ kind: "turn", sessionId: "s" }, "carry on"), { rest: "/message", body: { text: "carry on", mode: "steer" } });
 });
 
 test("replies are routed by reference or to the latest notice, and confirmed", async () => {
@@ -87,14 +88,17 @@ test("replies are routed by reference or to the latest notice, and confirmed", a
   await flush();
   const [question, turn] = sent;
   await notifier.handleMessage(dm("1", { message_reference: { message_id: question.id } }));
+  notifier.event("a1", "extension_ui_resolved", { requestId: "r1" });
   await notifier.handleMessage(dm("next step please"));
-  assert.deepEqual(posts, [["a1", "/extension-ui/r1", { value: "red" }], ["a1", "/message", { text: "next step please" }]]);
+  const nextStep = posts[1][2].clientMessageId;
+  assert.match(nextStep, /^discord:u/);
+  assert.deepEqual(posts, [["a1", "/extension-ui/r1", { value: "red" }], ["a1", "/message", { text: "next step please", mode: "steer", clientMessageId: nextStep }]]);
   assert.equal(reactions.length, 2);
   assert.equal(turn.content.includes("finished"), true);
 
   await notifier.handleMessage(dm("7", { message_reference: { message_id: question.id } }));
   await notifier.handleMessage(dm("hi", { message_reference: { message_id: "unknown" } }));
-  assert.deepEqual(sent.slice(2).map(m => m.content), ["Reply with a number from 1 to 2 or an exact option.", "Reply to one of my messages to answer it."]);
+  assert.deepEqual(sent.slice(2).map(m => m.content), ["Reply with a number from 1 to 2 or an exact option.", "That message is not about a session."]);
   assert.equal(posts.length, 2);
   notifier.stop();
 });
@@ -146,7 +150,131 @@ test("long notices are cut to 2000 characters, keeping the link", () => {
   const text = questionText({ title: "t", request: { method: "input", title: "x".repeat(5000) }, link });
   assert.equal(text.length, 2000);
   assert.ok(text.endsWith(`…\n${link}`));
-  assert.equal(turnEndText({ title: "t", reason: "errored", error: "e".repeat(3000), link: "" }).length, 2000);
+  assert.equal(linkedSession(text), "s1");
+});
+
+const turn = (notifier, id, ...texts) => {
+  notifier.event(id, "turn_start", {});
+  for (const text of texts) {
+    notifier.event(id, "message_start", { messageId: `${id}-${text}`, role: "assistant" });
+    notifier.event(id, "text_delta", { delta: text });
+    notifier.event(id, "message_end", {});
+  }
+  notifier.event(id, "turn_end", { reason: "done" });
+};
+
+test("a turn end DMs only the turn's final reply", async () => {
+  const { notifier, sent } = setup({ agents: { a1: "bot" } });
+  notifier.event("a1", "turn_start", {});
+  notifier.event("a1", "message_start", { messageId: "m1", role: "assistant" });
+  notifier.event("a1", "thinking_delta", { delta: "hmm" });
+  notifier.event("a1", "text_delta", { delta: "Let me look." });
+  notifier.event("a1", "tool_start", { toolId: "t1", name: "bash", argsSummary: "ls" });
+  notifier.event("a1", "tool_end", { toolId: "t1", ok: true, output: "file.txt" });
+  notifier.event("a1", "message_end", {});
+  notifier.event("a1", "message_start", { messageId: "m2", role: "assistant" });
+  notifier.event("a1", "thinking_delta", { delta: "done thinking" });
+  notifier.event("a1", "text_delta", { delta: "Done: " });
+  notifier.event("a1", "text_delta", { delta: "all good." });
+  notifier.event("a1", "message_end", {});
+  notifier.event("a1", "turn_end", { reason: "done" });
+  // An error ends the turn with its error text, not the reply so far.
+  notifier.event("a1", "message_start", { messageId: "m3", role: "assistant" });
+  notifier.event("a1", "text_delta", { delta: "Half a" });
+  notifier.event("a1", "turn_end", { reason: "errored", error: "overloaded" });
+  await flush();
+  assert.deepEqual(sent.map(m => m.content), [
+    "**Title a1** (bot) <https://pi.example/?s=a1>\nDone: all good.",
+    "**Title a1** (bot) failed <https://pi.example/?s=a1>\noverloaded",
+  ]);
+  notifier.stop();
+});
+
+test("long replies are split at paragraphs, lines or spaces, and a cut code fence is reopened", async () => {
+  const words = splitMessage("word ".repeat(1000).trim());
+  assert.ok(words.length === 3 && words.every(p => p.length <= 2000 && p.split(" ").every(w => w === "word")));
+  const code = `Intro.\n\n\`\`\`js\n${"const x = 1;\n".repeat(300)}\`\`\`\n\nThe end.`;
+  const parts = splitMessage(code);
+  assert.ok(parts.length >= 2 && parts.every(p => p.length <= 2000));
+  assert.ok(parts[0].startsWith("Intro.\n\n```js\n") && parts[0].endsWith("const x = 1;\n```"));
+  assert.ok(parts[1].startsWith("```js\nconst x = 1;"));
+  for (const p of parts) assert.equal(p.split("\n").filter(l => l.startsWith("```")).length % 2, 0, "every part's fences are balanced");
+  assert.equal(parts.at(-1).slice(-8), "The end.");
+  assert.equal(parts.join("\n").split("const x = 1;").length - 1, 300, "nothing lost");
+
+  const { notifier, sent } = setup({ agents: { a1: "bot" } });
+  turn(notifier, "a1", code);
+  await flush();
+  assert.ok(sent.length >= 2 && sent.every(m => m.content.length <= 2000));
+  assert.ok(sent[0].content.startsWith("**Title a1** (bot) <https://pi.example/?s=a1>\nIntro."));
+  notifier.stop();
+});
+
+test("a DM goes to the replied-to message's session, else to the session last DMed about", async () => {
+  const { notifier, sent, posts, reactions } = setup({ agents: { a1: "bot", a2: "bot" } });
+  turn(notifier, "a1", "one");
+  turn(notifier, "a2", "two");
+  await flush();
+  const reply = dm("for a1", { message_reference: { message_id: sent[0].id } });
+  await notifier.handleMessage(reply);
+  await notifier.handleMessage(dm("for the latest"));
+  assert.deepEqual(posts.map(([id, rest, body]) => [id, rest, body.text, body.mode]), [["a1", "/message", "for a1", "steer"], ["a2", "/message", "for the latest", "steer"]]);
+  assert.equal(posts[0][2].clientMessageId, `discord:${reply.id}`);
+  assert.equal(reactions.length, 2);
+  notifier.stop();
+});
+
+test("after a restart the DM channel's history alone routes messages", async () => {
+  const before = setup({ agents: { a1: "bot", a2: "bot" } });
+  turn(before.notifier, "a1", "one");
+  turn(before.notifier, "a2", "two");
+  await flush();
+  const { notifier, posts, sent } = setup({ sent: [...before.sent, { id: "h1", content: "Reply yes or no." }] });
+  await notifier.handleMessage(dm("latest"));
+  const old = before.sent[0];
+  await notifier.handleMessage(dm("older", { message_reference: { message_id: old.id }, referenced_message: { ...old, author: { bot: true } } }));
+  assert.deepEqual(posts.map(([id, , body]) => [id, body.text]), [["a2", "latest"], ["a1", "older"]]);
+  assert.equal(sent.length, 3, "no error replies");
+});
+
+test("no session, or one that is gone, gets a one-line answer", async () => {
+  const empty = setup();
+  const first = dm("hello");
+  await empty.notifier.handleMessage(first);
+  assert.deepEqual(empty.sent, [{ id: "m1", content: "There is no session to send that to.", replyTo: first.id }]);
+
+  const { notifier, sent } = setup({ agents: { a1: "bot" }, post: async () => ({ status: 404, body: { error: "no_such_session" } }) });
+  turn(notifier, "a1", "one");
+  await flush();
+  await notifier.handleMessage(dm("still there?"));
+  assert.equal(sent.at(-1).content, "That session no longer exists.");
+});
+
+test("a session DMs its turn ends while its latest user message came from Discord", async () => {
+  const { notifier, sent } = setup();
+  turn(notifier, "s1", "quiet");
+  notifier.event("s1", "user_record", { record: { role: "user" }, clientMessageId: "discord:u1" });
+  turn(notifier, "s1", "from DM");
+  notifier.event("s1", "user_record", { record: { role: "user" }, clientMessageId: "pending-7" });
+  turn(notifier, "s1", "typed in the browser");
+  notifier.event("s1", "user_record", { record: { role: "user" }, clientMessageId: "discord:u2" });
+  notifier.event("s1", "user_record", { record: { role: "user" } });
+  turn(notifier, "s1", "queued from the browser");
+  await flush();
+  assert.deepEqual(sent.map(m => m.content), ["**Title s1** <https://pi.example/?s=s1>\nfrom DM"]);
+  notifier.stop();
+});
+
+test("a plain DM answers a question open in the target session", async () => {
+  const { notifier, posts } = setup({ agents: { a1: "bot" } });
+  turn(notifier, "a1", "one");
+  notifier.event("a1", "extension_ui_request", select);
+  await flush();
+  await notifier.handleMessage(dm("2"));
+  notifier.event("a1", "extension_ui_resolved", { requestId: "r1" });
+  await notifier.handleMessage(dm("thanks"));
+  assert.deepEqual(posts.map(p => [p[1], p[2].value ?? p[2].text]), [["/extension-ui/r1", "green"], ["/message", "thanks"]]);
+  notifier.stop();
 });
 
 test("Discord contact is off unless both the token and the user are set", () => {
@@ -176,7 +304,8 @@ test("REST: DM channel once, Bot auth, 429 retry_after honoured", async t => {
   t.mock.timers.tick(2000);
   assert.deepEqual(await sending, { id: "m1" });
   await transport.send("again");
-  assert.deepEqual(calls.map(c => c.slice(0, 2)), [["POST", "/users/@me/channels"], ["POST", "/channels/c9/messages"], ["POST", "/channels/c9/messages"], ["POST", "/channels/c9/messages"]]);
+  await transport.recent();
+  assert.deepEqual(calls.map(c => c.slice(0, 2)), [["POST", "/users/@me/channels"], ["POST", "/channels/c9/messages"], ["POST", "/channels/c9/messages"], ["POST", "/channels/c9/messages"], ["GET", "/channels/c9/messages?limit=50"]]);
   assert.ok(calls.every(c => c[2] === "Bot tok" && c[3].startsWith("DiscordBot (")));
 });
 
