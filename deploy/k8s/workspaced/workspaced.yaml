@@ -44,6 +44,12 @@ spec:
           env:
             - name: PORT
               value: "3150"
+            # No cap on awake workers; one that nobody has used for 30 minutes sleeps
+            # (never a busy or pinned one) and wakes on the next request.
+            - name: WORKSPACED_MAX_AWAKE
+              value: "0"
+            - name: WORKSPACED_IDLE_MINUTES
+              value: "30"
             - name: WORKSPACED_NAMESPACE
               value: pi-workspaced
             # Filled from this container's image by replacements in kustomization.yaml.
