@@ -25,4 +25,6 @@ replacements:
           kind: Deployment
           name: pi-workspaced
         fieldPaths:
-          - spec.template.spec.containers.[name=gateway].env.[name=WORKSPACE_IMAGE].value
+          # Anchored: the name is matched as a regular expression, and unanchored it also
+          # overwrote WORKSPACE_IMAGE_PULL_SECRET.
+          - spec.template.spec.containers.[name=gateway].env.[name=^WORKSPACE_IMAGE$].value
