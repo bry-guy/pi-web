@@ -19,8 +19,8 @@ Web creates the chats worker with the first chat. Chats that web ran itself befo
 | `PI_WEB_GITHUB_CLIENT_ID` / `PI_WEB_GITHUB_TOKEN` | unset | GitHub sign-in (public OAuth client ID) or a fixed token. See [Configuration](configuration.md) |
 | `PI_WEB_PRESTART_COMMAND` | unset | Shell run before start, e.g. fetching dotfiles or seeding `config.json` (120 s limit) |
 | `PI_SYNC_SERVER_URL` | unset | Optional [pi-sync](https://github.com/bry-guy/pi-sync) server |
-| `PI_WEB_DISCORD_TOKEN`, `PI_WEB_DISCORD_USER` | unset | Discord contact (below): a bot token and the one Discord user id it DMs. Both or it stays off |
-| `PI_WEB_PUBLIC_URL` | unset | Web's public base URL, for links in Discord DMs (`<url>/?s=<session>`) |
+| `PI_WEB_DISCORD_TOKEN`, `PI_WEB_DISCORD_USER` | unset | Discord contact (below): a bot token and the one Discord user id it DMs. Off unless both and `PI_WEB_PUBLIC_URL` are set |
+| `PI_WEB_PUBLIC_URL` | unset | Web's public base URL, for links in Discord DMs (`<url>/?s=<session>`); required for Discord contact (it logs one line and stays off without it) |
 
 Everything else (default model, Pi profile and packages, repository source) is in **Settings** or [`config.json`](configuration.md).
 
@@ -29,9 +29,12 @@ Everything else (default model, Pi profile and packages, repository source) is i
 With `PI_WEB_DISCORD_TOKEN` and `PI_WEB_DISCORD_USER` set, web DMs that user from the bot when a session needs them. It reads every worker event as it passes through web; workers never see the token.
 
 - A question (an extension's select, confirm or input dialog) still open after 5 minutes: the session title, the question, numbered options and a link to the session.
-- For an agent run (a session created with `"agent": "<name>"` on `POST /api/chats` or `POST /api/projects/:id/sessions`; web keeps the mark in `PI_WEB_HOME/agent-sessions.json`): questions at once, and one line when a turn finishes or fails.
+- For an agent run (a session created with `"agent": "<name>"` on `POST /api/chats` or `POST /api/projects/:id/sessions`; web keeps the mark in `PI_WEB_HOME/agent-sessions.json`): questions at once, and every finished turn.
+- For any other session whose latest user message came from a DM: every finished turn, until a message is typed in the browser.
 
-Reply in the DM: to a question, a number or an exact option, yes or no, or the text for an input; to a finished turn, a message the session receives as your next prompt. Replying to a specific DM answers that one; a plain message answers the latest. The bot reacts ✅ when delivered, and says so when the question was already answered or the reply does not fit. Questions waiting for their 5 minutes are forgotten if web restarts. The bot needs no privileged intents (DMs carry message content).
+A finished turn DMs a header line (title and link) and the turn's final reply: the last assistant message's text, without thinking, tool calls or earlier notes. Replies over Discord's 2000 characters are split at paragraphs, lines or spaces, closing and reopening a cut code fence; every part after the first starts with `(continued)`. A turn whose events were partly missed (web lost its stream to the worker) DMs the one-line notice instead of a reply with a gap. Parts go out one notice at a time, and a part that cannot be sent is logged and skipped. A failed turn DMs its error; a turn with no final text, one line.
+
+Write in the DM to carry on: a reply to one of the bot's messages goes to that message's session, any other message to the session the bot DMed about last. Web finds the session from the link in the bot's message (the replied-to one, or the newest in the DM channel), so this keeps working after a restart. Only the link the bot puts in a header or a question counts, never one in the agent's text or in the owner's messages; a reply to a continuation part goes to the header before it. The message is delivered like one typed in the browser (it wakes a sleeping worker and is queued if a turn is running). While a question is open in that session, the message answers it instead: a number or an exact option, yes or no, or the text for an input. The bot reacts ✅ when delivered, and says so when the question was already answered, the reply does not fit, no session is found, or the session is gone. Only DMs from `PI_WEB_DISCORD_USER` are read. Questions waiting for their 5 minutes are forgotten if web restarts, and a question DMed before a restart can no longer be answered from Discord: a reply to it gets the session link instead. A restart also forgets which sessions were last messaged from Discord; the owner's next DM to a session marks it again. The bot needs no privileged intents (DMs carry message content).
 
 ## Chat header
 
