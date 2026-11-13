@@ -421,7 +421,7 @@ export class RealSupervisor {
     return this.live.get(session.sessionId);
   }
 
-  _endTurnWithError(id, st, error) {
+  _endTurnWithError(id, st, error, willRetry = false) {
     if (st.turnEnded) return;
     st.turnEnded = true;
     st.pendingMessages = [];
@@ -429,7 +429,7 @@ export class RealSupervisor {
     const record = st.msgId && st.liveRecords?.get(st.msgId);
     if (record) delete record.streaming;
     if (st.msgId) this.hub.emit(id, "message_end", { messageId: st.msgId });
-    this.hub.emit(id, "turn_end", { turnId: st.turnId, reason: "errored", error: message });
+    this.hub.emit(id, "turn_end", { turnId: st.turnId, reason: "errored", error: message, ...(willRetry ? { willRetry } : {}) });
   }
 
   // ---- pi AgentEvent -> wire contract ----
@@ -511,11 +511,7 @@ export class RealSupervisor {
         }
         break;
       }
-      case "turn_end": {
-        const error = st.aborted ? "" : assistantErrorMessage(evt.message);
-        if (error) this._endTurnWithError(id, st, error);
-        break;
-      }
+      // An errored pi turn_end is followed at once by agent_end, which ends the turn: only it knows whether pi will retry.
       case "message_end":
         if (evt.message?.role === "assistant" && st.msgId) {
           const record = st.liveRecords.get(st.msgId);
@@ -563,7 +559,7 @@ export class RealSupervisor {
       case "agent_end": {
         const error = st.aborted ? "" : [...(evt.messages || [])].reverse().map(assistantErrorMessage).find(Boolean);
         if (error) {
-          this._endTurnWithError(id, st, error);
+          this._endTurnWithError(id, st, error, evt.willRetry === true);
           break;
         }
         if (st.turnEnded) break;

@@ -597,3 +597,71 @@ test("first start: no login yet means no model provider, unless an earlier works
   assert.equal(again[again.indexOf("--provider") + 1], "pi-web-anthropic");
   assert.ok(kept.policies[0].network_policies.anthropic);
 });
+
+test("a failed model feed succeeds on the quick retry and rewrites running sandboxes' placeholders", async () => {
+  const logs = [];
+  const fail = new Set(["provider create"]);
+  const cli = fakeCli([sandbox("agent")], { fail });
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec, log: m => logs.push(m), reconcileMs: 0, feedRetryMs: [5, 5] });
+  await provider.setModelAuth(modelAuth(TOKEN_A));
+  await provider.settled();
+  assert.match(logs.find(l => l.includes("model feed failed")), /retried in 0.005 s/);
+  fail.clear();
+  await new Promise(r => setTimeout(r, 30));
+  await provider.settled();
+  assert.equal(cli.gateway.providers.get("pi-web-anthropic"), TOKEN_A);
+  assert.ok(logs.includes("workspaced: OpenShell gateway has the current model login"));
+  assert.deepEqual(cli.calls.slice(-2).map(a => a.slice(0, 2).join(" ")), ["sandbox list", "sandbox exec"]);
+  assert.equal(logs.filter(l => l.includes("model feed failed")).length, 1);
+});
+
+test("an update the gateway stored but a stopped sandbox could not confirm counts as fed", async () => {
+  const logs = [];
+  const cli = fakeCli([sandbox("agent"), sandbox("asleep", "Stopped")], { gateway: { profiles: new Set(["pi-web-anthropic"]), providers: new Map([["pi-web-anthropic", "old"]]) } });
+  const exec = async (bin, args, opts) => {
+    const out = await cli.exec(bin, args, opts);
+    if (args[1] === "update") throw Object.assign(new Error("Command failed"), { stderr: "ws-asleep: pending\nError:   × provider readiness wait did not complete for every selected sandbox; inspect the reported outcomes\n" });
+    return out;
+  };
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec, log: m => logs.push(m), reconcileMs: 0 });
+  await provider.setModelAuth(modelAuth(TOKEN_A));
+  await provider.settled();
+  assert.equal(cli.gateway.providers.get("pi-web-anthropic"), TOKEN_A);
+  assert.ok(!logs.some(l => l.includes("feed failed")), logs.join("\n"));
+  assert.equal(cli.calls.at(-1)[1], "exec", "running sandboxes get the new placeholder");
+});
+
+test("waking a worker while the model feed is failing feeds first, then writes its placeholder before it is ready", async () => {
+  const logs = [];
+  const fail = new Set(["provider create"]);
+  const cli = fakeCli([sandbox("agent", "Stopped")], { fail });
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec, log: m => logs.push(m), reconcileMs: 0, pollMs: 1, feedRetryMs: [] });
+  await provider.setModelAuth(modelAuth(TOKEN_A));
+  await provider.settled();
+  fail.clear();
+  cli.calls.length = 0;
+  await provider.scale("agent", 1);
+  const at = verb => cli.calls.findIndex(a => a.slice(0, 2).join(" ") === verb);
+  assert.ok(at("provider create") >= 0 && at("provider create") < at("sandbox start"), "fed before the start");
+  assert.ok(cli.calls.slice(at("sandbox start")).some(a => a[1] === "exec" && a[3] === "ws-agent"), "placeholder written before scale returns");
+  assert.ok(!logs.some(l => l.includes("no model login yet")));
+});
+
+test("waking a worker while the model feed keeps failing or hangs still wakes it, with one log line", async () => {
+  const logs = [];
+  const cli = fakeCli([sandbox("agent", "Stopped")], { fail: new Set(["provider create"]) });
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec, log: m => logs.push(m), reconcileMs: 0, pollMs: 1, feedRetryMs: [] });
+  await provider.setModelAuth(modelAuth(TOKEN_A));
+  await provider.settled();
+  await provider.scale("agent", 1);
+  assert.equal((await provider.list())[0].state, "running");
+  assert.deepEqual(logs.filter(l => l.includes("no model login yet")), ["workspaced: ws-agent has no model login yet (the OpenShell model feed is failing); it gets one when a retry succeeds"]);
+
+  // A hung CLI holds the wake for feedWaitMs only.
+  const hung = fakeCli([sandbox("agent", "Stopped")]);
+  const exec = (bin, args, opts) => args[0] === "provider" ? never() : hung.exec(bin, args, opts);
+  const stuck = openshellProvider({ kube: fakeKube(), config: CONFIG, exec, log: () => {}, reconcileMs: 0, pollMs: 1, feedWaitMs: 20 });
+  await stuck.setModelAuth(modelAuth(TOKEN_A));
+  await Promise.race([stuck.scale("agent", 1), new Promise((_, no) => setTimeout(() => no(new Error("wake waited on the feed")), 1000))]);
+  assert.equal(hung.sandboxes[0].phase, "Ready");
+});
