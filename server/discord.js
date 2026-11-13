@@ -177,7 +177,8 @@ export function createNotifier({ userId, baseUrl, transport, post, titleOf = () 
       } else if (type === "turn_end") {
         const text = replies.get(sessionId);
         replies.delete(sessionId);
-        if ((data.reason !== "done" && data.reason !== "errored") || !dms(sessionId)) return;
+        // A failed attempt pi retries is not the end: the retry's own turn end is DMed.
+        if ((data.reason !== "done" && data.reason !== "errored") || data.willRetry || !dms(sessionId)) return;
         const parts = turnEndText({ title: titleOf(sessionId), agent: agentOf(sessionId), reason: data.reason, error: data.error, text, link: sessionLink(baseUrl, sessionId) });
         notify({ kind: "turn", sessionId }, parts);
       }

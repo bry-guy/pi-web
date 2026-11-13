@@ -164,7 +164,9 @@ function toWorkspace(s) {
 
 // exec(bin, args, {env, timeout}) resolves { stdout, stderr }: execFile's promise form, injectable for tests.
 // reconcileMs: how often the model login is re-fed (if it changed) and every running sandbox's placeholder file rewritten.
-export function openshellProvider({ kube, config, exec = promisify(execFile), waitMs = 90_000, pollMs = 2_000, log = console.log, tlsCheckMs = 30_000, reconcileMs = 300_000 }) {
+// feedRetryMs: the quick retries after a failed feed, before the reconcile tick takes over.
+// feedWaitMs: how long creating or waking a worker waits for a feed when the gateway may lack the current login.
+export function openshellProvider({ kube, config, exec = promisify(execFile), waitMs = 90_000, pollMs = 2_000, log = console.log, tlsCheckMs = 30_000, reconcileMs = 300_000, feedRetryMs = [5_000, 15_000, 45_000], feedWaitMs = 20_000 }) {
   // The CLI gets only what it reads: never workspaced's own token or the workers' secrets.
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(PATH|HOME|XDG_CONFIG_HOME|OPENSHELL_.*)$/.test(k)));
   const env = {
@@ -192,9 +194,16 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
 
   // The model feed. modelAuth is the last auth.json web shared with this process (none after a restart until web
   // shares a changed one); fed is the access token this process last stored on the gateway.
-  let modelAuth = null, fed = null, providerExists = false, skipped = null;
+  // feedError: the last feed attempt's error, null once one succeeds.
+  let modelAuth = null, fed = null, providerExists = false, skipped = null, feedError = null, failures = 0, retry = null;
   let queue = Promise.resolve();
   const serial = fn => (queue = queue.then(fn, fn));
+  // True if promise settles within ms; never rejects.
+  const within = (promise, ms) => new Promise(resolve => {
+    const timer = setTimeout(resolve, ms, false);
+    const done = () => { clearTimeout(timer); resolve(true); };
+    promise.then(done, done);
+  });
   function accessToken() {
     let a = null;
     try { a = JSON.parse(modelAuth || "{}")?.anthropic; } catch { /* not JSON: no login */ }
@@ -210,8 +219,12 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     providerExists ||= await succeeds(["provider", "get", MODEL_PROVIDER]);
     if (providerExists) {
       // Look again next time if this fails: the provider may have been deleted on the gateway.
-      try { await run(["provider", "update", MODEL_PROVIDER, "--credential", PLACEHOLDER_VAR, "--wait", "--timeout", "60"], 120_000, token); }
-      catch (e) { providerExists = false; throw e; }
+      try { await run(["provider", "update", MODEL_PROVIDER, "--credential", PLACEHOLDER_VAR, "--wait", "--timeout", "60"], 120_000, token); } catch (e) {
+        // The CLI ends with this ("provider readiness wait did not complete for every selected sandbox; …") only after
+        // the gateway stored the update, when an attached sandbox did not confirm it in time (a stopped one never does);
+        // placeholders are rewritten by reconcile and settle, not by this wait.
+        if (!e.message.includes("inspect the reported outcomes")) { providerExists = false; throw e; }
+      }
     } else {
       // shortcut: an existing profile is never re-imported; delete it on the gateway if pi-web-anthropic.yaml changes.
       if (!await succeeds(["profile", "describe", MODEL_PROVIDER])) await run(["profile", "import", "-f", PROFILE_FILE]);
@@ -229,13 +242,38 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       await run(placeholderArgs(w.name), 90_000).catch(e => log(`workspaced: could not refresh the model placeholder in ws-${w.name}: ${e.message}`));
     }
   }
-  const feedFailed = e => log(`workspaced: OpenShell model feed failed (retried in ${Math.round(reconcileMs / 60_000)} min): ${e.message}`);
-  const tick = () => serial(() => feed().then(() => reconcile()).catch(feedFailed));
+  const refreshFailed = e => log(`workspaced: OpenShell model placeholder refresh failed: ${e.message}`);
+  // One feed attempt (run it through serial); never rejects. A failure is retried after each of feedRetryMs, then by the tick.
+  async function tryFeed() {
+    clearTimeout(retry);
+    retry = null;
+    try {
+      const changed = await feed();
+      feedError = null;
+      failures = 0;
+      return changed;
+    } catch (e) {
+      feedError = e;
+      const delay = feedRetryMs[failures++];
+      log(`workspaced: OpenShell model feed failed (retried in ${delay ? `${delay / 1000} s` : `${Math.round(reconcileMs / 60_000)} min`}): ${e.message}`);
+      if (delay) (retry = setTimeout(() => serial(() => tryFeed().then(changed => changed && reconcile()).catch(refreshFailed)), delay)).unref?.();
+      return false;
+    }
+  }
+  const tick = () => serial(() => tryFeed().then(() => reconcile()).catch(refreshFailed));
   if (reconcileMs) setInterval(tick, reconcileMs).unref?.();
+  // Before a worker is created or woken: if the gateway may lack the current login, feed now, waiting at most feedWaitMs.
+  async function feedFirst(name) {
+    if (!feedError && (fed !== null || !modelAuth)) return;
+    const attempt = serial(tryFeed);
+    serial(() => attempt.then(changed => changed && reconcile()).catch(refreshFailed));
+    if (!await within(attempt, feedWaitMs) || feedError) log(`workspaced: ws-${name} has no model login yet (the OpenShell model feed is failing); it gets one when a retry succeeds`);
+  }
   // A sandbox just created or started accepts exec only after a few seconds; until then its worker uses its env.
+  // Resolves once the placeholder is written or given up on.
   function settle(name) {
-    if (fed === null && !providerExists) return;
-    (async () => {
+    if (fed === null && !providerExists) return Promise.resolve();
+    return (async () => {
       for (let i = 0; i < 30; i++) {
         try { await run(placeholderArgs(name), 90_000); return; } catch { await new Promise(r => setTimeout(r, pollMs)); }
       }
@@ -289,7 +327,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       }
       await ensurePvc(name, repository);
       // First sandbox since this process started: store the model login first, or attach one an earlier process stored.
-      if (fed === null) await serial(() => feed().catch(feedFailed));
+      await feedFirst(name);
       providerExists ||= fed === null && await succeeds(["provider", "get", MODEL_PROVIDER]);
       const model = fed !== null || providerExists;
       if (!model) log(`workspaced: ws-${name} starts without a model login (pi-web has not shared one with this workspaced yet)`);
@@ -309,7 +347,12 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     async scale(name, replicas) {
       const w = await mustFind(name);
       if (replicas === 0 && w.state !== "sleeping") await run(["sandbox", "stop", `ws-${name}`]);
-      if (replicas > 0 && w.state === "sleeping") { await run(["sandbox", "start", `ws-${name}`]); settle(name); }
+      if (replicas > 0 && w.state === "sleeping") {
+        await feedFirst(name);
+        await run(["sandbox", "start", `ws-${name}`]);
+        // The file from before it slept may hold a placeholder of a login updated since, which no longer resolves.
+        await within(settle(name), waitMs);
+      }
     },
     // New pod, same disk: stop, then start once it has stopped.
     async restart(name) {
@@ -352,7 +395,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     // Never waits on the CLI: the feed runs in the background and failures are retried by the next tick.
     async setModelAuth(content) {
       modelAuth = content;
-      serial(() => feed().then(changed => changed && reconcile()).catch(feedFailed));
+      serial(() => tryFeed().then(changed => changed && reconcile()).catch(refreshFailed));
     },
     // For tests: resolves once queued feeds and reconciles are done.
     settled: () => serial(() => {}),
