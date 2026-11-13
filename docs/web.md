@@ -20,7 +20,8 @@ Web creates the chats worker with the first chat. Chats that web ran itself befo
 | `PI_WEB_PRESTART_COMMAND` | unset | Shell run before start, e.g. fetching dotfiles or seeding `config.json` (120 s limit) |
 | `PI_SYNC_SERVER_URL` | unset | Optional [pi-sync](https://github.com/bry-guy/pi-sync) server |
 | `PI_WEB_DISCORD_TOKEN`, `PI_WEB_DISCORD_USER` | unset | Discord contact (below): a bot token and the one Discord user id it DMs. Both or it stays off |
-| `PI_WEB_PUBLIC_URL` | unset | Web's public base URL, for links in Discord DMs (`<url>/?s=<session>`) |
+| `PI_WEB_PUBLIC_URL` | unset | Web's public base URL, for links in Discord DMs and run-door answers (`<url>/?s=<session>`) |
+| `PI_WEB_RUN_PORT`, `PI_WEB_RUN_TOKENS` | unset | The [run door](#run-door): its port, and a JSON array of `{agent, sha256, project, grant}` (SHA-256 of each token, never the token). Both valid or it stays off |
 
 Everything else (default model, Pi profile and packages, repository source) is in **Settings** or [`config.json`](configuration.md).
 
@@ -103,6 +104,18 @@ When Pi or an extension asks something (`ask_user_question`, a confirmation, a v
 ## Logins reach workers
 
 When you sign in to GitHub or a model provider, web sends the login to workspaced (`PUT /v1/github-auth`, `PUT /v1/model-auth`), and workspaced hands it to every worker read-only. Every worker can therefore read those logins. You sign in once, in web. Workers get model logins without their refresh tokens: web refreshes them (every 5 minutes, any login with under 30 minutes left) and re-shares, so a worker can never spend a refresh token that web and the other workers depend on. If web can't re-share for about half an hour, workers' model requests fail until it can.
+
+## Run door
+
+A scheduler (a Kubernetes CronJob) starts agent runs through the run door, a second port that serves only `POST /run`. The main port has no login and can do everything, so the network must admit only the scheduler to the run door's port and never to the main one.
+The bearer token picks the entry: web makes sure the entry's project has its worker (created with the entry's grant, woken if asleep; a worker under another grant gets 409), creates a session named `<agent>: <YYYY-MM-DD HH:mm>` (UTC) marked as an agent run, sets `?model=` if given, sends the body (plain text, up to 64 KB) as the brief, and answers 202 `{session, url}` without waiting for the turn.
+Only web opens the door, and only with workspaced; workers never do. Several entries may share an agent (token rotation).
+
+```sh
+curl -fsS -H "Authorization: Bearer $TOKEN" --data-binary @brief.md "http://<host>:<port>/run?model=<model>"
+```
+
+A token's hash: `printf %s "$TOKEN" | sha256sum`.
 
 ## Security
 
