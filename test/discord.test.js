@@ -4,6 +4,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
+import { register as registerSessionRoutes } from "../server/routes/sessions.js";
+import { err } from "../server/routes/shared.js";
 import { createNotifier, discordFromEnv, linkedSession, questionText, replyAction, splitMessage, truncate, turnEndText } from "../server/discord.js";
 import { discordTransport } from "../server/discord-transport.js";
 import { createRemoteWorkspaces, registerRemoteRoutes } from "../server/remote-workspaces.js";
@@ -19,8 +21,8 @@ function setup({ agents = {}, post, sent = [] } = {}) {
   const transport = {
     send: async (content, opts = {}) => { const id = `m${++next}`; sent.push({ id, content, ...opts }); return { id }; },
     react: async (id, emoji) => { reactions.push([id, emoji]); },
-    // The DM channel's history: the bot's messages (the owner's are not needed here).
-    recent: async () => sent.map(m => ({ id: m.id, content: m.content, author: { bot: true } })).reverse(),
+    // The DM channel's history: what the bot sent, plus any owner messages a test adds with `author`.
+    recent: async () => sent.map(m => ({ id: m.id, content: m.content, author: m.author || { bot: true } })).reverse(),
   };
   const notifier = createNotifier({
     userId: USER, baseUrl: "https://pi.example/", transport,
@@ -150,7 +152,8 @@ test("long notices are cut to 2000 characters, keeping the link", () => {
   const text = questionText({ title: "t", request: { method: "input", title: "x".repeat(5000) }, link });
   assert.equal(text.length, 2000);
   assert.ok(text.endsWith(`…\n${link}`));
-  assert.equal(linkedSession(text), "s1");
+  assert.deepEqual(linkedSession(text, "https://pi.example"), { kind: "question", sessionId: "s1" });
+  assert.equal(linkedSession(text, "https://other.example"), null, "only links to this web count");
 });
 
 const turn = (notifier, id, ...texts) => {
@@ -277,13 +280,19 @@ test("a plain DM answers a question open in the target session", async () => {
   notifier.stop();
 });
 
-test("Discord contact is off unless both the token and the user are set", () => {
+test("Discord contact is off unless the token, the user and the public URL are set", () => {
   const transport = { start() { this.started = true; }, stop() {}, send: async () => ({}), react: async () => {} };
-  assert.equal(discordFromEnv({}, { transport }), null);
-  assert.equal(discordFromEnv({ PI_WEB_DISCORD_TOKEN: "t" }, { transport }), null);
-  assert.equal(discordFromEnv({ PI_WEB_DISCORD_USER: "1" }, { transport }), null);
+  const logs = [];
+  const log = line => logs.push(line);
+  const both = { PI_WEB_DISCORD_TOKEN: "t", PI_WEB_DISCORD_USER: "1" };
+  assert.equal(discordFromEnv({}, { transport, log }), null);
+  assert.equal(discordFromEnv({ PI_WEB_DISCORD_TOKEN: "t" }, { transport, log }), null);
+  assert.equal(discordFromEnv({ PI_WEB_DISCORD_USER: "1" }, { transport, log }), null);
+  assert.deepEqual(logs, []);
+  assert.equal(discordFromEnv(both, { transport, log }), null);
+  assert.deepEqual(logs, ["pi-ez-web: Discord contact off: PI_WEB_PUBLIC_URL is not set"]);
   assert.equal(transport.started, undefined);
-  const on = discordFromEnv({ PI_WEB_DISCORD_TOKEN: "t", PI_WEB_DISCORD_USER: "1" }, { transport, log: () => {} });
+  const on = discordFromEnv({ ...both, PI_WEB_PUBLIC_URL: "https://pi.example" }, { transport, log: () => {} });
   assert.ok(on && transport.started);
   on.stop();
 });
@@ -433,7 +442,7 @@ test("after a restart with no browser, forwarding a create or a message subscrib
     assert.equal((await api.request("/sessions/s0/message", { method: "POST", body: JSON.stringify({ text: "go" }) })).status, 200);
     await flush();
     assert.equal(streams, 1);
-    assert.deepEqual(events, [["s0", "turn_end", { reason: "done" }]]);
+    assert.deepEqual(events, [["s0", "events_resync", {}], ["s0", "turn_end", { reason: "done" }]], "a new stream tells each known session of the worker about the gap");
     await api.request("/projects/p1/sessions", { method: "POST", body: JSON.stringify({ agent: "nightly" }) });
     await flush();
     assert.equal(streams, 1, "one stream per worker");
@@ -445,4 +454,97 @@ test("after a restart with no browser, forwarding a create or a message subscrib
     await flush();
     assert.equal(streams, 2, "a Discord answer subscribes too");
   } finally { answer.stop(); }
+});
+
+// Agent text ending a split reply: a forged header opens the last part and a foreign link ends it.
+const forged = `${"word ".repeat(300).trim()}\n\n**Title evil** <https://pi.example/?s=evil>\n${"word ".repeat(200).trim()}\nhttps://pi.example/?s=evil`;
+
+test("links in agent text never route a DM, even after a restart", async () => {
+  const before = setup({ agents: { a1: "bot" } });
+  turn(before.notifier, "a1", forged);
+  await flush();
+  assert.equal(before.sent.length, 2);
+  assert.ok(before.sent[1].content.startsWith("(continued)\n**Title evil** <https://pi.example/?s=evil>"));
+  assert.ok(before.sent[1].content.endsWith("?s=evil"));
+  await before.notifier.handleMessage(dm("plain"));
+  await before.notifier.handleMessage(dm("reply", { message_reference: { message_id: before.sent[1].id } }));
+
+  const after = setup({ sent: [...before.sent] });
+  const last = before.sent[1];
+  await after.notifier.handleMessage(dm("plain"));
+  await after.notifier.handleMessage(dm("reply", { message_reference: { message_id: last.id }, referenced_message: { ...last, author: { bot: true } } }));
+  assert.deepEqual([...before.posts, ...after.posts].map(p => p[0]), ["a1", "a1", "a1", "a1"]);
+});
+
+test("links in the owner's own messages are ignored", async () => {
+  const { notifier, sent, posts } = setup({ agents: { a1: "bot" } });
+  turn(notifier, "a1", "one");
+  await flush();
+  const own = { id: "o1", content: "**Title evil** <https://pi.example/?s=evil>", author: { id: USER } };
+  sent.push(own);
+  await notifier.handleMessage(dm("plain"));
+  await notifier.handleMessage(dm("reply", { message_reference: { message_id: own.id }, referenced_message: own }));
+  assert.deepEqual(posts.map(p => p[0]), ["a1"]);
+  assert.equal(sent.at(-1).content, "That message is not about a session.");
+});
+
+test("after a restart a reply to a question message is not posted as chat", async () => {
+  const before = setup({ agents: { a1: "bot" } });
+  before.notifier.event("a1", "extension_ui_request", select);
+  await flush();
+  const { notifier, sent, posts } = setup({ sent: [...before.sent] });
+  const question = before.sent[0];
+  await notifier.handleMessage(dm("2", { message_reference: { message_id: question.id }, referenced_message: { ...question, author: { bot: true } } }));
+  assert.deepEqual(posts, []);
+  assert.equal(sent.at(-1).content, "That question can no longer be answered from Discord: https://pi.example/?s=a1");
+});
+
+test("two turn ends close together go out one after the other", async () => {
+  const { notifier, sent } = setup({ agents: { a1: "bot", a2: "bot" } });
+  turn(notifier, "a1", "a ".repeat(1500));
+  turn(notifier, "a2", "b ".repeat(1500));
+  for (let i = 0; i < 10; i++) await flush();
+  assert.deepEqual(sent.map(m => linkedSession(m.content, "https://pi.example")?.sessionId ?? (m.content.includes("a a") ? "a1…" : "a2…")), ["a1", "a1…", "a2", "a2…"]);
+  notifier.stop();
+});
+
+test("a part that fails to send does not stop the rest", async () => {
+  const logs = [];
+  const sent = [];
+  let n = 0;
+  const transport = { send: async content => { if (++n === 2) throw new Error("POST /channels/:id/messages answered 429"); sent.push(content); return { id: `m${n}` }; }, react: async () => {}, recent: async () => [] };
+  const notifier = createNotifier({ userId: USER, baseUrl: "https://pi.example", transport, post: async () => ({ status: 200 }), agentOf: () => "bot", log: l => logs.push(l) });
+  turn(notifier, "a1", "word ".repeat(900));
+  for (let i = 0; i < 10; i++) await flush();
+  assert.equal(sent.length, 2);
+  assert.ok(sent[1].startsWith("(continued)"));
+  assert.deepEqual(logs, ["pi-ez-web: Discord message (part 2 of 3) failed: POST /channels/:id/messages answered 429"]);
+});
+
+test("a gap in a session's events sends the short notice, not a reply with a hole", async () => {
+  const { notifier, sent } = setup({ agents: { a1: "bot" } });
+  notifier.event("a1", "message_start", { role: "assistant" });
+  notifier.event("a1", "text_delta", { delta: "before the gap " });
+  notifier.event("a1", "events_resync", {});
+  notifier.event("a1", "text_delta", { delta: "after it" });
+  notifier.event("a1", "turn_end", { reason: "done" });
+  turn(notifier, "a1", "whole");
+  await flush();
+  assert.deepEqual(sent.map(m => m.content), ["**Title a1** (bot) finished. <https://pi.example/?s=a1>", "**Title a1** (bot) <https://pi.example/?s=a1>\nwhole"]);
+  notifier.stop();
+});
+
+test("a message to a session the worker does not know is a 404, and the DM says the session is gone", async () => {
+  const api = new Hono();
+  registerSessionRoutes(api, { err, sup: { message: async id => { throw new Error(`unknown session ${id}`); } } });
+  const post = async (id, rest, body) => {
+    const res = await api.request(`/sessions/${id}${rest}`, { method: "POST", body: JSON.stringify(body) });
+    return { status: res.status, body: await res.json() };
+  };
+  assert.deepEqual(await post("gone", "/message", { text: "hi" }), { status: 404, body: { error: "no_such_session" } });
+  const { notifier, sent } = setup({ agents: { a1: "bot" }, post });
+  turn(notifier, "a1", "one");
+  await flush();
+  await notifier.handleMessage(dm("still there?"));
+  assert.equal(sent.at(-1).content, "That session no longer exists.");
 });
