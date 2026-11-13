@@ -457,6 +457,19 @@ test("provider error events end the turn with a public error", () => {
   assert.equal(events.length, 2);
 });
 
+test("an errored turn ends at agent_end and says whether pi will retry it", () => {
+  const events = [];
+  const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ type, data }) });
+  const failed = { role: "assistant", stopReason: "error", errorMessage: "500 Credential placeholder could not be resolved" };
+  for (const willRetry of [true, false]) {
+    const st = { liveRecords: new Map(), pendingMessages: [], msgId: null, turnId: "turn-1", turnEnded: false };
+    supervisor._onEvent("session-1", st, { type: "turn_end", message: failed, toolResults: [] });
+    assert.equal(events.length, 0, "pi's turn_end alone does not end the turn");
+    supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry });
+    assert.deepEqual(events.splice(0), [{ type: "turn_end", data: { turnId: "turn-1", reason: "errored", error: "500 Credential placeholder could not be resolved", ...(willRetry ? { willRetry } : {}) } }]);
+  }
+});
+
 test("manual compact reports expected no-op states instead of an internal error", async () => {
   const supervisor = new RealSupervisor({});
   for (const [message, expected] of [

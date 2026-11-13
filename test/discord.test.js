@@ -193,6 +193,36 @@ test("a turn end DMs only the turn's final reply", async () => {
   notifier.stop();
 });
 
+test("a failed turn DMs once, after pi's automatic retries are over", async () => {
+  const attempt = (notifier, end) => {
+    notifier.event("a1", "turn_start", {});
+    notifier.event("a1", "message_start", { messageId: "m", role: "assistant" });
+    if (end.reason === "done") notifier.event("a1", "text_delta", { delta: "All good." });
+    notifier.event("a1", "message_end", {});
+    notifier.event("a1", "turn_end", end);
+  };
+  const failed = { reason: "errored", error: "500 placeholder", willRetry: true };
+
+  let { notifier, sent } = setup({ agents: { a1: "bot" } });
+  for (let i = 0; i < 3; i++) attempt(notifier, failed);
+  attempt(notifier, { reason: "errored", error: "500 placeholder" });
+  await flush();
+  assert.deepEqual(sent.map(m => m.content), ["**Title a1** (bot) failed <https://pi.example/?s=a1>\n500 placeholder"]);
+
+  ({ notifier, sent } = setup({ agents: { a1: "bot" } }));
+  attempt(notifier, failed);
+  attempt(notifier, failed);
+  attempt(notifier, { reason: "done" });
+  await flush();
+  assert.deepEqual(sent.map(m => m.content), ["**Title a1** (bot) <https://pi.example/?s=a1>\nAll good."]);
+
+  ({ notifier, sent } = setup({ agents: { a1: "bot" } }));
+  attempt(notifier, { reason: "errored", error: "bad request" });
+  await flush();
+  assert.deepEqual(sent.map(m => m.content), ["**Title a1** (bot) failed <https://pi.example/?s=a1>\nbad request"]);
+  notifier.stop();
+});
+
 test("long replies are split at paragraphs, lines or spaces, and a cut code fence is reopened", async () => {
   const words = splitMessage("word ".repeat(1000).trim());
   assert.ok(words.length === 3 && words.every(p => p.length <= 2000 && p.split(" ").every(w => w === "word")));
