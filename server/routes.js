@@ -44,6 +44,7 @@ import { register as registerBranches } from "./routes/branches.js";
 import { register as registerSettings } from "./routes/settings.js";
 import { registerRemoteRoutes, remoteWorkspacesFromEnv } from "./remote-workspaces.js";
 import { registerMockWorkers } from "./supervisor/mock.js";
+import { runDoorFromEnv } from "./run-door.js";
 
 export function buildApi(sup, { extensionUi = null } = {}) {
   const api = new Hono();
@@ -56,6 +57,7 @@ export function buildApi(sup, { extensionUi = null } = {}) {
   const github = new GitHubClient();
   const githubFlows = new GitHubDeviceFlowManager(github);
   const remote = remoteWorkspacesFromEnv(process.env, { hub, github, sup });
+  if (remote) runDoorFromEnv(process.env, remote);
   const deps = {
     remote, sup, extensionUi, hub, github, githubFlows, authFlows, guardedWorkspaceSessions,
     streamSSE, fs, execFile, path, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID,

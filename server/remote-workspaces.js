@@ -596,7 +596,16 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
 
+  // The run door's session create (run-door.js), as forward does for the browser's.
+  async function createSession(name, projectId, body) {
+    const res = await call(workerPath(name, `/projects/${encodeURIComponent(projectId)}/sessions`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const out = await res.json().catch(() => ({}));
+    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent); subscribe(name); }
+    return { status: res.status, body: out };
+  }
+
   return {
+    list, waitReady, createSession,
     wake, projectSynced, syncedPreview, sessionPost, sessionTitle, agentOf, markAgent,
     projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
