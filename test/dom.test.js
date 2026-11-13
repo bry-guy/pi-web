@@ -1233,6 +1233,44 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   root.querySelector("pi-project-menu [data-act='close-project-menu']").click();
   assert.ok(store.state.projectMenu, "Back from a repository returns to its project");
   assert.match(menuText(), /Plan the week/);
+
+  // The Sessions filter: above 8 sessions; every word must match a row's title, device or branch.
+  const { sessionMatches } = await import("../public/js/project-menu.js");
+  assert.ok(sessionMatches(["Fix the Bug", "laptop"], "bug LAP"));
+  assert.ok(!sessionMatches(["Fix the bug", "laptop"], "bug desktop"));
+  assert.ok(sessionMatches(["Anything"], "  "));
+  const extra = n => Array.from({ length: n }, (_, i) => ({ sessionId: `x${i}`, title: `Extra ${i}`, repo: null, device: i ? "desktop" : "phone", when: "5m" }));
+  const filterBox = () => root.querySelector("pi-project-menu .session-filter");
+  const shownTitles = () => [...root.querySelectorAll("pi-project-menu .history-entry-head strong")].map(node => node.textContent);
+  const sessionCount = () => [...root.querySelectorAll("pi-project-menu .session-history-heading")].find(node => /^Sessions/.test(node.textContent)).lastElementChild.textContent;
+  const typeFilter = text => { filterBox().value = text; filterBox().dispatchEvent(new dom.window.Event("input", { bubbles: true })); };
+  store.set({ projectMenu: { projectId: "group:eco", synced: extra(7) } });
+  assert.equal(filterBox(), null, "no filter with 8 sessions");
+  store.set({ projectMenu: { projectId: "group:eco", synced: extra(8) } });
+  assert.ok(filterBox(), "a filter with 9 sessions");
+  assert.equal(dom.window.document.activeElement, filterBox(), "focused on open on a desktop");
+  typeFilter("EXTRA 3");
+  assert.deepEqual(shownTitles(), ["Extra 3"]);
+  assert.equal(sessionCount(), "1 / 9");
+  assert.equal(dom.window.document.activeElement, filterBox(), "typing keeps focus");
+  typeFilter("extra desktop");
+  assert.equal(shownTitles().length, 7, "several words must all match, device included");
+  store.notify("state");
+  assert.equal(filterBox().value, "extra desktop", "a live update keeps the filter");
+  typeFilter("phone 3");
+  assert.deepEqual(shownTitles(), []);
+  assert.match(menuText(), /No sessions match the filter\./);
+  assert.equal(sessionCount(), "0 / 9");
+  filterBox().dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  assert.ok(store.state.projectMenu, "Esc clears a filter first");
+  assert.equal(filterBox().value, "");
+  assert.equal(shownTitles().length, 9);
+  typeFilter("plan");
+  store.set({ projectMenu: { projectId: "group:eco", synced: extra(8) } });
+  assert.equal(filterBox().value, "", "a new opening starts unfiltered");
+  filterBox().dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  assert.equal(store.state.projectMenu, null, "Esc on an empty filter closes the menu");
+
   store.set({ projectMenu: null, view: "chat", projectId: "pp-eco", sessionId: "f1", chatId: null });
   assert.equal(root.querySelector("pi-header .workspace-trigger").textContent.trim(), "eco", "a project session's header names only its project");
   assert.match(root.querySelector("pi-header [data-act='session-panel']").getAttribute("aria-label"), /^Session menu for /);
