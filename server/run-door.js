@@ -94,15 +94,17 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
     if (brief === null) return c.json({ error: "brief_too_large", message: "the brief is capped at 64 KB" }, 413);
     if (!brief.trim()) return c.json({ error: "empty_brief" }, 400);
     const model = c.req.query("model") || entry.model;
+    let id = null;
     try {
       const name = await worker(entry);
       // Checked before the session exists, so a bad model leaves no empty hidden run behind.
       if (model) {
         const list = await remote.workerGet(name, "/models");
-        if (list.status >= 300) throw fail(502, "run_failed", `could not list the worker's models (${list.body.error || list.status})`);
+        // A worker that failed to answer is worker trouble (502), not a bad model (400).
+        if (list.status >= 300 || !Array.isArray(list.body.models)) throw fail(502, "run_failed", `could not list the worker's models (${list.body.error || list.status})`);
         if (!(list.body.models || []).some(m => m.id === model)) throw fail(400, "model_unavailable", `unknown model ${model}`);
       }
-      const id = await createSession(name, entry, `${entry.agent}: ${now().toISOString().slice(0, 16).replace("T", " ")}`);
+      id = await createSession(name, entry, `${entry.agent}: ${now().toISOString().slice(0, 16).replace("T", " ")}`);
       if (model) {
         const set = await remote.sessionPost(id, "/model", { model });
         if (set.status >= 300) throw fail(502, "run_failed", `could not set the model (${set.body.error || set.status})`);
@@ -112,7 +114,9 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
       log(`pi-ez-web: run door started ${entry.agent} in ${entry.project} (session ${id})`);
       return c.json({ session: id, ...(publicUrl ? { url: `${publicUrl.replace(/\/+$/, "")}/?s=${id}` } : {}) }, 202);
     } catch (e) {
-      log(`pi-ez-web: run door could not start ${entry.agent}: ${e.message}`);
+      log(`pi-ez-web: run door could not start ${entry.agent}: ${e.message}${id ? ` (run ${id} is marked reported, so it is not checked again)` : ""}`);
+      // The run never got its brief: nothing to report, and reconcile must not re-check it forever.
+      if (id) remote.markReported(id);
       return c.json({ error: e.error || "run_failed", message: e.error ? e.message : `could not start the run${typeof e.code === "string" ? ` (${e.code})` : ""}` }, e.status || 502);
     }
   });
@@ -121,7 +125,16 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
 }
 
 const PRIME_TURN_ENDS = new Set(["done", "errored"]);
-const MAX_REPORT = 200 * 1024; // under the worker's 256 KB /note cap
+const MAX_REPORT = 120 * 1024; // UTF-8 bytes; under the worker's 256 KB /note cap even if JSON escaping doubles it
+
+/** `text` cut to MAX_REPORT UTF-8 bytes, never inside a character. */
+function truncate(text) {
+  const buf = Buffer.from(text);
+  if (buf.length <= MAX_REPORT) return text;
+  let end = MAX_REPORT;
+  while ((buf[end] & 0xc0) === 0x80) end--; // a continuation byte: back up to the character's start
+  return `${buf.subarray(0, end).toString("utf8")}\n\n…(truncated, open the run)`;
+}
 
 /** The last reply of a transcript's last turn, or "". */
 const finalReply = records => {
@@ -176,15 +189,17 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
     return pending.get(entry.agent);
   }
 
-  // Posts the report into the conversation, then DMs it; marked reported either way, so it is never sent twice.
+  // Posts the report into the conversation and DMs it. Marked reported only once the note is stored; the DM is
+  // recorded apart (`dmed`), so a later reconcile retries the note without DMing again.
   async function report(entry, runId, { reason, error }, transcript = null) {
-    const [meta, records] = await Promise.all([
+    const [meta, t] = await Promise.all([
       remote.sessionGet(runId, "/meta"),
       reason === "done" ? transcript || remote.sessionGet(runId, "/transcript") : null,
-    ]).then(([m, t]) => [m, t?.body?.records]);
-    const text = reason === "done" ? finalReply(records) : "";
-    let body = reason === "errored" ? `Failed: ${error || "unknown error"}` : text || "Finished with no reply.";
-    if (body.length > MAX_REPORT) body = `${body.slice(0, MAX_REPORT)}\n\n…(truncated, open the run)`;
+    ]);
+    // An unreadable transcript is not an empty run: leave it for the next reconcile.
+    if (reason === "done" && (t?.status !== 200 || !Array.isArray(t.body?.records))) throw new Error(`its transcript could not be read (${t?.body?.error || t?.status})`);
+    const text = reason === "done" ? finalReply(t.body.records) : "";
+    const body = truncate(reason === "errored" ? `Failed: ${error || "unknown error"}` : text || "Finished with no reply.");
     const when = now().toISOString().slice(0, 16).replace("T", " ");
     const name = String(meta.body?.name || entry.agent).replace(/\s+/g, " ");
     const head = `**${name}** · ended ${when} UTC · [open the run](/?s=${encodeURIComponent(runId)})`;
@@ -196,8 +211,10 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
       const sent = await remote.sessionPost(id, "/note", { text: `${label}\n\n${body}`, details: { agent: entry.agent, run: runId, outcome: reason, head } });
       if (sent.status >= 300) throw new Error(`the conversation refused it (${sent.body.error || sent.status})`);
       target = id;
+      remote.markReported(runId);
     } catch (e) { log(`pi-ez-web: ${entry.agent}'s run ${runId} was not reported: ${e.message}`); }
-    remote.markReported(runId);
+    if (remote.agentOf(runId)?.dmed) return;
+    remote.markReported(runId, "dmed");
     await dm(runId, { reason, error, text, target });
   }
 
@@ -212,22 +229,29 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
   }
 
   // Workers keep no event backlog: a run that ended while web was down or not listening is found here.
-  async function reconcile() {
+  // Only runs on `workspace`, which just connected (so is running: nothing here wakes a worker), one read each.
+  async function reconcile(workspace) {
     for (const id of remote.unreportedRuns()) {
-      if (reporting.has(id)) continue;
+      if (reporting.has(id) || await remote.owner("session", id) !== workspace) continue;
       const t = await remote.sessionGet(id, "/transcript").catch(() => null);
-      const records = t?.status === 200 && !t.body.streaming ? t.body.records || [] : [];
+      // Still running (the live turn_end reports it), unreadable, or no brief yet: next time.
+      if (t?.status !== 200 || t.body.streaming || !Array.isArray(t.body.records)) continue;
+      const records = t.body.records;
       const brief = records.findLastIndex(r => r.role === "user");
-      const last = brief < 0 ? null : records.slice(brief + 1).findLast(r => r.role === "assistant" || r.role === "error");
+      const last = brief < 0 ? null : records.slice(brief + 1).findLast(r => ["assistant", "error", "tool"].includes(r.role));
       if (!last) continue;
       log(`pi-ez-web: run ${id} ended while web was not listening; reporting it now`);
-      await settle(id, last.role === "error" ? { reason: "errored", error: last.text } : { reason: "done" }, t);
+      // A turn that ends in a tool call never got its final reply: the worker stopped mid-turn.
+      const outcome = last.role === "error" ? { reason: "errored", error: last.text }
+        : last.role === "tool" || last.toolIds?.length ? { reason: "errored", error: "interrupted: the worker stopped before the run finished" }
+        : { reason: "done" };
+      await settle(id, outcome, t);
     }
   }
 
   function event(sessionId, type, data = {}) {
     // Returns the work it started (for tests); callers need not wait.
-    if (type === "worker_connected") return reconcile().catch(e => log(`pi-ez-web: checking for unreported runs failed: ${e.message}`));
+    if (type === "worker_connected") return reconcile(data.workspace).catch(e => log(`pi-ez-web: checking for unreported runs failed: ${e.message}`));
     // Only a turn's final end: a failed attempt pi retries reports through the retry's own end.
     if (type !== "turn_end" || data.willRetry || !PRIME_TURN_ENDS.has(data.reason)) return;
     return settle(sessionId, data);

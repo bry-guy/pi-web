@@ -128,7 +128,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
 
   // Agent sessions: sessionId → { agent, kind }. kind "agent": created with `agent: "<name>"` (older files hold
   // the bare name); "run": a run-door run, hidden, reporting into its prime's one "conversation".
-  // A run gets `reported: true` once its report went out.
+  // A run gets `reported: true` once its report is in the conversation, `dmed: true` once DMed.
   const agentsPath = cachePath ? path.join(path.dirname(cachePath), "agent-sessions.json") : null;
   let agents = {};
   try { agents = agentsPath ? JSON.parse(readFileSync(agentsPath, "utf8")) : {}; } catch { agents = {}; }
@@ -136,12 +136,14 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     if (typeof id !== "string" || !id) return;
     if (name === null) delete agents[id];
     else if (typeof name !== "string" || !name.trim()) return;
-    else agents[id] = { agent: name.trim().slice(0, 100), kind: ["run", "conversation"].includes(kind) ? kind : "agent" };
+    // kind "agent" stays the bare name older builds read; only runs and conversations are objects.
+    else agents[id] = ["run", "conversation"].includes(kind) ? { agent: name.trim().slice(0, 100), kind } : name.trim().slice(0, 100);
     saveAgents();
   }
-  function markReported(id) {
+  // `reported`: the report is in the conversation; `dmed`: it was DMed.
+  function markReported(id, key = "reported") {
     if (agents[id]?.kind !== "run") return;
-    agents[id].reported = true;
+    agents[id][key] = true;
     saveAgents();
   }
   function saveAgents() {

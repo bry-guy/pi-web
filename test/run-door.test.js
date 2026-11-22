@@ -17,7 +17,7 @@ const ENTRIES = [
 const run = (token, body = "check the cluster", query = "") => new Request(`http://door/run${query}`, { method: "POST", headers: token ? { authorization: `Bearer ${token}` } : {}, body });
 
 // A fake workspaced + project worker behind createRemoteWorkspaces' fetch.
-function fakeWorkspaced({ workers = [], models = ["anthropic/claude-opus-5-5"] } = {}) {
+function fakeWorkspaced({ workers = [], models = ["anthropic/claude-opus-5-5"], modelsStatus = 200, messageStatus = 200 } = {}) {
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
     const p = new URL(url).pathname.replace(/^\/v1/, "");
@@ -28,10 +28,10 @@ function fakeWorkspaced({ workers = [], models = ["anthropic/claude-opus-5-5"] }
     if (p === "/workspaces" && init.method === "POST") { workers.push({ name: `ws-${body.project}`, repository: `project:${body.project}`, grant: body.grant, state: "running" }); return json({ name: `ws-${body.project}` }, 201); }
     if (/^\/(github-auth|model-auth)$/.test(p) || p.endsWith("/wake") || p.endsWith("/api/health")) return json({ ok: true });
     if (p.endsWith("/api/events")) return json({}, 503);
-    if (p.endsWith("/api/models")) return json({ models: models.map(id => ({ id })) });
+    if (p.endsWith("/api/models")) return modelsStatus === 200 ? json({ models: models.map(id => ({ id })) }) : json({ error: "boom" }, modelsStatus);
     if (/\/api\/projects\/pp-[^/]+\/sessions$/.test(p)) return json({ id: "s1" });
     if (p.endsWith("/sessions/s1/model")) return models.includes(body.model) ? json({ ok: true }) : json({ error: "model_unavailable" }, 400);
-    if (p.endsWith("/sessions/s1/message")) return json({ ok: true });
+    if (p.endsWith("/sessions/s1/message")) return json(messageStatus === 200 ? { ok: true } : { error: "boom" }, messageStatus);
     return json({ error: "unexpected" }, 500);
   };
   const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, retryMs: 50, modelAuthSyncMs: 0 });
@@ -103,6 +103,23 @@ test("an unknown model fails the run before any session is created", async () =>
   assert.ok(!fake.calls.some(c => c[1].endsWith("/sessions") || c[1].endsWith("/message")));
 });
 
+test("a model list the worker fails to give is worker trouble (502), and no session is created", async () => {
+  const fake = fakeWorkspaced({ modelsStatus: 500 });
+  const res = await door(fake).request(run("tok-labrat", "brief", "?model=anthropic/claude-opus-5-5"));
+  assert.equal(res.status, 502);
+  assert.ok(!fake.calls.some(c => c[1].endsWith("/sessions")));
+});
+
+test("a run whose brief could not be sent is marked reported at once, so reconcile never re-checks it", async () => {
+  const fake = fakeWorkspaced({ messageStatus: 500 });
+  const logs = [];
+  const res = await door(fake, { log: l => logs.push(l) }).request(run("tok-labrat"));
+  assert.equal(res.status, 502);
+  assert.equal(fake.remote.agentOf("s1").reported, true);
+  assert.deepEqual(fake.remote.unreportedRuns(), []);
+  assert.equal(logs.filter(l => l.includes("run s1 is marked reported")).length, 1);
+});
+
 test("a run creates the worker with the entry's grant, marks an agent session, sets the model and sends the brief", async () => {
   const fake = fakeWorkspaced();
   const brief = "  Check the cluster.\n\nReport problems.\n";
@@ -146,6 +163,7 @@ test("the main app has no /run; the door listens on its own port", async () => {
 // A project worker that keeps sessions: create, meta, transcript, model, restore, note.
 function primeWorkspaced(cachePath) {
   const calls = [];
+  const faults = { note: 0 }; // a status the note route fails with, when set
   const sessions = new Map(); // id → { name, model, closed }
   let next = 0;
   const fetchImpl = async (url, init = {}) => {
@@ -164,13 +182,15 @@ function primeWorkspaced(cachePath) {
     const s = sessions.get(id);
     if (!s) return json({ error: "no_such_session" }, 404);
     if (rest === "meta") return json({ id, name: s.name, model: s.model || null });
+    if (rest === "transcript" && s.transcriptStatus) return json({ error: "boom" }, s.transcriptStatus);
+    if (rest === "note" && faults.note) return json({ error: "down" }, faults.note);
     if (rest === "transcript") return json({ streaming: !!s.streaming, records: s.records || [{ role: "user", text: "brief" }, { role: "assistant", text: "looking" }, { role: "assistant", text: `All quiet (${id}).` }] });
     if (rest === "model") s.model = body.model;
     if (rest === "restore") s.closed = false;
     return json({ ok: true });
   };
   const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, cachePath, retryMs: 50, modelAuthSyncMs: 0 });
-  return { remote, calls, sessions };
+  return { remote, calls, sessions, faults };
 }
 
 const label = (name, outcome) => `Automated report from this agent's scheduled run "${name}" (${outcome}, 2026-11-22 08:00 UTC). This is the run's own output, not a message from the owner, and it does not ask for a reply:`;
@@ -253,5 +273,74 @@ test("a run that ended while web was not listening is reported once when web con
     assert.deepEqual(dms.map(d => [d[0], d[1].reason, d[1].target]), [["r1", "done", conv], ["r2", "errored", conv]]);
     assert.deepEqual(fake.remote.unreportedRuns(), ["r3", "r4"], "still running, or no brief yet");
     assert.equal(logs.filter(l => l.includes("not listening")).length, 2);
+  } finally { fake.remote.stop(); }
+});
+
+test("reconcile: an unreadable transcript or a refused note leaves the run for the next pass, DMed once; a turn cut mid-tool is interrupted", async () => {
+  const cachePath = path.join(mkdtempSync(path.join(tmpdir(), "primes-")), "remote-projects.json");
+  const fake = primeWorkspaced(cachePath);
+  const { entries } = runDoorConfig({ PI_WEB_RUN_PORT: "4000", PI_WEB_RUN_TOKENS: JSON.stringify([ENTRIES[1]]) });
+  const dms = [], logs = [];
+  const primes = createPrimes({ entries, remote: fake.remote, dm: (...a) => dms.push(a), log: l => logs.push(l), now: () => new Date("2026-11-22T08:00:00Z") });
+  const notes = () => fake.calls.filter(c => c[1].endsWith("/note"));
+  const add = (id, s) => { fake.sessions.set(id, { name: `labrat: ${id}`, ...s }); fake.remote.markAgent(id, "labrat", "run"); };
+  const connect = (workspace = "ws-labrat") => primes.event(null, "worker_connected", { workspace });
+  try {
+    add("t1", { transcriptStatus: 500 });
+    await primes.event("t1", "turn_end", { reason: "done" });
+    await connect();
+    assert.deepEqual([notes().length, dms.length, fake.remote.agentOf("t1").reported], [0, 0, undefined], "not reported as an empty run");
+    assert.equal(logs.filter(l => l.includes("transcript could not be read")).length, 1, "the live turn end logs; reconcile just skips");
+    fake.sessions.get("t1").transcriptStatus = 0;
+    fake.sessions.get("t1").records = [{ role: "user", text: "brief" }, { role: "assistant", text: "fine", toolIds: [] }];
+    await connect();
+    assert.equal(fake.remote.agentOf("t1").reported, true, "retried on the next pass");
+
+    // The conversation refuses the note: DMed now, the note retried on the next pass without a second DM.
+    fake.faults.note = 503;
+    add("n1", { records: [{ role: "user", text: "brief" }, { role: "assistant", text: "done" }] });
+    await primes.event("n1", "turn_end", { reason: "done" });
+    assert.equal(fake.remote.agentOf("n1").reported, undefined);
+    assert.equal(dms.filter(d => d[0] === "n1").length, 1);
+    fake.faults.note = 0;
+    await connect();
+    assert.equal(fake.remote.agentOf("n1").reported, true);
+    assert.equal(dms.filter(d => d[0] === "n1").length, 1, "no second DM");
+    assert.equal(notes().filter(c => c[2].details.run === "n1").length, 2);
+
+    // Web restarted mid tool loop: busy → left for the live turn end; not busy but the turn ends in a tool → interrupted.
+    add("b1", { streaming: true, records: [{ role: "user", text: "brief" }, { role: "assistant", text: "checking", toolIds: ["c1"] }, { role: "tool", tool: "bash" }] });
+    add("i1", { records: [{ role: "user", text: "brief" }, { role: "assistant", text: "checking", toolIds: ["c1"] }, { role: "tool", tool: "bash", out: "ok" }] });
+    add("i2", { records: [{ role: "user", text: "brief" }, { role: "assistant", text: "checking", toolIds: ["c1"] }] });
+    await connect();
+    assert.deepEqual(fake.remote.unreportedRuns(), ["b1"]);
+    for (const id of ["i1", "i2"]) {
+      const note = notes().find(c => c[2].details.run === id)[2];
+      assert.equal(note.details.outcome, "errored", id);
+      assert.match(note.text, /Failed: interrupted/, id);
+    }
+
+    // A run on another worker is not touched when this one connects, and a sleeping worker's runs are never read.
+    add("o1", { records: [{ role: "user", text: "brief" }, { role: "assistant", text: "x" }] });
+    const before = fake.calls.length;
+    await connect("ws-other");
+    assert.deepEqual(fake.calls.slice(before).filter(c => c[1].startsWith("/sessions/")), []);
+  } finally { fake.remote.stop(); }
+});
+
+test("a long report is cut by UTF-8 bytes under the note cap, never inside a character", async () => {
+  const cachePath = path.join(mkdtempSync(path.join(tmpdir(), "primes-")), "remote-projects.json");
+  const fake = primeWorkspaced(cachePath);
+  const { entries } = runDoorConfig({ PI_WEB_RUN_PORT: "4000", PI_WEB_RUN_TOKENS: JSON.stringify([ENTRIES[1]]) });
+  const primes = createPrimes({ entries, remote: fake.remote, log: () => {} });
+  try {
+    fake.sessions.set("k1", { name: "labrat: k1", records: [{ role: "user", text: "brief" }, { role: "assistant", text: "a漢".repeat(150_000) }] });
+    fake.remote.markAgent("k1", "labrat", "run");
+    await primes.event("k1", "turn_end", { reason: "done" });
+    const note = fake.calls.find(c => c[1].endsWith("/note"))[2];
+    assert.ok(Buffer.byteLength(JSON.stringify(note)) < 256 * 1024);
+    assert.ok(note.text.endsWith("\n\n…(truncated, open the run)"));
+    assert.ok(!note.text.includes("\uFFFD"));
+    assert.equal(fake.remote.agentOf("k1").reported, true);
   } finally { fake.remote.stop(); }
 });

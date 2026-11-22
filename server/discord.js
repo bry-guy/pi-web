@@ -118,7 +118,8 @@ export function createNotifier({ userId, baseUrl, transport, post, titleOf = () 
   // An agent session or run has no one watching; a conversation is DMed like any session, when the owner wrote from Discord.
   const unattended = id => ["agent", "run"].includes(agentOf(id)?.kind);
   const agentName = id => agentOf(id)?.agent || null;
-  const dms = id => agentOf(id)?.kind === "agent" || viaDiscord.has(id);
+  // A prime's run not yet reported is DMed by its report (run-door.js) alone.
+  const dms = id => agentOf(id)?.kind === "agent" || (viaDiscord.has(id) && !(agentOf(id)?.kind === "run" && !agentOf(id).reported));
 
   // One queue for every message, so a notice's parts go out in order and are not interleaved with another's.
   let queue = Promise.resolve();

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
@@ -634,6 +634,8 @@ test("agent-sessions.json: an old bare name reads as an agent session, and sessi
     remote.markAgent("a1", "nightly");
     remote.markAgent("r1", "labrat", "run");
     assert.deepEqual(remote.agentOf("a1"), { agent: "nightly", kind: "agent" }, "only the run door marks runs");
+    const onDisk = JSON.parse(readFileSync(path.join(path.dirname(cachePath), "agent-sessions.json"), "utf8"));
+    assert.deepEqual([onDisk.a1, onDisk.r1], ["nightly", { agent: "labrat", kind: "run" }], "an agent session stays the bare name older builds read");
     assert.equal(remote.conversationOf("labrat"), "c0");
     remote.markAgent("c0", null);
     assert.equal(remote.conversationOf("labrat"), null);
@@ -643,4 +645,19 @@ test("agent-sessions.json: an old bare name reads as an agent session, and sessi
     assert.deepEqual(flags(project.sessions), [["c0", "labrat", "conversation", [["f0", undefined, undefined]]], ["r0", "labrat", "run"], ["a0", "nightly", "agent"], ["s0", undefined, undefined]]);
     assert.deepEqual(project.ended.map(s => s.id), ["a1", "e1"], "an ended run is not a past session");
   } finally { remote.stop(); }
+});
+
+test("a Discord message to a run not yet reported gets one DM, from the report; after the report its turns DM as usual", async () => {
+  const agents = { r1: { agent: "labrat", kind: "run" } };
+  const { notifier, sent } = setup({ agents });
+  notifier.event("r1", "user_record", { record: { role: "user" }, clientMessageId: "discord:u1" });
+  turn(notifier, "r1", "first");
+  await flush();
+  assert.equal(sent.length, 0, "the report DMs this one");
+  agents.r1.reported = true;
+  notifier.event("r1", "user_record", { record: { role: "user" }, clientMessageId: "discord:u2" });
+  turn(notifier, "r1", "second");
+  await flush();
+  assert.equal(sent.length, 1);
+  notifier.stop();
 });
