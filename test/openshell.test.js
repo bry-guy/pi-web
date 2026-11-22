@@ -99,7 +99,8 @@ function fakePrimary(names = ["plain"]) {
 
 test("grants: provider openshell takes an egress list; other grants keep the label; bad shapes fail", () => {
   assert.equal(GRANTS.sandboxed.provider, "openshell");
-  assert.deepEqual(GRANTS.sandboxed.egress[1], { host: "registry.npmjs.org", port: 443, binaries: ["/usr/local/bin/node", "/usr/bin/git"], allowEncodedSlash: true });
+  assert.deepEqual(GRANTS.sandboxed.egress[1], { host: "registry.npmjs.org", port: 443, access: "full", binaries: ["/usr/local/bin/node", "/usr/bin/git"], allowEncodedSlash: true });
+  assert.equal(GRANTS.sandboxed.egress[0].access, "full", "access defaults to full");
   assert.equal(GRANTS.default.provider, null);
   assert.equal(GRANTS.default.egress, null);
   assert.deepEqual(parseGrants(JSON.stringify({ default: { anyProject: true, provider: "openshell" } })).default.egress, [], "default deny");
@@ -111,6 +112,8 @@ test("grants: provider openshell takes an egress list; other grants keep the lab
   assert.throws(bad({ provider: "openshell", egress: [{ host: "a b", port: 1 }] }), /host is not a host name/);
   assert.throws(bad({ provider: "openshell", egress: [{ host: "a.b", port: 1, binaries: ["node"] }] }), /absolute paths/);
   assert.throws(bad({ provider: "openshell", egress: [{ host: "a.b", port: 1, protocol: "tcp" }] }), /unknown fields protocol/);
+  assert.throws(bad({ provider: "openshell", egress: [{ host: "a.b", port: 1, access: "write" }] }), /egress\[0\]\.access must be one of read-only, read-write, full/);
+  assert.throws(bad({ provider: "openshell", egress: [{ host: "a.b", port: 1, access: null, x: 1 }] }), /unknown fields x/);
   assert.throws(bad({ provider: "openshell", env: ["s"] }), /env is not supported/);
   assert.throws(bad({ provider: "openshell", serviceAccount: "sa" }), /serviceAccount is not supported/);
 });
@@ -131,6 +134,22 @@ test("the policy is the worker base plus the grant's egress, default deny", () =
     binaries: [{ path: "/usr/local/bin/node" }] });
   assert.equal(rules["egress-2"].endpoints[0].allow_encoded_slash, true);
   assert.deepEqual(rules["egress-2"].binaries, [{ path: "/usr/local/bin/node" }, { path: "/usr/bin/git" }]);
+  // A rule without access renders exactly as before access existed.
+  assert.equal(JSON.stringify(rules["egress-2"]), JSON.stringify({ name: "registry.npmjs.org:443",
+    endpoints: [{ host: "registry.npmjs.org", port: 443, protocol: "rest", enforcement: "enforce", access: "full", allow_encoded_slash: true }],
+    binaries: [{ path: "/usr/local/bin/node" }, { path: "/usr/bin/git" }] }));
+  for (const access of ["read-only", "read-write", "full"]) {
+    const g = parseGrants(JSON.stringify({ default: { anyProject: true }, g: { anyProject: true, provider: "openshell", egress: [{ host: "a.b", port: 1, access }] } })).g;
+    assert.equal(sandboxPolicy(g).network_policies["egress-1"].endpoints[0].access, access);
+  }
+});
+
+test("the committed grants.json parses, and labrat reads its cluster services read-only", () => {
+  const grants = parseGrants(readFileSync(new URL("../deploy/k8s/workspaced/grants.json", import.meta.url), "utf8"), { log: m => assert.fail(m) });
+  const labrat = grants.labrat;
+  assert.deepEqual(labrat.providers, ["labrat-seerr", "labrat-romarr", "labrat-questarr"]);
+  assert.ok(labrat.egress.every(r => r.access === "read-only"));
+  assert.deepEqual(Object.values(sandboxPolicy(labrat).network_policies).map(p => p.endpoints[0].access), ["read-only", "read-only", "read-only", "read-write"]);
 });
 
 test("openshell create makes a labelled PVC, then a sandbox with the worker's env, disk, port and policy", async () => {

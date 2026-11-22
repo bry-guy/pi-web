@@ -26,6 +26,8 @@ export const SANDBOX_ENV = ["HOST", "PI_ANTHROPIC_PLACEHOLDER_FILE", "PI_WEB_PAC
 const RESERVED_ENV = new Set([...workerEnv({ name: "x", repository: "project:x" }).map(e => e.name), ...SANDBOX_ENV]);
 const KNOWN_KEYS = new Set(["anyProject", "repos", "env", "namespace", "serviceAccount", "runtimeClass", "provider", "egress", "description", "providers", "environment", "packages"]);
 const OPENSHELL_ONLY = ["providers", "environment", "packages"];
+// OpenShell endpoint presets: read-only = GET/HEAD/OPTIONS, read-write adds POST/PUT/PATCH, full = every method.
+const ACCESS = ["read-only", "read-write", "full"];
 
 // An OpenShell grant's gateway providers, plain environment and pi packages.
 function parseSandboxFields(name, g) {
@@ -50,13 +52,14 @@ function parseEgressRules(name, rules) {
   return rules.map((r, i) => {
     const at = `${name}.egress[${i}]`;
     if (!r || typeof r !== "object") fail(`${at} must be an object`);
-    const unknown = Object.keys(r).filter(k => !["host", "port", "binaries", "allowEncodedSlash"].includes(k));
+    const unknown = Object.keys(r).filter(k => !["host", "port", "binaries", "allowEncodedSlash", "access"].includes(k));
     if (unknown.length) fail(`${at} has unknown fields ${unknown.join(", ")}`);
     if (typeof r.host !== "string" || !HOST.test(r.host)) fail(`${at}.host is not a host name`);
     if (!Number.isInteger(r.port) || r.port < 1 || r.port > 65535) fail(`${at}.port must be a port number`);
     if (r.binaries != null && !(Array.isArray(r.binaries) && r.binaries.every(b => typeof b === "string" && b.startsWith("/")))) fail(`${at}.binaries must be absolute paths`);
     if (r.allowEncodedSlash != null && typeof r.allowEncodedSlash !== "boolean") fail(`${at}.allowEncodedSlash must be true or false`);
-    return { host: r.host, port: r.port, ...(r.binaries ? { binaries: r.binaries } : {}), ...(r.allowEncodedSlash ? { allowEncodedSlash: true } : {}) };
+    if (r.access != null && !ACCESS.includes(r.access)) fail(`${at}.access must be one of ${ACCESS.join(", ")}`);
+    return { host: r.host, port: r.port, access: r.access ?? "full", ...(r.binaries ? { binaries: r.binaries } : {}), ...(r.allowEncodedSlash ? { allowEncodedSlash: true } : {}) };
   });
 }
 

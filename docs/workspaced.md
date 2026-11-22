@@ -93,16 +93,19 @@ What it gets: the variables of `workerEnv` (paths, port, project; the same `HOME
 
 ```json
 "agent": { "anyProject": true, "provider": "openshell",
-  "egress": [{ "host": "github.com", "port": 443 }],
-  "providers": ["labrat-kube"],
+  "egress": [{ "host": "github.com", "port": 443 },
+             { "host": "loki.observability.svc.cluster.local", "port": 3100, "access": "read-only" }],
+  "providers": ["agent-github"],
   "environment": { "TZ": "UTC" },
   "packages": ["npm:@gotgenes/pi-anthropic-auth@3.4.4"] }
 ```
 
+The `labrat` grant in `deploy/k8s/workspaced/grants.json` is the production example: Claude through the gateway (the model login below); the cluster read through the `labrat-kube` relay (a `kubectl proxy` that only serves GET, reached by an egress rule and `KUBERNETES_MASTER`; the sandbox holds no cluster credential); Prometheus and Loki through `read-only` egress rules (`PROMETHEUS_URL`, `LOKI_URL`); and the Seerr, ROMarr and Questarr APIs through the gateway providers `labrat-seerr`, `labrat-romarr` and `labrat-questarr`, whose keys the sandbox sees only as placeholders in `SEERR_API_KEY`, `ROMARR_API_KEY` and `QUESTARR_API_KEY` (URLs in `SEERR_URL`, `ROMARR_URL`, `QUESTARR_URL`). A service reached through a provider needs no egress rule: the provider's profile carries its endpoints. No GitHub, no other network.
+
 | Field (OpenShell grants only; others refuse them) | Effect |
 | --- | --- |
-| `egress` | Each endpoint becomes a `rest`, `enforce`, `access: full` rule for `binaries` (default `/usr/local/bin/node`, which covers every process the worker starts). `allowEncodedSlash` is for npm scoped packages. The sandbox resolver has no search domains, so name cluster hosts in full |
-| `providers` | Gateway provider names, each attached with `--provider`. You create them on the gateway. `pi-web-anthropic` is workspaced's own and may not be listed |
+| `egress` | Each endpoint becomes a `rest`, `enforce` rule for `binaries` (default `/usr/local/bin/node`, which covers every process the worker starts). `allowEncodedSlash` is for npm scoped packages. `access` is the gateway's method preset: `read-only` (GET, HEAD, OPTIONS), `read-write` (adds POST, PUT, PATCH; no DELETE) or `full` (every method, the default); anything else is refused. The sandbox resolver has no search domains, so name cluster hosts in full |
+| `providers` | Gateway provider names, each attached with `--provider`. You create them on the gateway first: workspaced does not check them, and creating a sandbox whose grant names a provider the gateway lacks fails. `pi-web-anthropic` is workspaced's own and may not be listed |
 | `environment` | Plain, non-secret variables (`--env`). Names starting with `OPENSHELL_` (the CLI's) and the ones workspaced sets are refused |
 | `packages` | pi package sources the worker loads on top of its config (a sandbox worker has no dotfiles profile). Any `npm:` source adds a `registry.npmjs.org` rule |
 
