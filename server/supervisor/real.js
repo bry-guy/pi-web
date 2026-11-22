@@ -421,7 +421,7 @@ export class RealSupervisor {
     return this.live.get(session.sessionId);
   }
 
-  _endTurnWithError(id, st, error) {
+  _endTurnWithError(id, st, error, willRetry = false) {
     if (st.turnEnded) return;
     st.turnEnded = true;
     st.pendingMessages = [];
@@ -429,7 +429,18 @@ export class RealSupervisor {
     const record = st.msgId && st.liveRecords?.get(st.msgId);
     if (record) delete record.streaming;
     if (st.msgId) this.hub.emit(id, "message_end", { messageId: st.msgId });
-    this.hub.emit(id, "turn_end", { turnId: st.turnId, reason: "errored", error: message });
+    this.hub.emit(id, "turn_end", { turnId: st.turnId, reason: "errored", error: message, ...(willRetry ? { willRetry } : {}) });
+  }
+
+  // Reports the final end of a turn whose last end said willRetry when no retry attempt started: once, as
+  // agent_start clears retryPending. Runs on a failed auto_retry_end and when the prompt's run is over.
+  _finishRetry(id, st) {
+    if (!st?.retryPending) return;
+    const { error } = st.retryPending;
+    st.retryPending = null;
+    const stopped = !!st.aborted;
+    st.aborted = false;
+    this.hub.emit(id, "turn_end", { turnId: st.turnId, reason: stopped ? "stopped" : "errored", ...(stopped ? {} : { error: turnErrorMessage(error) }) });
   }
 
   // ---- pi AgentEvent -> wire contract ----
@@ -478,6 +489,7 @@ export class RealSupervisor {
         break;
       }
       case "agent_start":
+        st.retryPending = null;
         st.turnId = `t:${id}:${Date.now().toString(36)}`;
         st.turnEnded = false;
         hub.emit(id, "turn_start", { turnId: st.turnId });
@@ -494,10 +506,6 @@ export class RealSupervisor {
         break;
       case "message_update": {
         const e = evt.assistantMessageEvent;
-        if (e?.type === "error") {
-          this._endTurnWithError(id, st, e.error);
-          break;
-        }
         if (e?.type === "thinking_delta" && e.delta && st.msgId) {
           const record = st.liveRecords.get(st.msgId);
           if (record) record.thinking = (record.thinking || "") + e.delta;
@@ -511,11 +519,7 @@ export class RealSupervisor {
         }
         break;
       }
-      case "turn_end": {
-        const error = st.aborted ? "" : assistantErrorMessage(evt.message);
-        if (error) this._endTurnWithError(id, st, error);
-        break;
-      }
+      // An errored pi turn_end is followed at once by agent_end, which ends the turn: only it knows whether pi will retry.
       case "message_end":
         if (evt.message?.role === "assistant" && st.msgId) {
           const record = st.liveRecords.get(st.msgId);
@@ -563,7 +567,9 @@ export class RealSupervisor {
       case "agent_end": {
         const error = st.aborted ? "" : [...(evt.messages || [])].reverse().map(assistantErrorMessage).find(Boolean);
         if (error) {
-          this._endTurnWithError(id, st, error);
+          const ended = !st.turnEnded;
+          this._endTurnWithError(id, st, error, evt.willRetry === true);
+          if (ended && evt.willRetry === true) st.retryPending = { error };
           break;
         }
         if (st.turnEnded) break;
@@ -573,6 +579,10 @@ export class RealSupervisor {
         hub.emit(id, "turn_end", { turnId: st.turnId, reason });
         break;
       }
+      // pi announced a retry (agent_end willRetry) but gave up before starting it (cancelled or aborted).
+      case "auto_retry_end":
+        if (!evt.success) this._finishRetry(id, st);
+        break;
       case "session_info_changed":
         hub.emit(id, "session_meta", { name: st.session.sessionName });
         break;
@@ -823,6 +833,7 @@ export class RealSupervisor {
   _startPrompt(id, task, onError) {
     this.pendingPrompts.set(id, (this.pendingPrompts.get(id) || 0) + 1);
     void Promise.resolve().then(task).catch(onError).finally(() => {
+      this._finishRetry(id, this.live.get(id));
       const remaining = this.pendingPrompts.get(id) - 1;
       if (remaining) this.pendingPrompts.set(id, remaining);
       else this.pendingPrompts.delete(id);

@@ -44,6 +44,11 @@ export function discordTransport({ token, userId, onMessage, fetchImpl = globalT
     await rest("PUT", `/channels/${await dmChannel()}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`);
   }
 
+  // Newest first.
+  async function recent(limit = 50) {
+    return rest("GET", `/channels/${await dmChannel()}/messages?limit=${limit}`);
+  }
+
   // Gateway
   let ws = null;
   let gatewayUrl = null;
@@ -143,7 +148,7 @@ export function discordTransport({ token, userId, onMessage, fetchImpl = globalT
   }
 
   return {
-    send, react, rest,
+    send, react, recent, rest,
     start() { stopped = false; open(false); },
     stop() {
       stopped = true;

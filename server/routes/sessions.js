@@ -65,6 +65,7 @@ export function register(api, deps) {
       await sup.message(id, messageText, mode, images, clientMessageId);
       return c.json({ ok: true });
     } catch (e) {
+      if (String(e?.message || "").startsWith("unknown session")) return err(c, 404, "no_such_session");
       if (e.code === "session_busy") return err(c, 409, e.code);
       if (e.code === "model_required") {
         return err(c, 409, "model_required", {

@@ -458,6 +458,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
           // Workers keep no event backlog; anything sent while web was not listening is gone,
           // so open transcripts reload from a snapshot instead.
           hub.emit(null, "events_resync", { workspace: name });
+          for (const [id, owner] of owners.session) if (owner === name) try { onEvent?.(id, "events_resync", {}); } catch { /* never breaks fan-in */ }
           const decoder = new TextDecoder();
           let buffer = "";
           for await (const chunk of res.body) {
