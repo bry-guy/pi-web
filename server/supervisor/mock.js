@@ -7,6 +7,7 @@ import path from "node:path";
 import { appHome, loadConfig, newId } from "../config.js";
 import { WEB_PI_COMMANDS, parseSlashCommand } from "../commands.js";
 import { PiConfiguration } from "../pi-configuration.js";
+import { reportText } from "./real.js";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const MOCK_MODELS = [
@@ -245,10 +246,10 @@ export class MockSupervisor {
     this.hub.emit(id, "session_meta", { name });
   }
 
-  async note(id, text) {
+  async note(id, text, details) {
     const s = this._load(id);
     if (!s) throw new Error(`unknown session ${id}`);
-    const record = { id: newId("r"), role: "report", text, at: Date.now() };
+    const record = { id: newId("r"), role: "report", text: reportText(text, details), at: Date.now() };
     s.records.push(record);
     this._save(s);
     this.hub.emit(id, "report", { record });

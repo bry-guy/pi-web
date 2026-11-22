@@ -809,7 +809,10 @@ test("a prime report is a custom message with no model turn, shown in the transc
   const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ type, data }) });
   const entries = [{ type: "message", id: "u1", parentId: null, message: { role: "user", content: "hi" } }];
   const calls = [];
-  const text = "**labrat: 2026-11-22 08:00** · ended 2026-11-22 08:04 UTC · [open the run](/?s=r1)\n\nAll quiet.";
+  const head = "**labrat: 2026-11-22 08:00** · ended 2026-11-22 08:04 UTC · [open the run](/?s=r1)";
+  // The model reads the label; the chat shows the header in its place.
+  const text = "Automated report from this agent's scheduled run \"labrat: 2026-11-22 08:00\" (finished, 2026-11-22 08:04 UTC). This is the run's own output, not a message from the owner, and it does not ask for a reply:\n\nAll quiet.";
+  const details = { agent: "labrat", run: "r1", outcome: "done", head };
   const at = Date.parse("2026-11-22T08:04:00Z");
   const st = {
     liveRecords: new Map(), pendingMessages: [],
@@ -825,9 +828,10 @@ test("a prime report is a custom message with no model turn, shown in the transc
     },
   };
   supervisor.live.set("conv", st);
-  await supervisor.note("conv", text, { agent: "labrat", run: "r1", outcome: "done" });
-  assert.deepEqual(calls, [[{ customType: "pi-web:prime-report", content: text, display: true, details: { agent: "labrat", run: "r1", outcome: "done" } }, { triggerTurn: false }]]);
-  const record = { id: "c1", role: "report", text, at };
+  await supervisor.note("conv", text, details);
+  assert.deepEqual(calls, [[{ customType: "pi-web:prime-report", content: text, display: true, details }, { triggerTurn: false }]]);
+  assert.equal(entries.at(-1).content, text, "the stored content, which the model reads, starts with the label");
+  const record = { id: "c1", role: "report", text: `${head}\n\nAll quiet.`, at };
   assert.deepEqual(events, [{ type: "report", data: { record } }]);
   assert.deepEqual((await supervisor.transcript("conv")).filter(r => r.role !== "user"), [record]);
   supervisor.live.delete("conv");

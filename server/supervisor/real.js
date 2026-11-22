@@ -523,7 +523,7 @@ export class RealSupervisor {
       case "message_end":
         // A prime report (note()) is appended, then announced; the leaf is its entry, so the transcript's id matches.
         if (evt.message?.role === "custom" && evt.message.customType === PRIME_REPORT) {
-          const record = reportRecord({ id: st.session.sessionManager.getLeafId?.(), content: evt.message.content, timestamp: evt.message.timestamp });
+          const record = reportRecord({ id: st.session.sessionManager.getLeafId?.(), content: evt.message.content, details: evt.message.details, timestamp: evt.message.timestamp });
           st.liveRecords.set(record.id, record);
           hub.emit(id, "report", { record });
           break;
@@ -1654,7 +1654,12 @@ function toolStartRecord(evt) {
 
 const PRIME_REPORT = "pi-web:prime-report";
 function reportRecord(entry) {
-  return { id: entry.id, role: "report", text: contentText(entry.content), at: entryTime(entry) };
+  return { id: entry.id, role: "report", text: reportText(contentText(entry.content), entry.details), at: entryTime(entry) };
+}
+// The model reads the report's first paragraph (a label saying whose words follow); the chat shows details.head there.
+export function reportText(text, details) {
+  const cut = text.indexOf("\n\n");
+  return typeof details?.head === "string" && cut >= 0 ? details.head + text.slice(cut) : text;
 }
 
 // pi-summarize writes a custom session entry that groups the tool calls it summarizes.

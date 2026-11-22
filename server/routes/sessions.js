@@ -78,7 +78,10 @@ export function register(api, deps) {
 
   // A prime's run report, posted by web into the prime's conversation: shown in the chat, no model turn.
   api.post("/sessions/:id/note", async c => {
-    const body = await c.req.json().catch(() => ({}));
+    const raw = await c.req.text();
+    if (Buffer.byteLength(raw) > 256 * 1024) return err(c, 413, "note_too_large");
+    let body = {};
+    try { body = JSON.parse(raw); } catch { /* empty below */ }
     const text = typeof body?.text === "string" ? body.text.trim() : "";
     if (!text) return err(c, 400, "empty_message");
     try {

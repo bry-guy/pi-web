@@ -366,3 +366,14 @@ test("the extension compile cache survives restarts via a link into the cache di
   assert.equal(fs.readlinkSync(path.join(dir, "tmp", "jiti")), path.join(dir, "cache", "pi-ez-web", "jiti"));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("a prime report note shows its header in the chat and is capped at 256 KB", async () => {
+  const { id } = await (await post("/api/chats")).json();
+  const text = "Automated report … not a message from the owner:\n\nAll quiet.";
+  assert.equal((await post(`/api/sessions/${id}/note`, { text, details: { head: "**run** · ended" } })).status, 200);
+  const snap = await (await get(`/api/sessions/${id}/transcript`)).json();
+  assert.equal(snap.records.at(-1).text, "**run** · ended\n\nAll quiet.");
+  const big = await post(`/api/sessions/${id}/note`, { text: "x".repeat(256 * 1024) });
+  assert.equal(big.status, 413);
+  assert.equal((await big.json()).error, "note_too_large");
+});

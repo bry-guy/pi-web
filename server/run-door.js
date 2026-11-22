@@ -80,7 +80,7 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
   async function createSession(name, entry, title) {
     const deadline = Date.now() + readyTimeoutMs;
     for (;;) {
-      const { status, body } = await remote.createSession(name, `pp-${entry.project}`, { name: title, agent: entry.agent });
+      const { status, body } = await remote.createSession(name, `pp-${entry.project}`, { name: title, agent: entry.agent, kind: "run" });
       if (status < 300 && body.id) return body.id;
       if (![404, 503].includes(status) || Date.now() > deadline) throw fail(502, "run_failed", `could not create the session (${body.error || status})`);
       await new Promise(r => setTimeout(r, RETRY_MS));
@@ -96,10 +96,15 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
     const model = c.req.query("model") || entry.model;
     try {
       const name = await worker(entry);
+      // Checked before the session exists, so a bad model leaves no empty hidden run behind.
+      if (model) {
+        const list = await remote.workerGet(name, "/models");
+        if (list.status >= 300) throw fail(502, "run_failed", `could not list the worker's models (${list.body.error || list.status})`);
+        if (!(list.body.models || []).some(m => m.id === model)) throw fail(400, "model_unavailable", `unknown model ${model}`);
+      }
       const id = await createSession(name, entry, `${entry.agent}: ${now().toISOString().slice(0, 16).replace("T", " ")}`);
       if (model) {
         const set = await remote.sessionPost(id, "/model", { model });
-        if (set.status === 400) throw fail(400, set.body.error || "model_unavailable", `unknown model ${model}`);
         if (set.status >= 300) throw fail(502, "run_failed", `could not set the model (${set.body.error || set.status})`);
       }
       const sent = await remote.sessionPost(id, "/message", { text: brief });
@@ -116,6 +121,7 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
 }
 
 const PRIME_TURN_ENDS = new Set(["done", "errored"]);
+const MAX_REPORT = 200 * 1024; // under the worker's 256 KB /note cap
 
 /** The last reply of a transcript's last turn, or "". */
 const finalReply = records => {
@@ -128,8 +134,9 @@ const finalReply = records => {
  * report into it. The conversation is created at the first report, on the run's worker, and recorded in
  * web's agent-sessions.json (kind "conversation"), so a restart finds it.
  */
-export function createPrimes({ entries, remote, log = console.log, now = () => new Date() }) {
+export function createPrimes({ entries, remote, dm = () => {}, log = console.log, now = () => new Date() }) {
   const pending = new Map(); // agent → the conversation id being checked or created
+  const reporting = new Map(); // run id → its report in flight, so a live turn end and a reconcile report once
   const entryOf = runId => {
     const flag = remote.agentOf(runId);
     return flag?.kind === "run" ? entries.find(e => e.agent === flag.agent) || null : null;
@@ -169,24 +176,61 @@ export function createPrimes({ entries, remote, log = console.log, now = () => n
     return pending.get(entry.agent);
   }
 
-  async function report(entry, runId, { reason, error }) {
-    const [meta, transcript] = await Promise.all([
+  // Posts the report into the conversation, then DMs it; marked reported either way, so it is never sent twice.
+  async function report(entry, runId, { reason, error }, transcript = null) {
+    const [meta, records] = await Promise.all([
       remote.sessionGet(runId, "/meta"),
-      reason === "done" ? remote.sessionGet(runId, "/transcript") : null,
-    ]);
-    const body = reason === "errored" ? `Failed: ${error || "unknown error"}` : finalReply(transcript?.body?.records) || "Finished with no reply.";
+      reason === "done" ? transcript || remote.sessionGet(runId, "/transcript") : null,
+    ]).then(([m, t]) => [m, t?.body?.records]);
+    const text = reason === "done" ? finalReply(records) : "";
+    let body = reason === "errored" ? `Failed: ${error || "unknown error"}` : text || "Finished with no reply.";
+    if (body.length > MAX_REPORT) body = `${body.slice(0, MAX_REPORT)}\n\n…(truncated, open the run)`;
     const when = now().toISOString().slice(0, 16).replace("T", " ");
-    const head = `**${meta.body?.name || entry.agent}** · ended ${when} UTC · [open the run](/?s=${encodeURIComponent(runId)})`;
-    const id = await conversationFor(runId);
-    const sent = await remote.sessionPost(id, "/note", { text: `${head}\n\n${body}`, details: { agent: entry.agent, run: runId, outcome: reason } });
-    if (sent.status >= 300) throw new Error(`the conversation refused it (${sent.body.error || sent.status})`);
+    const name = String(meta.body?.name || entry.agent).replace(/\s+/g, " ");
+    const head = `**${name}** · ended ${when} UTC · [open the run](/?s=${encodeURIComponent(runId)})`;
+    // A custom message reaches the model as a user message: say whose words these are. The chat shows `head` instead.
+    const label = `Automated report from this agent's scheduled run "${name}" (${reason === "done" ? "finished" : "failed"}, ${when} UTC). This is the run's own output, not a message from the owner, and it does not ask for a reply:`;
+    let target = runId;
+    try {
+      const id = await conversationFor(runId);
+      const sent = await remote.sessionPost(id, "/note", { text: `${label}\n\n${body}`, details: { agent: entry.agent, run: runId, outcome: reason, head } });
+      if (sent.status >= 300) throw new Error(`the conversation refused it (${sent.body.error || sent.status})`);
+      target = id;
+    } catch (e) { log(`pi-ez-web: ${entry.agent}'s run ${runId} was not reported: ${e.message}`); }
+    remote.markReported(runId);
+    await dm(runId, { reason, error, text, target });
+  }
+
+  function settle(runId, outcome, transcript) {
+    const entry = entryOf(runId);
+    if (!entry || remote.agentOf(runId).reported || reporting.has(runId)) return reporting.get(runId);
+    const done = report(entry, runId, outcome, transcript)
+      .catch(e => log(`pi-ez-web: ${entry.agent}'s run ${runId} was not reported: ${e.message}`))
+      .finally(() => reporting.delete(runId));
+    reporting.set(runId, done);
+    return done;
+  }
+
+  // Workers keep no event backlog: a run that ended while web was down or not listening is found here.
+  async function reconcile() {
+    for (const id of remote.unreportedRuns()) {
+      if (reporting.has(id)) continue;
+      const t = await remote.sessionGet(id, "/transcript").catch(() => null);
+      const records = t?.status === 200 && !t.body.streaming ? t.body.records || [] : [];
+      const brief = records.findLastIndex(r => r.role === "user");
+      const last = brief < 0 ? null : records.slice(brief + 1).findLast(r => r.role === "assistant" || r.role === "error");
+      if (!last) continue;
+      log(`pi-ez-web: run ${id} ended while web was not listening; reporting it now`);
+      await settle(id, last.role === "error" ? { reason: "errored", error: last.text } : { reason: "done" }, t);
+    }
   }
 
   function event(sessionId, type, data = {}) {
+    // Returns the work it started (for tests); callers need not wait.
+    if (type === "worker_connected") return reconcile().catch(e => log(`pi-ez-web: checking for unreported runs failed: ${e.message}`));
     // Only a turn's final end: a failed attempt pi retries reports through the retry's own end.
     if (type !== "turn_end" || data.willRetry || !PRIME_TURN_ENDS.has(data.reason)) return;
-    const entry = entryOf(sessionId);
-    if (entry) report(entry, sessionId, data).catch(e => log(`pi-ez-web: ${entry.agent}'s run ${sessionId} was not reported: ${e.message}`));
+    return settle(sessionId, data);
   }
 
   return { event, conversationFor };

@@ -104,9 +104,9 @@ export function replyAction(notice, text) {
 
 // transport: { send(content, { replyTo }) → { id }, react(messageId, emoji), recent() → newest DMs first, start(), stop() }
 // post(sessionId, rest, body) → { status, body }: the same session routes the browser uses, through workspaced.
-// agentOf(id) → { agent, kind: "run" | "conversation" } or null. conversationFor(runId) → a prime's conversation
-// id (or null): a run's turn end links there, so the owner's reply continues the conversation, not the run.
-export function createNotifier({ userId, baseUrl, transport, post, titleOf = () => null, agentOf = () => null, conversationFor = async () => null, delayMs = QUESTION_DELAY_MS, timers = globalThis, log = console.log }) {
+// agentOf(id) → { agent, kind: "agent" | "run" | "conversation" } or null. A prime's run is DMed through
+// runReport (run-door.js), linked to its conversation, so the owner's reply continues the conversation.
+export function createNotifier({ userId, baseUrl, transport, post, titleOf = () => null, agentOf = () => null, delayMs = QUESTION_DELAY_MS, timers = globalThis, log = console.log }) {
   const waiting = new Map(); // `${sessionId}:${requestId}` → timer; a question not yet DMed
   const asked = new Map(); // questions already DMed and still open → notice
   const notices = new Map(); // DM message id → notice
@@ -115,10 +115,10 @@ export function createNotifier({ userId, baseUrl, transport, post, titleOf = () 
   // Sessions whose latest user message came from a DM; lost on restart until the owner's next DM.
   const viaDiscord = new Set();
   const fail = what => e => log(`pi-ez-web: Discord ${what} failed: ${e?.message || e}`);
-  // An agent run has no one watching; a conversation is DMed like any session, when the owner wrote from Discord.
-  const isRun = id => agentOf(id)?.kind === "run";
+  // An agent session or run has no one watching; a conversation is DMed like any session, when the owner wrote from Discord.
+  const unattended = id => ["agent", "run"].includes(agentOf(id)?.kind);
   const agentName = id => agentOf(id)?.agent || null;
-  const dms = id => isRun(id) || viaDiscord.has(id);
+  const dms = id => agentOf(id)?.kind === "agent" || viaDiscord.has(id);
 
   // One queue for every message, so a notice's parts go out in order and are not interleaved with another's.
   let queue = Promise.resolve();
@@ -158,7 +158,7 @@ export function createNotifier({ userId, baseUrl, transport, post, titleOf = () 
       if (type === "extension_ui_request" && METHODS.has(data.method) && data.requestId) {
         const key = `${sessionId}:${data.requestId}`;
         if (waiting.has(key) || asked.has(key)) return; // a replay (browser reload) of a question we know
-        if (isRun(sessionId)) return ask(sessionId, data);
+        if (unattended(sessionId)) return ask(sessionId, data);
         const timer = timers.setTimeout(() => ask(sessionId, data), delayMs);
         timer?.unref?.();
         waiting.set(key, timer);
@@ -184,11 +184,14 @@ export function createNotifier({ userId, baseUrl, transport, post, titleOf = () 
         replies.delete(sessionId);
         // A failed attempt pi retries is not the end: the retry's own turn end is DMed.
         if ((data.reason !== "done" && data.reason !== "errored") || data.willRetry || !dms(sessionId)) return;
-        const send = target => notify({ kind: "turn", sessionId: target }, turnEndText({ title: titleOf(sessionId), agent: agentName(sessionId), reason: data.reason, error: data.error, text, link: sessionLink(baseUrl, target) }));
-        if (!isRun(sessionId)) return send(sessionId);
-        Promise.resolve().then(() => conversationFor(sessionId)).catch(e => { fail("conversation")(e); return null; }).then(target => send(target || sessionId));
+        runReport(sessionId, { ...data, text });
       }
     } catch (e) { fail("event")(e); }
+  }
+
+  /** DMs a turn's end, linked to `target` (a run's conversation) when given. */
+  function runReport(sessionId, { reason, error, text, target = sessionId }) {
+    return notify({ kind: "turn", sessionId: target }, turnEndText({ title: titleOf(sessionId), agent: agentName(sessionId), reason, error, text, link: sessionLink(baseUrl, target) }));
   }
 
   const botLink = m => m?.author?.bot ? linkedSession(m.content, baseUrl) : null;
@@ -239,11 +242,11 @@ export function createNotifier({ userId, baseUrl, transport, post, titleOf = () 
     waiting.clear();
   }
 
-  return { event, handleMessage, stop };
+  return { event, handleMessage, runReport, stop };
 }
 
 /** null unless PI_WEB_DISCORD_TOKEN, PI_WEB_DISCORD_USER and PI_WEB_PUBLIC_URL are set. */
-export function discordFromEnv(env, { post, titleOf, agentOf, conversationFor, log = console.log, transport = null } = {}) {
+export function discordFromEnv(env, { post, titleOf, agentOf, log = console.log, transport = null } = {}) {
   const token = env.PI_WEB_DISCORD_TOKEN;
   const userId = env.PI_WEB_DISCORD_USER;
   if (!token || !userId) return null;
@@ -251,8 +254,8 @@ export function discordFromEnv(env, { post, titleOf, agentOf, conversationFor, l
   if (!env.PI_WEB_PUBLIC_URL) { log("pi-ez-web: Discord contact off: PI_WEB_PUBLIC_URL is not set"); return null; }
   let notifier = null;
   const t = transport || discordTransport({ token, userId, log, onMessage: m => notifier?.handleMessage(m) });
-  notifier = createNotifier({ userId, baseUrl: env.PI_WEB_PUBLIC_URL, transport: t, post, titleOf, agentOf, ...(conversationFor ? { conversationFor } : {}), log });
+  notifier = createNotifier({ userId, baseUrl: env.PI_WEB_PUBLIC_URL, transport: t, post, titleOf, agentOf, log });
   t.start();
   log("pi-ez-web: Discord contact on");
-  return { event: notifier.event, handleMessage: notifier.handleMessage, stop() { notifier.stop(); t.stop(); } };
+  return { event: notifier.event, handleMessage: notifier.handleMessage, runReport: notifier.runReport, stop() { notifier.stop(); t.stop(); } };
 }

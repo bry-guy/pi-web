@@ -14,7 +14,7 @@ import { EventHub } from "../server/events.js";
 const USER = "42";
 const flush = () => new Promise(r => setImmediate(r));
 
-function setup({ agents = {}, post, sent = [], conversationFor } = {}) {
+function setup({ agents = {}, post, sent = [] } = {}) {
   const reactions = [];
   const posts = [];
   let next = 0;
@@ -27,9 +27,9 @@ function setup({ agents = {}, post, sent = [], conversationFor } = {}) {
   const notifier = createNotifier({
     userId: USER, baseUrl: "https://pi.example/", transport,
     post: post || (async (...args) => { posts.push(args); return { status: 200, body: { ok: true } }; }),
-    titleOf: id => `Title ${id}`, log: () => {}, ...(conversationFor ? { conversationFor } : {}),
-    // A bare name is an agent run, as older agent-sessions.json files hold it.
-    agentOf: id => typeof agents[id] === "string" ? { agent: agents[id], kind: "run" } : agents[id] || null,
+    titleOf: id => `Title ${id}`, log: () => {},
+    // A bare name is an agent session, as older agent-sessions.json files hold it.
+    agentOf: id => typeof agents[id] === "string" ? { agent: agents[id], kind: "agent" } : agents[id] || null,
   });
   return { notifier, sent, reactions, posts };
 }
@@ -437,14 +437,14 @@ test("web remembers agent sessions, passes worker events on, and posts to sessio
     return Response.json({}, { status: 404 });
   };
   const events = [];
-  const opts = { url: "http://w", hub: new EventHub(), fetchImpl, cachePath, modelAuthSyncMs: 0, retryMs: 60_000, onEvent: (...a) => events.push(a) };
+  const opts = { url: "http://w", hub: new EventHub(), fetchImpl, cachePath, modelAuthSyncMs: 0, retryMs: 60_000, onEvent: (...a) => a[0] && events.push(a) };
   const remote = createRemoteWorkspaces(opts);
   try {
     const api = new Hono();
     registerRemoteRoutes(api, remote);
     const res = await api.request("/projects/p1/sessions", { method: "POST", body: JSON.stringify({ agent: "nightly" }) });
     assert.deepEqual(await res.json(), { id: "s1" });
-    assert.deepEqual(remote.agentOf("s1"), { agent: "nightly", kind: "run" });
+    assert.deepEqual(remote.agentOf("s1"), { agent: "nightly", kind: "agent" });
     assert.equal(remote.agentOf("s0"), null);
     assert.equal(remote.sessionTitle("s0"), "Hello");
     await flush();
@@ -454,7 +454,7 @@ test("web remembers agent sessions, passes worker events on, and posts to sessio
     assert.equal((await remote.sessionPost("nope", "/message", {})).status, 404);
   } finally { remote.stop(); }
   const again = createRemoteWorkspaces({ ...opts, onEvent: null });
-  assert.deepEqual(again.agentOf("s1"), { agent: "nightly", kind: "run" }, "survives a restart");
+  assert.deepEqual(again.agentOf("s1"), { agent: "nightly", kind: "agent" }, "survives a restart");
   again.stop();
 });
 
@@ -481,7 +481,7 @@ test("after a restart with no browser, forwarding a create or a message subscrib
     assert.equal((await api.request("/sessions/s0/message", { method: "POST", body: JSON.stringify({ text: "go" }) })).status, 200);
     await flush();
     assert.equal(streams, 1);
-    assert.deepEqual(events, [["s0", "events_resync", {}], ["s0", "turn_end", { reason: "done" }]], "a new stream tells each known session of the worker about the gap");
+    assert.deepEqual(events, [["s0", "events_resync", {}], [null, "worker_connected", { workspace: "ws1" }], ["s0", "turn_end", { reason: "done" }]], "a new stream tells each known session of the worker about the gap");
     await api.request("/projects/p1/sessions", { method: "POST", body: JSON.stringify({ agent: "nightly" }) });
     await flush();
     assert.equal(streams, 1, "one stream per worker");
@@ -552,7 +552,7 @@ test("a part that fails to send does not stop the rest", async () => {
   const sent = [];
   let n = 0;
   const transport = { send: async content => { if (++n === 2) throw new Error("POST /channels/:id/messages answered 429"); sent.push(content); return { id: `m${n}` }; }, react: async () => {}, recent: async () => [] };
-  const notifier = createNotifier({ userId: USER, baseUrl: "https://pi.example", transport, post: async () => ({ status: 200 }), agentOf: () => ({ agent: "bot", kind: "run" }), log: l => logs.push(l) });
+  const notifier = createNotifier({ userId: USER, baseUrl: "https://pi.example", transport, post: async () => ({ status: 200 }), agentOf: () => ({ agent: "bot", kind: "agent" }), log: l => logs.push(l) });
   turn(notifier, "a1", "word ".repeat(900));
   for (let i = 0; i < 10; i++) await flush();
   assert.equal(sent.length, 2);
@@ -588,17 +588,19 @@ test("a message to a session the worker does not know is a 404, and the DM says 
   assert.equal(sent.at(-1).content, "That session no longer exists.");
 });
 
-test("a prime's run DMs its reply linked to the conversation, and a reply continues the conversation", async () => {
-  const asked = [];
-  const conversationFor = async id => { asked.push(id); return id === "r1" ? "c1" : null; };
-  const { notifier, sent, posts } = setup({ agents: { r1: "labrat", c1: { agent: "labrat", kind: "conversation" } }, conversationFor });
-  turn(notifier, "r1", "All quiet.");
+test("a prime's run is DMed only through runReport, linked to the conversation, and a reply continues the conversation", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { notifier, sent, posts } = setup({ agents: { r1: { agent: "labrat", kind: "run" }, c1: { agent: "labrat", kind: "conversation" } } });
+  turn(notifier, "r1", "streamed");
+  notifier.event("r1", "extension_ui_request", select);
   await flush();
+  assert.equal(sent.length, 1, "its question goes at once; its turn end waits for the report");
+  sent.length = 0;
+  await notifier.runReport("r1", { reason: "done", text: "All quiet.", target: "c1" });
   assert.deepEqual(sent.map(m => m.content), ["**Title r1** (labrat) <https://pi.example/?s=c1>\nAll quiet."]);
   await notifier.handleMessage(dm("thanks", { message_reference: { message_id: sent[0].id } }));
   await notifier.handleMessage(dm("and check disks"));
   assert.deepEqual(posts.map(p => [p[0], p[1], p[2].text]), [["c1", "/message", "thanks"], ["c1", "/message", "and check disks"]]);
-  assert.deepEqual(asked, ["r1"]);
   notifier.stop();
 });
 
@@ -617,24 +619,28 @@ test("a prime's conversation DMs only turns its owner started from Discord; its 
   notifier.stop();
 });
 
-test("agent-sessions.json: an old bare name reads as a run, and session nodes carry the flag", async () => {
+test("agent-sessions.json: an old bare name reads as an agent session, and session nodes carry the flag", async () => {
   const cachePath = path.join(mkdtempSync(path.join(tmpdir(), "discord-")), "remote-projects.json");
-  writeFileSync(path.join(path.dirname(cachePath), "agent-sessions.json"), JSON.stringify({ r0: "labrat", c0: { agent: "labrat", kind: "conversation" } }));
+  writeFileSync(path.join(path.dirname(cachePath), "agent-sessions.json"), JSON.stringify({ a0: "nightly", r0: { agent: "labrat", kind: "run" }, c0: { agent: "labrat", kind: "conversation" } }));
   const fetchImpl = async url => {
     const p = new URL(url).pathname.replace("/v1/workspaces", "");
     if (p === "") return Response.json({ workspaces: [{ name: "ws1", repository: "project:labrat", state: "running" }] });
-    if (p === "/ws1/api/state") return Response.json({ projects: [{ id: "pp-labrat", sessions: [{ id: "c0", children: [{ id: "f0", children: [] }] }, { id: "r0", children: [] }, { id: "s0", children: [] }] }] });
+    if (p === "/ws1/api/state") return Response.json({ projects: [{ id: "pp-labrat", sessions: [{ id: "c0", children: [{ id: "f0", children: [] }] }, { id: "r0", children: [] }, { id: "a0", children: [] }, { id: "s0", children: [] }], ended: [{ id: "r1" }, { id: "a1" }, { id: "e1" }] }] });
     return Response.json({}, { status: 503 });
   };
   const remote = createRemoteWorkspaces({ url: "http://w", hub: new EventHub(), fetchImpl, cachePath, modelAuthSyncMs: 0, retryMs: 60_000 });
   try {
-    assert.deepEqual(remote.agentOf("r0"), { agent: "labrat", kind: "run" });
+    assert.deepEqual(remote.agentOf("a0"), { agent: "nightly", kind: "agent" });
+    remote.markAgent("a1", "nightly");
+    remote.markAgent("r1", "labrat", "run");
+    assert.deepEqual(remote.agentOf("a1"), { agent: "nightly", kind: "agent" }, "only the run door marks runs");
     assert.equal(remote.conversationOf("labrat"), "c0");
     remote.markAgent("c0", null);
     assert.equal(remote.conversationOf("labrat"), null);
     remote.markAgent("c0", "labrat", "conversation");
     const [project] = (await remote.refresh()).projects;
     const flags = nodes => nodes.map(n => [n.id, n.agent, n.agentKind, ...(n.children.length ? [flags(n.children)] : [])]);
-    assert.deepEqual(flags(project.sessions), [["c0", "labrat", "conversation", [["f0", undefined, undefined]]], ["r0", "labrat", "run"], ["s0", undefined, undefined]]);
+    assert.deepEqual(flags(project.sessions), [["c0", "labrat", "conversation", [["f0", undefined, undefined]]], ["r0", "labrat", "run"], ["a0", "nightly", "agent"], ["s0", undefined, undefined]]);
+    assert.deepEqual(project.ended.map(s => s.id), ["a1", "e1"], "an ended run is not a past session");
   } finally { remote.stop(); }
 });

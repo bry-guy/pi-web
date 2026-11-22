@@ -42,8 +42,10 @@ export function remoteWorkspacesFromEnv(env, deps) {
   const remote = createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, onEvent, ...(fetchImpl ? { fetchImpl } : {}), ...deps });
   // The run door's agents are primes: each run reports into the agent's one conversation.
   const { entries } = runDoorConfig(env);
-  primes = entries ? createPrimes({ entries, remote }) : null;
-  discord = discordFromEnv(env, { post: remote.sessionPost, titleOf: remote.sessionTitle, agentOf: remote.agentOf, conversationFor: primes?.conversationFor });
+  primes = entries ? createPrimes({ entries, remote, dm: (...a) => discord?.runReport(...a) }) : null;
+  discord = discordFromEnv(env, { post: remote.sessionPost, titleOf: remote.sessionTitle, agentOf: remote.agentOf });
+  // Connecting to the workers' events checks for runs that ended while web was down.
+  if (primes) remote.refresh().catch(() => {});
   if (discord) {
     const stop = remote.stop;
     remote.stop = () => { stop(); discord.stop(); };
@@ -124,23 +126,33 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   }
   for (const chat of chatSnapshot) owners.session.set(chat.id, CHATS);
 
-  // Agent sessions: sessionId → { agent, kind }, kind "run" (an agent run; `agent: "<name>"` on create) or
-  // "conversation" (a prime's one visible conversation). Older files hold the bare agent name of a run.
+  // Agent sessions: sessionId → { agent, kind }. kind "agent": created with `agent: "<name>"` (older files hold
+  // the bare name); "run": a run-door run, hidden, reporting into its prime's one "conversation".
+  // A run gets `reported: true` once its report went out.
   const agentsPath = cachePath ? path.join(path.dirname(cachePath), "agent-sessions.json") : null;
   let agents = {};
   try { agents = agentsPath ? JSON.parse(readFileSync(agentsPath, "utf8")) : {}; } catch { agents = {}; }
-  function markAgent(id, name, kind = "run") {
+  function markAgent(id, name, kind = "agent") {
     if (typeof id !== "string" || !id) return;
     if (name === null) delete agents[id];
     else if (typeof name !== "string" || !name.trim()) return;
-    else agents[id] = { agent: name.trim().slice(0, 100), kind: kind === "conversation" ? "conversation" : "run" };
+    else agents[id] = { agent: name.trim().slice(0, 100), kind: ["run", "conversation"].includes(kind) ? kind : "agent" };
+    saveAgents();
+  }
+  function markReported(id) {
+    if (agents[id]?.kind !== "run") return;
+    agents[id].reported = true;
+    saveAgents();
+  }
+  function saveAgents() {
     if (!agentsPath) return;
     try {
       writeFileSync(`${agentsPath}.tmp`, JSON.stringify(agents), { mode: 0o600 });
       renameSync(`${agentsPath}.tmp`, agentsPath);
     } catch { /* the Discord notices for this run fall back to the 5-minute rule */ }
   }
-  const agentOf = id => typeof agents[id] === "string" ? { agent: agents[id], kind: "run" } : agents[id] || null;
+  const agentOf = id => typeof agents[id] === "string" ? { agent: agents[id], kind: "agent" } : agents[id] || null;
+  const unreportedRuns = () => Object.keys(agents).filter(id => agents[id]?.kind === "run" && !agents[id].reported);
   const conversationOf = agent => Object.keys(agents).find(id => agents[id]?.kind === "conversation" && agents[id].agent === agent) || null;
   const flagged = nodes => nodes?.map(n => {
     const flag = agentOf(n.id);
@@ -209,7 +221,8 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     for (const name of streams.keys()) if (!known.has(name)) unsubscribe(name);
     const chatsWorker = all.find(isChats);
     const workspaces = all.filter(w => !isChats(w));
-    const tag = (w, p) => ({ ...p, ...(p.sessions ? { sessions: flagged(p.sessions) } : {}), workspace: w.name, workspaceState: w.state || (w.ready ? "running" : "starting"), workspacePinned: !!w.pinned, workspaceGrant: w.grant || "default", workspaceProblem: w.problem || null });
+    // Ended runs are left out of Past sessions too.
+    const tag = (w, p) => ({ ...p, ...(p.sessions ? { sessions: flagged(p.sessions) } : {}), ...(p.ended ? { ended: p.ended.filter(s => agentOf(s.id)?.kind !== "run") } : {}), workspace: w.name, workspaceState: w.state || (w.ready ? "running" : "starting"), workspacePinned: !!w.pinned, workspaceGrant: w.grant || "default", workspaceProblem: w.problem || null });
     const chats = chatsWorker ? chatList(chatsWorker) : Promise.resolve([]);
     const lists = await Promise.all(workspaces.map(async w => {
       const running = w.state ? w.state === "running" : w.ready;
@@ -472,6 +485,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
           // so open transcripts reload from a snapshot instead.
           hub.emit(null, "events_resync", { workspace: name });
           for (const [id, owner] of owners.session) if (owner === name) try { onEvent?.(id, "events_resync", {}); } catch { /* never breaks fan-in */ }
+          try { onEvent?.(null, "worker_connected", { workspace: name }); } catch { /* never breaks fan-in */ }
           const decoder = new TextDecoder();
           let buffer = "";
           for await (const chunk of res.body) {
@@ -613,7 +627,11 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   async function sessionGet(id, rest) {
     const name = await owner("session", id);
     if (!name) return { status: 404, body: { error: "no_such_session" } };
-    const res = await call(workerPath(name, `/sessions/${encodeURIComponent(id)}${rest}`));
+    return workerGet(name, `/sessions/${encodeURIComponent(id)}${rest}`);
+  }
+
+  async function workerGet(name, rest) {
+    const res = await call(workerPath(name, rest));
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
 
@@ -627,7 +645,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
 
   return {
     list, waitReady, createSession,
-    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, conversationOf,
+    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, unreportedRuns, conversationOf, workerGet,
     projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };
