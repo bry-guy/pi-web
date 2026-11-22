@@ -216,6 +216,13 @@ test("a failed turn DMs once, after pi's automatic retries are over", async () =
   await flush();
   assert.deepEqual(sent.map(m => m.content), ["**Title a1** (bot) <https://pi.example/?s=a1>\nAll good."]);
 
+  // pi gave up before the retry started: the supervisor's final turn_end comes without a new turn_start.
+  ({ notifier, sent } = setup({ agents: { a1: "bot" } }));
+  attempt(notifier, failed);
+  notifier.event("a1", "turn_end", { reason: "errored", error: "500 placeholder" });
+  await flush();
+  assert.deepEqual(sent.map(m => m.content), ["**Title a1** (bot) failed <https://pi.example/?s=a1>\n500 placeholder"]);
+
   ({ notifier, sent } = setup({ agents: { a1: "bot" } }));
   attempt(notifier, { reason: "errored", error: "bad request" });
   await flush();

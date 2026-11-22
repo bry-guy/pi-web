@@ -434,27 +434,43 @@ test("completed live assistant records do not duplicate persisted messages after
   ]);
 });
 
-test("provider error events end the turn with a public error", () => {
+test("a turn pi said it would retry is reported failed once when the retry never starts", async () => {
   const events = [];
-  const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ id, type, data }) });
-  const st = {
-    liveRecords: new Map([["assistant-1", { id: "assistant-1", role: "assistant", text: "", streaming: true }]]),
-    pendingMessages: [], msgId: "assistant-1", turnId: "turn-1", turnEnded: false,
-  };
-  supervisor._onEvent("session-1", st, {
-    type: "message_update",
-    assistantMessageEvent: {
-      type: "error",
-      error: { role: "assistant", stopReason: "error", errorMessage: "Insufficient quota." },
-    },
-  });
-  assert.equal(st.turnEnded, true);
-  assert.equal(st.liveRecords.get("assistant-1").streaming, undefined);
-  assert.deepEqual(events.map(event => [event.type, event.data.reason, event.data.error]), [
-    ["message_end", undefined, undefined], ["turn_end", "errored", "Insufficient quota."],
+  const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ type, data }) });
+  const failed = { role: "assistant", stopReason: "error", errorMessage: "500 Credential placeholder could not be resolved" };
+  const final = { type: "turn_end", data: { turnId: "turn-1", reason: "errored", error: failed.errorMessage } };
+  const fresh = () => ({ liveRecords: new Map(), pendingMessages: [], msgId: null, turnId: "turn-1", turnEnded: false });
+
+  // Cancelled during the backoff: pi ends the retry without a new attempt.
+  let st = fresh();
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: true });
+  supervisor._onEvent("session-1", st, { type: "auto_retry_end", success: false, attempt: 1, finalError: "Retry cancelled" });
+  supervisor._finishRetry("session-1", st);
+  assert.deepEqual(events.splice(1), [final]);
+  events.length = 0;
+
+  // No event at all (aborted before the first attempt): the prompt's end reports it.
+  st = fresh();
+  supervisor.live.set("session-1", st);
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: true });
+  supervisor._startPrompt("session-1", async () => {}, () => {});
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(events.splice(1), [final]);
+  events.length = 0;
+
+  // The retry starts: only its own end is reported; the prompt's end adds nothing.
+  st = fresh();
+  supervisor.live.set("session-1", st);
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: true });
+  supervisor._onEvent("session-1", st, { type: "agent_start" });
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: false });
+  supervisor._onEvent("session-1", st, { type: "auto_retry_end", success: false, attempt: 1, finalError: failed.errorMessage });
+  supervisor._startPrompt("session-1", async () => {}, () => {});
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(events.map(e => [e.type, e.data.reason, e.data.willRetry]), [
+    ["turn_end", "errored", true], ["turn_start", undefined, undefined], ["turn_end", "errored", undefined],
   ]);
-  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [] });
-  assert.equal(events.length, 2);
+  supervisor.live.delete("session-1");
 });
 
 test("an errored turn ends at agent_end and says whether pi will retry it", () => {
