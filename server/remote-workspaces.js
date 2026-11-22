@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { chatTransfer } from "./chat-transfer.js";
 import { discordFromEnv } from "./discord.js";
+import { createPrimes, runDoorConfig } from "./run-door.js";
 import { remoteConversationPreview, remoteConversationsForProject, syncedProjects as syncedProjectsFromServer } from "./pi-sync.js";
 
 // workspaced's CHATS_WORKSPACE: the worker without a repository.
@@ -36,9 +37,15 @@ export function remoteWorkspacesFromEnv(env, deps) {
   }
   const modelAuthPath = path.join(env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"), "auth.json");
   const cachePath = env.PI_WEB_HOME ? path.join(env.PI_WEB_HOME, "remote-projects.json") : null;
-  let discord = null;
-  const remote = createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, onEvent: (...a) => discord?.event(...a), ...(fetchImpl ? { fetchImpl } : {}), ...deps });
+  let discord = null, primes = null;
+  const onEvent = (...a) => { discord?.event(...a); primes?.event(...a); };
+  const remote = createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, onEvent, ...(fetchImpl ? { fetchImpl } : {}), ...deps });
+  // The run door's agents are primes: each run reports into the agent's one conversation.
+  const { entries } = runDoorConfig(env);
+  primes = entries ? createPrimes({ entries, remote, dm: (...a) => discord?.runReport(...a) }) : null;
   discord = discordFromEnv(env, { post: remote.sessionPost, titleOf: remote.sessionTitle, agentOf: remote.agentOf });
+  // Connecting to the workers' events checks for runs that ended while web was down.
+  if (primes) remote.refresh().catch(() => {});
   if (discord) {
     const stop = remote.stop;
     remote.stop = () => { stop(); discord.stop(); };
@@ -119,20 +126,40 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   }
   for (const chat of chatSnapshot) owners.session.set(chat.id, CHATS);
 
-  // Sessions created for an agent run (`agent: "<name>"` on create): sessionId → agent name.
+  // Agent sessions: sessionId → { agent, kind }. kind "agent": created with `agent: "<name>"` (older files hold
+  // the bare name); "run": a run-door run, hidden, reporting into its prime's one "conversation".
+  // A run gets `reported: true` once its report is in the conversation, `dmed: true` once DMed.
   const agentsPath = cachePath ? path.join(path.dirname(cachePath), "agent-sessions.json") : null;
   let agents = {};
   try { agents = agentsPath ? JSON.parse(readFileSync(agentsPath, "utf8")) : {}; } catch { agents = {}; }
-  function markAgent(id, name) {
-    if (typeof id !== "string" || !id || typeof name !== "string" || !name.trim()) return;
-    agents[id] = name.trim().slice(0, 100);
+  function markAgent(id, name, kind = "agent") {
+    if (typeof id !== "string" || !id) return;
+    if (name === null) delete agents[id];
+    else if (typeof name !== "string" || !name.trim()) return;
+    // kind "agent" stays the bare name older builds read; only runs and conversations are objects.
+    else agents[id] = ["run", "conversation"].includes(kind) ? { agent: name.trim().slice(0, 100), kind } : name.trim().slice(0, 100);
+    saveAgents();
+  }
+  // `reported`: the report is in the conversation; `dmed`: it was DMed.
+  function markReported(id, key = "reported") {
+    if (agents[id]?.kind !== "run") return;
+    agents[id][key] = true;
+    saveAgents();
+  }
+  function saveAgents() {
     if (!agentsPath) return;
     try {
       writeFileSync(`${agentsPath}.tmp`, JSON.stringify(agents), { mode: 0o600 });
       renameSync(`${agentsPath}.tmp`, agentsPath);
     } catch { /* the Discord notices for this run fall back to the 5-minute rule */ }
   }
-  const agentOf = id => agents[id] || null;
+  const agentOf = id => typeof agents[id] === "string" ? { agent: agents[id], kind: "agent" } : agents[id] || null;
+  const unreportedRuns = () => Object.keys(agents).filter(id => agents[id]?.kind === "run" && !agents[id].reported);
+  const conversationOf = agent => Object.keys(agents).find(id => agents[id]?.kind === "conversation" && agents[id].agent === agent) || null;
+  const flagged = nodes => nodes?.map(n => {
+    const flag = agentOf(n.id);
+    return { ...n, ...(flag ? { agent: flag.agent, agentKind: flag.kind } : {}), children: flagged(n.children) };
+  });
   const agentIn = text => { try { return JSON.parse(text || "{}")?.agent; } catch { return null; } };
 
   function sessionTitle(id) {
@@ -196,7 +223,8 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     for (const name of streams.keys()) if (!known.has(name)) unsubscribe(name);
     const chatsWorker = all.find(isChats);
     const workspaces = all.filter(w => !isChats(w));
-    const tag = (w, p) => ({ ...p, workspace: w.name, workspaceState: w.state || (w.ready ? "running" : "starting"), workspacePinned: !!w.pinned, workspaceGrant: w.grant || "default", workspaceProblem: w.problem || null });
+    // Ended runs are left out of Past sessions too.
+    const tag = (w, p) => ({ ...p, ...(p.sessions ? { sessions: flagged(p.sessions) } : {}), ...(p.ended ? { ended: p.ended.filter(s => agentOf(s.id)?.kind !== "run") } : {}), workspace: w.name, workspaceState: w.state || (w.ready ? "running" : "starting"), workspacePinned: !!w.pinned, workspaceGrant: w.grant || "default", workspaceProblem: w.problem || null });
     const chats = chatsWorker ? chatList(chatsWorker) : Promise.resolve([]);
     const lists = await Promise.all(workspaces.map(async w => {
       const running = w.state ? w.state === "running" : w.ready;
@@ -459,6 +487,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
           // so open transcripts reload from a snapshot instead.
           hub.emit(null, "events_resync", { workspace: name });
           for (const [id, owner] of owners.session) if (owner === name) try { onEvent?.(id, "events_resync", {}); } catch { /* never breaks fan-in */ }
+          try { onEvent?.(null, "worker_connected", { workspace: name }); } catch { /* never breaks fan-in */ }
           const decoder = new TextDecoder();
           let buffer = "";
           for await (const chunk of res.body) {
@@ -597,8 +626,28 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
 
+  async function sessionGet(id, rest) {
+    const name = await owner("session", id);
+    if (!name) return { status: 404, body: { error: "no_such_session" } };
+    return workerGet(name, `/sessions/${encodeURIComponent(id)}${rest}`);
+  }
+
+  async function workerGet(name, rest) {
+    const res = await call(workerPath(name, rest));
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  }
+
+  // The run door's session create (run-door.js), as forward does for the browser's.
+  async function createSession(name, projectId, body) {
+    const res = await call(workerPath(name, `/projects/${encodeURIComponent(projectId)}/sessions`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const out = await res.json().catch(() => ({}));
+    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent, body.kind); subscribe(name); }
+    return { status: res.status, body: out };
+  }
+
   return {
-    wake, projectSynced, syncedPreview, sessionPost, sessionTitle, agentOf, markAgent,
+    list, waitReady, createSession,
+    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, unreportedRuns, conversationOf, workerGet,
     projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };

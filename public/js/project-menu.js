@@ -303,7 +303,7 @@ class PiProjectMenu extends HTMLElement {
       <div class="panel-rows">${repoRows}${row("Add repository", "Clones it into this project and records it in project.json.", `<button class="btn btn-secondary" data-act="add-repo" ${busy ? "disabled" : ""}>Add…</button>`)}</div></section>`;
 
     const flat = [];
-    const walk = (nodes, pid) => { for (const n of nodes || []) { if (!n.draft) flat.push({ ...n, pid }); walk(n.children, pid); } };
+    const walk = (nodes, pid) => { for (const n of nodes || []) { if (!n.draft && n.agentKind !== "run") flat.push({ ...n, pid }); walk(n.children, pid); } };
     if (group.folder) walk(group.folder.sessions, group.folder.id);
     // Other devices' project-level sessions sit in the same list; repository ones list under their repository.
     for (const item of menu.synced || []) if (!item.repo) flat.push(this.syncedNode(item));
@@ -331,7 +331,7 @@ class PiProjectMenu extends HTMLElement {
   /** A repository's sessions here plus its other-device ones (pi-sync's listing names the repository). */
   repoSessions(menu, repo) {
     const flat = [];
-    const walk = nodes => { for (const n of nodes || []) { if (!n.draft) flat.push({ ...n, pid: repo.id }); walk(n.children); } };
+    const walk = nodes => { for (const n of nodes || []) { if (!n.draft && n.agentKind !== "run") flat.push({ ...n, pid: repo.id }); walk(n.children); } };
     walk(repo.sessions);
     for (const item of menu.synced || []) if (item.repo === repo.name) flat.push({ ...this.syncedNode(item), repoId: repo.id });
     return flat;

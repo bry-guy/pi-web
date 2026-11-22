@@ -521,6 +521,13 @@ export class RealSupervisor {
       }
       // An errored pi turn_end is followed at once by agent_end, which ends the turn: only it knows whether pi will retry.
       case "message_end":
+        // A prime report (note()) is appended, then announced; the leaf is its entry, so the transcript's id matches.
+        if (evt.message?.role === "custom" && evt.message.customType === PRIME_REPORT) {
+          const record = reportRecord({ id: st.session.sessionManager.getLeafId?.(), content: evt.message.content, details: evt.message.details, timestamp: evt.message.timestamp });
+          st.liveRecords.set(record.id, record);
+          hub.emit(id, "report", { record });
+          break;
+        }
         if (evt.message?.role === "assistant" && st.msgId) {
           const record = st.liveRecords.get(st.msgId);
           if (record) delete record.streaming;
@@ -833,11 +840,19 @@ export class RealSupervisor {
   _startPrompt(id, task, onError) {
     this.pendingPrompts.set(id, (this.pendingPrompts.get(id) || 0) + 1);
     void Promise.resolve().then(task).catch(onError).finally(() => {
-      this._finishRetry(id, this.live.get(id));
+      const st = this.live.get(id);
+      // A prompt rejected or queued during pi's retry backoff is not the end of the retried turn.
+      if (!st?.session?.isStreaming) this._finishRetry(id, st);
       const remaining = this.pendingPrompts.get(id) - 1;
       if (remaining) this.pendingPrompts.set(id, remaining);
       else this.pendingPrompts.delete(id);
     });
+  }
+
+  /** Appends a read-only prime report to the conversation without a model call; mid-turn, pi defers it to the turn end. */
+  async note(id, text, details) {
+    const st = await this._attachById(id);
+    await st.session.sendCustomMessage({ customType: PRIME_REPORT, content: text, display: true, details }, { triggerTurn: false });
   }
 
   async waitForIdle(id) {
@@ -1564,6 +1579,10 @@ export function entriesToRecords(entries) {
       if (summary) records.push(summary);
       continue;
     }
+    if (entry.type === "custom_message" && entry.customType === PRIME_REPORT) {
+      records.push(reportRecord(entry));
+      continue;
+    }
     if (entry.type === "custom" || entry.type === "custom_message") continue;
     if (entry.type !== "message") continue;
     const message = entry.message || {};
@@ -1631,6 +1650,16 @@ function toolStartRecord(evt) {
     id: evt.toolCallId, role: "tool", tool: evt.toolName,
     arg: summarizeArgs(evt.toolName, evt.args), meta: "", out: "", at: Date.now(), running: true,
   };
+}
+
+const PRIME_REPORT = "pi-web:prime-report";
+function reportRecord(entry) {
+  return { id: entry.id, role: "report", text: reportText(contentText(entry.content), entry.details), at: entryTime(entry) };
+}
+// The model reads the report's first paragraph (a label saying whose words follow); the chat shows details.head there.
+export function reportText(text, details) {
+  const cut = text.indexOf("\n\n");
+  return typeof details?.head === "string" && cut >= 0 ? details.head + text.slice(cut) : text;
 }
 
 // pi-summarize writes a custom session entry that groups the tool calls it summarizes.

@@ -252,6 +252,10 @@ export function isDraft(node) {
   return !node.name && node.title === "New session" && !node.streaming;
 }
 
+// A session with nothing sent yet appears with its first prompt; a prime's run session is
+// reached from its conversation's report (or a direct link), never from the lists.
+export const unlisted = node => isDraft(node) || node.agentKind === "run";
+
 export async function newProjectSession(projectId) {
   const project = store.state.projects.find(p => p.id === projectId);
   if (!project || creatingSession.has(projectId)) return;
@@ -450,12 +454,11 @@ class PiSidebar extends HTMLElement {
     this.renderResults();
   }
 
-  count(nodes) { return nodes.reduce((n, x) => n + (isDraft(x) ? 0 : 1) + this.count(x.children), 0); }
+  count(nodes) { return nodes.reduce((n, x) => n + (unlisted(x) ? 0 : 1) + this.count(x.children), 0); }
 
   sessionRows(p, nodes, depth, q, out, forceAll = false) {
     for (const n of nodes) {
-      // A session with nothing sent yet is not listed; it appears with its first prompt.
-      if (isDraft(n)) continue;
+      if (unlisted(n)) continue;
       const direct = !q || fuzzyMatch(n.title, q);
       const descendant = q && (n.children || []).some(child => nodeMatches(child, q));
       if (q && !forceAll && !direct && !descendant) continue;

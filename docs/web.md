@@ -20,7 +20,8 @@ Web creates the chats worker with the first chat. Chats that web ran itself befo
 | `PI_WEB_PRESTART_COMMAND` | unset | Shell run before start, e.g. fetching dotfiles or seeding `config.json` (120 s limit) |
 | `PI_SYNC_SERVER_URL` | unset | Optional [pi-sync](https://github.com/bry-guy/pi-sync) server |
 | `PI_WEB_DISCORD_TOKEN`, `PI_WEB_DISCORD_USER` | unset | Discord contact (below): a bot token and the one Discord user id it DMs. Off unless both and `PI_WEB_PUBLIC_URL` are set |
-| `PI_WEB_PUBLIC_URL` | unset | Web's public base URL, for links in Discord DMs (`<url>/?s=<session>`); required for Discord contact (it logs one line and stays off without it) |
+| `PI_WEB_PUBLIC_URL` | unset | Web's public base URL, for links in Discord DMs and run-door answers (`<url>/?s=<session>`); required for Discord contact (it logs one line and stays off without it) |
+| `PI_WEB_RUN_PORT`, `PI_WEB_RUN_TOKENS` | unset | The [run door](#run-door): its port, and a JSON array of `{agent, sha256, project, grant, model?}` (SHA-256 of each token, never the token; `model` is the default when `?model=` is absent). Both valid or it stays off |
 
 Everything else (default model, Pi profile and packages, repository source) is in **Settings** or [`config.json`](configuration.md).
 
@@ -29,7 +30,7 @@ Everything else (default model, Pi profile and packages, repository source) is i
 With `PI_WEB_DISCORD_TOKEN` and `PI_WEB_DISCORD_USER` set, web DMs that user from the bot when a session needs them. It reads every worker event as it passes through web; workers never see the token.
 
 - A question (an extension's select, confirm or input dialog) still open after 5 minutes: the session title, the question, numbered options and a link to the session.
-- For an agent run (a session created with `"agent": "<name>"` on `POST /api/chats` or `POST /api/projects/:id/sessions`; web keeps the mark in `PI_WEB_HOME/agent-sessions.json`): questions at once, and every finished turn.
+- For an agent session (created with `"agent": "<name>"` on `POST /api/chats` or `POST /api/projects/:id/sessions`; web keeps the mark in `PI_WEB_HOME/agent-sessions.json`): questions at once, and every finished turn. A [prime](#primes)'s run sends questions at once too; its finished turn is DMed with its report, linked to the prime's conversation, so writing back continues the conversation. Its questions still link to the run, which is the only session that can take the answer.
 - For any other session whose latest user message came from a DM: every finished turn, until a message is typed in the browser.
 
 A finished turn DMs a header line (title and link) and the turn's final reply: the last assistant message's text, without thinking, tool calls or earlier notes. Replies over Discord's 2000 characters are split at paragraphs, lines or spaces, closing and reopening a cut code fence; every part after the first starts with `(continued)`. A turn whose events were partly missed (web lost its stream to the worker) DMs the one-line notice instead of a reply with a gap. Parts go out one notice at a time, and a part that cannot be sent is logged and skipped. A failed turn DMs its error once pi has given up: a failed attempt pi retries on its own (the worker's `turn_end` carries `willRetry`) DMs nothing, and a retry that succeeds DMs only its reply. If pi gives up before the retry starts (cancelled or stopped), the worker sends the turn's final `turn_end` then. A turn with no final text DMs one line.
@@ -106,6 +107,26 @@ When Pi or an extension asks something (`ask_user_question`, a confirmation, a v
 ## Logins reach workers
 
 When you sign in to GitHub or a model provider, web sends the login to workspaced (`PUT /v1/github-auth`, `PUT /v1/model-auth`), and workspaced hands it to every worker read-only. Every worker can therefore read those logins. You sign in once, in web. Workers get model logins without their refresh tokens: web refreshes them (every 5 minutes, any login with under 30 minutes left) and re-shares, so a worker can never spend a refresh token that web and the other workers depend on. If web can't re-share for about half an hour, workers' model requests fail until it can.
+
+## Run door
+
+A scheduler (a Kubernetes CronJob) starts agent runs through the run door, a second port that serves only `POST /run`. The main port has no login and can do everything, so the network must admit only the scheduler to the run door's port and never to the main one.
+The bearer token picks the entry: web makes sure the entry's project has its worker (created with the entry's grant, woken if asleep; a worker under another grant gets 409), checks `?model=` (else the entry's `model`) against the worker's model list (an unknown one is 400 `model_unavailable`, a worker that cannot give its list is 502 `run_failed`; either way nothing is created), creates a session named `<agent>: <YYYY-MM-DD HH:mm>` (UTC) marked as a prime's run, sets the model, sends the body (plain text, up to 64 KB) as the brief, and answers 202 `{session, url}` without waiting for the turn.
+Only web opens the door, and only with workspaced; workers never do. Several entries may share an agent (token rotation).
+
+```sh
+curl -fsS -H "Authorization: Bearer $TOKEN" --data-binary @brief.md "http://<host>:<port>/run?model=<model>"
+```
+
+A token's hash: `printf %s "$TOKEN" | sha256sum`.
+
+### Primes
+
+Each run-door agent is a prime: one visible **conversation** plus hidden **run** sessions. `agent-sessions.json` marks runs and conversations `{agent, kind}` and other agent sessions with the bare agent name (as older builds wrote it), and web passes `agent` and `agentKind` on each session to the browser. Kinds: `agent` (created with `agent` through the ordinary API, or an older file's bare name: listed, and DMed as described under Discord), `run` (only the run door makes these) and `conversation`. Run sessions are left out of the sidebar, the Project menu's lists and counts, and Past sessions; a link (`/?s=<id>`) still opens one.
+
+When a run's turn ends for good (done, or failed after pi's retries), web posts a report into the conversation through the worker's `POST /api/sessions/:id/note` (body capped at 256 KB; web cuts a reply over 120 KB of UTF-8, at a character boundary, and adds `…(truncated, open the run)`), then DMs it. The worker appends it as a `pi-web:prime-report` custom message without a model turn (mid-turn, pi appends it when the turn ends). pi gives custom messages to the model as user messages, so the stored text starts with a label saying it is the run's own output, not the owner's words; the chat shows a header with the run's name, the end time and a link to the run in the label's place, then the run's final reply (or its error), as a read-only block. The conversation is created at the first report, on the run's worker, named after the agent and given the run's model (else the token's `model`). If End idle archived it, it is restored; if its worker no longer knows it (a reset disk), a new one replaces it. Once the note is stored, the run's entry gets `reported: true`; once DMed, `dmed: true`. A transcript web cannot read or a note the conversation refuses is logged and left for the next check, which posts the note without a second DM. A run whose model or brief could not be set after its session was created is marked reported at once (logged). Workers keep no event backlog, so whenever web connects to a worker's events (at startup, after a deploy, after a dropped stream) it reads the transcript of each unreported run on that worker (one read each; runs on other workers are not touched, so nothing is woken) and reports any the worker says is not busy and that ended after its brief (a log line says so): a turn whose last record is a tool call was cut off by a worker restart and is reported as failed, `interrupted`. A live turn end and this check report a run once. A Discord message sent into a run before its report is DMed only by the report.
+
+The conversation DMs its own finished turns only when its latest user message came from Discord, like any other session.
 
 ## Security
 

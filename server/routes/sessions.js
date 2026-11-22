@@ -76,6 +76,23 @@ export function register(api, deps) {
     }
   });
 
+  // A prime's run report, posted by web into the prime's conversation: shown in the chat, no model turn.
+  api.post("/sessions/:id/note", async c => {
+    const raw = await c.req.text();
+    if (Buffer.byteLength(raw) > 256 * 1024) return err(c, 413, "note_too_large");
+    let body = {};
+    try { body = JSON.parse(raw); } catch { /* empty below */ }
+    const text = typeof body?.text === "string" ? body.text.trim() : "";
+    if (!text) return err(c, 400, "empty_message");
+    try {
+      await sup.note(c.req.param("id"), text, body.details && typeof body.details === "object" ? body.details : undefined);
+      return c.json({ ok: true });
+    } catch (e) {
+      if (String(e?.message || "").startsWith("unknown session")) return err(c, 404, "no_such_session");
+      throw e;
+    }
+  });
+
   api.post("/sessions/:id/queue/clear", async c => c.json(await sup.clearQueue(c.req.param("id"))));
 
   api.post("/sessions/:id/stop", async c => {

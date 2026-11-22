@@ -1690,5 +1690,30 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     assert.equal(location.hash, "");
   }
 
+  // Primes: a run session stays out of the sidebar and its count; its report shows in the conversation.
+  {
+    const p1 = store.state.projects.find(p => p.id === "p1");
+    const countOf = () => root.querySelector("[data-act='project-row'][data-id='p1'] .count").textContent;
+    store.set({ openTree: { ...store.state.openTree, p1: true } });
+    const before = Number(countOf());
+    p1.sessions.push(
+      { id: "run1", title: "labrat: 2026-11-22 08:00", agent: "labrat", agentKind: "run", contextId: "ctx-main", branch: "main", when: "now", streaming: false, children: [] },
+      { id: "conv1", title: "labrat", agent: "labrat", agentKind: "conversation", contextId: "ctx-main", branch: "main", when: "now", streaming: false, children: [] },
+      { id: "agent1", title: "nightly", agent: "nightly", agentKind: "agent", contextId: "ctx-main", branch: "main", when: "now", streaming: false, children: [] },
+    );
+    store.notify("state");
+    assert.ok(root.querySelector("[data-act='session-row'][data-id='conv1']"), "the conversation is listed");
+    assert.equal(root.querySelector("[data-act='session-row'][data-id='run1']"), null, "the run is not");
+    assert.ok(root.querySelector("[data-act='session-row'][data-id='agent1']"), "an agent session created through the API is listed, as before primes");
+    assert.equal(Number(countOf()), before + 2);
+    store.state.transcripts.conv1 = { streaming: false, seq: 0, records: [{ id: "c1", role: "report", text: "**labrat: 2026-11-22 08:00** · [open the run](/?s=run1)\n\nAll quiet.", at: 1 }] };
+    store.set({ view: "chat", projectId: "p1", sessionId: "conv1", chatId: null });
+    store.notify("transcript");
+    const report = root.querySelector("pi-thread .block.report");
+    assert.match(report.textContent, /All quiet\./);
+    assert.equal(report.querySelector("a").getAttribute("href"), "/?s=run1");
+    p1.sessions.splice(-3);
+  }
+
   dom.window.close();
 });
