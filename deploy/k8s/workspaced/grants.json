@@ -25,7 +25,8 @@
     "providers": [
       "labrat-seerr",
       "labrat-romarr",
-      "labrat-questarr"
+      "labrat-questarr",
+      "labrat-github"
     ],
     "environment": {
       "KUBERNETES_MASTER": "http://labrat-kube.openshell.svc.cluster.local:8001",
@@ -34,7 +35,8 @@
       "LOKI_URL": "http://loki.observability.svc.cluster.local:3100",
       "SEERR_URL": "http://seerr.acquisition.svc.cluster.local:5055",
       "ROMARR_URL": "http://romarr.acquisition.svc.cluster.local:6868",
-      "QUESTARR_URL": "http://questarr.acquisition.svc.cluster.local:5000"
+      "QUESTARR_URL": "http://questarr.acquisition.svc.cluster.local:5000",
+      "INFRA_REPO": "bry-guy/infra"
     },
     "egress": [
       {
@@ -53,6 +55,6 @@
         "access": "read-only"
       }
     ],
-    "description": "labrat only: an OpenShell sandbox with Claude through the gateway, read-only cluster access through the labrat-kube relay, read-only Prometheus and Loki, and the Seerr, ROMarr and Questarr APIs with keys held by the gateway (labrat-seerr, labrat-romarr, labrat-questarr). No GitHub, no other network."
+    "description": "labrat only: an OpenShell sandbox with Claude through the gateway, read-only cluster access through the labrat-kube relay, read-only Prometheus and Loki, and the Seerr, ROMarr and Questarr APIs with keys held by the gateway (labrat-seerr, labrat-romarr, labrat-questarr), and read-only access to the bry-guy/infra repository with a token held by the gateway (labrat-github). No GitHub write access, no other network."
   }
 }
