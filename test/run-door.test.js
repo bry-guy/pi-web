@@ -6,7 +6,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRemoteWorkspaces } from "../server/remote-workspaces.js";
-import { createRunDoor, runDoorConfig, runDoorFromEnv } from "../server/run-door.js";
+import { createPrimes, createRunDoor, runDoorConfig, runDoorFromEnv } from "../server/run-door.js";
 import { EventHub } from "../server/events.js";
 
 const sha = t => createHash("sha256").update(t).digest("hex");
@@ -113,7 +113,7 @@ test("a run creates the worker with the entry's grant, marks an agent session, s
     ["/workspaces/ws-labrat/api/sessions/s1/model", { model: "anthropic/claude-opus-5-5" }],
     ["/workspaces/ws-labrat/api/sessions/s1/message", { text: brief }],
   ]);
-  assert.equal(fake.remote.agentOf("s1"), "labrat");
+  assert.deepEqual(fake.remote.agentOf("s1"), { agent: "labrat", kind: "run" });
 });
 
 test("an existing worker on the same grant is woken and reused; no public URL, no url", async () => {
@@ -138,4 +138,87 @@ test("the main app has no /run; the door listens on its own port", async () => {
   let res;
   for (let i = 0; i < 50 && !res; i++) res = await fetch(`http://127.0.0.1:${port}/run`, { method: "POST", body: "x" }).catch(() => new Promise(r => setTimeout(r, 20)));
   assert.equal(res.status, 401);
+});
+
+// A project worker that keeps sessions: create, meta, transcript, model, restore, note.
+function primeWorkspaced(cachePath) {
+  const calls = [];
+  const sessions = new Map(); // id → { name, model, closed }
+  let next = 0;
+  const fetchImpl = async (url, init = {}) => {
+    const p = new URL(url).pathname.replace(/^\/v1/, "").replace("/workspaces/ws-labrat/api", "");
+    const method = init.method || "GET";
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push([method, p, body]);
+    const json = (b, status = 200) => new Response(JSON.stringify(b), { status });
+    if (p === "/workspaces") return json({ workspaces: [{ name: "ws-labrat", repository: "project:labrat", grant: "labrat", state: "running" }] });
+    if (p === "/state") return json({ projects: [{ id: "pp-labrat", sessions: [...sessions.keys()].map(id => ({ id, children: [] })) }] });
+    if (p.endsWith("/wake") || p === "/health") return json({ ok: true });
+    if (p === "/events") return json({}, 503);
+    if (p === "/projects/pp-labrat/sessions") { const id = `s${++next}`; sessions.set(id, { name: body.name }); return json({ id }); }
+    const [, id, rest] = p.match(/^\/sessions\/([^/]+)\/(.+)$/) || [];
+    const s = sessions.get(id);
+    if (!s) return json({ error: "no_such_session" }, 404);
+    if (rest === "meta") return json({ id, name: s.name, model: s.model || null });
+    if (rest === "transcript") return json({ records: [{ role: "user", text: "brief" }, { role: "assistant", text: "looking" }, { role: "assistant", text: `All quiet (${id}).` }] });
+    if (rest === "model") s.model = body.model;
+    if (rest === "restore") s.closed = false;
+    return json({ ok: true });
+  };
+  const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, cachePath, retryMs: 50, modelAuthSyncMs: 0 });
+  return { remote, calls, sessions };
+}
+
+const settle = () => new Promise(r => setTimeout(r, 20));
+
+test("a prime's runs are hidden runs reporting into one conversation, created once, restored and replaced", async () => {
+  const cachePath = path.join(mkdtempSync(path.join(tmpdir(), "primes-")), "remote-projects.json");
+  const fake = primeWorkspaced(cachePath);
+  const entries = runDoorConfig({ PI_WEB_RUN_PORT: "4000", PI_WEB_RUN_TOKENS: JSON.stringify([{ ...ENTRIES[1], model: "anthropic/claude-haiku-5-5" }]) }).entries;
+  const logs = [];
+  const app = createRunDoor({ entries, remote: fake.remote, log: () => {} });
+  const primes = createPrimes({ entries, remote: fake.remote, log: l => logs.push(l), now: () => new Date("2026-11-22T08:00:00Z") });
+  const notes = () => fake.calls.filter(c => c[1].endsWith("/note"));
+  const creates = () => fake.calls.filter(c => c[1] === "/projects/pp-labrat/sessions").map(c => c[2]);
+  try {
+    // Run 1 (token model, no ?model=): its final reply goes into a new conversation that gets the run's model.
+    assert.equal((await app.request(run("tok-labrat"))).status, 202);
+    assert.equal(fake.sessions.get("s1").model, "anthropic/claude-haiku-5-5", "the token's model is the default");
+    primes.event("s1", "turn_end", { reason: "errored", willRetry: true });
+    primes.event("s1", "turn_end", { reason: "stopped" });
+    primes.event("s1", "turn_end", { reason: "done" });
+    await settle();
+    assert.deepEqual(creates().at(-1), { name: "labrat", agent: "labrat", kind: "conversation" });
+    assert.deepEqual(fake.remote.agentOf("s2"), { agent: "labrat", kind: "conversation" });
+    assert.equal(fake.sessions.get("s2").model, "anthropic/claude-haiku-5-5");
+    assert.deepEqual(notes().map(c => c[0] + " " + c[1]), ["POST /sessions/s2/note"]);
+    assert.deepEqual(notes()[0][2], {
+      text: "**labrat: " + fake.sessions.get("s1").name.slice(8) + "** · ended 2026-11-22 08:00 UTC · [open the run](/?s=s1)\n\nAll quiet (s1).",
+      details: { agent: "labrat", run: "s1", outcome: "done" },
+    });
+
+    // Run 2 (?model=) failed: same conversation, which End idle had archived, so it is restored first.
+    fake.sessions.get("s2").closed = true;
+    assert.equal((await app.request(run("tok-labrat", "brief", "?model=anthropic/claude-opus-5-5"))).status, 202);
+    assert.equal(fake.sessions.get("s3").model, "anthropic/claude-opus-5-5");
+    primes.event("s3", "turn_end", { reason: "errored", error: "529 overloaded" });
+    await settle();
+    assert.equal(creates().length, 3, "two runs, one conversation");
+    assert.equal(fake.sessions.get("s2").closed, false);
+    assert.match(notes()[1][2].text, /^\*\*labrat: .*\(\/\?s=s3\)\n\nFailed: 529 overloaded$/);
+    assert.equal(notes()[1][1], "/sessions/s2/note");
+
+    // After a restart web still knows the conversation; after a disk reset the worker does not, so it is replaced.
+    const again = primeWorkspaced(cachePath);
+    assert.equal(again.remote.conversationOf("labrat"), "s2");
+    again.sessions.set("s9", { name: "labrat: later" });
+    again.remote.markAgent("s9", "labrat");
+    const primes2 = createPrimes({ entries, remote: again.remote, log: () => {} });
+    assert.equal(await primes2.conversationFor("s9"), "s1", "a new conversation on the empty disk");
+    assert.equal(again.remote.conversationOf("labrat"), "s1");
+    assert.equal(again.remote.agentOf("s2"), null);
+    assert.equal(await primes2.conversationFor("nope"), null, "not a prime's run");
+    again.remote.stop();
+    assert.deepEqual(logs.filter(l => l.includes("not reported")), []);
+  } finally { fake.remote.stop(); }
 });

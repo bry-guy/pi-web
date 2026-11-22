@@ -558,6 +558,9 @@ function applyTranscriptEvent(evt, t, replay) {
     case "summary":
       if (evt.record && !byId(recs, evt.record.id)) recs.splice(lastStreamingIndex(recs), 0, evt.record);
       break;
+    case "report":
+      if (evt.record && !byId(recs, evt.record.id)) recs.push(evt.record);
+      break;
     case "text_delta": {
       let r = byId(recs, evt.messageId);
       if (!r) {

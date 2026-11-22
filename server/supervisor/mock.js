@@ -245,6 +245,15 @@ export class MockSupervisor {
     this.hub.emit(id, "session_meta", { name });
   }
 
+  async note(id, text) {
+    const s = this._load(id);
+    if (!s) throw new Error(`unknown session ${id}`);
+    const record = { id: newId("r"), role: "report", text, at: Date.now() };
+    s.records.push(record);
+    this._save(s);
+    this.hub.emit(id, "report", { record });
+  }
+
   // Fork transcript at (before) a user message; new session in newCwd.
   async fork(parentId, atRecordId, { cwd, name }) {
     const p = this._load(parentId);

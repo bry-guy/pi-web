@@ -702,6 +702,10 @@ class PiThread extends HTMLElement {
     }
     // Tool calls, diffs, and summaries belong to the turn's steps view, not the chat.
     if (m.role === "tool" || m.role === "diff" || m.role === "summary") return "";
+    // A prime's run report (web posts it; read-only): header line with the run's link, then the run's reply.
+    if (m.role === "report") {
+      return `<div class="msg"><div class="block report"><div class="markdown-content">${renderMarkdown(m.text)}</div></div></div>`;
+    }
     if (m.role === "bang") {
       return `<div class="msg"><div class="block bang">
         <div class="block-head">

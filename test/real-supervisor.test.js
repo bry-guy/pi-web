@@ -470,6 +470,19 @@ test("a turn pi said it would retry is reported failed once when the retry never
   assert.deepEqual(events.map(e => [e.type, e.data.reason, e.data.willRetry]), [
     ["turn_end", "errored", true], ["turn_start", undefined, undefined], ["turn_end", "errored", undefined],
   ]);
+  events.length = 0;
+
+  // A prompt rejected or queued during the backoff (pi is streaming) is not the retried turn's end.
+  st = { ...fresh(), session: { isStreaming: true } };
+  supervisor.live.set("session-1", st);
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: true });
+  supervisor._startPrompt("session-1", async () => { throw new Error("busy"); }, () => {});
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(events.splice(1), [], "no false final turn end while the retry is pending");
+  events.length = 0;
+  st.session.isStreaming = false;
+  supervisor._onEvent("session-1", st, { type: "auto_retry_end", success: false, attempt: 1, finalError: "Retry cancelled" });
+  assert.deepEqual(events.splice(0), [final]);
   supervisor.live.delete("session-1");
 });
 
@@ -789,4 +802,33 @@ test("session summaries are reused until the session file changes", () => {
   fs.appendFileSync(file, "b\n");
   assert.equal(supervisor._sessionSummary(SessionManager, file).cwd, "/two");
   assert.equal(opens, 2);
+});
+
+test("a prime report is a custom message with no model turn, shown in the transcript and live", async () => {
+  const events = [];
+  const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ type, data }) });
+  const entries = [{ type: "message", id: "u1", parentId: null, message: { role: "user", content: "hi" } }];
+  const calls = [];
+  const text = "**labrat: 2026-11-22 08:00** · ended 2026-11-22 08:04 UTC · [open the run](/?s=r1)\n\nAll quiet.";
+  const at = Date.parse("2026-11-22T08:04:00Z");
+  const st = {
+    liveRecords: new Map(), pendingMessages: [],
+    session: {
+      sessionManager: { getBranch: () => entries, getLeafId: () => entries.at(-1).id },
+      // As pi does when idle: append the entry, then announce the message.
+      async sendCustomMessage(message, options) {
+        calls.push([message, options]);
+        entries.push({ type: "custom_message", id: "c1", parentId: "u1", ...message, timestamp: new Date(at).toISOString() });
+        supervisor._onEvent("conv", st, { type: "message_start", message: { role: "custom", ...message, timestamp: at } });
+        supervisor._onEvent("conv", st, { type: "message_end", message: { role: "custom", ...message, timestamp: at } });
+      },
+    },
+  };
+  supervisor.live.set("conv", st);
+  await supervisor.note("conv", text, { agent: "labrat", run: "r1", outcome: "done" });
+  assert.deepEqual(calls, [[{ customType: "pi-web:prime-report", content: text, display: true, details: { agent: "labrat", run: "r1", outcome: "done" } }, { triggerTurn: false }]]);
+  const record = { id: "c1", role: "report", text, at };
+  assert.deepEqual(events, [{ type: "report", data: { record } }]);
+  assert.deepEqual((await supervisor.transcript("conv")).filter(r => r.role !== "user"), [record]);
+  supervisor.live.delete("conv");
 });

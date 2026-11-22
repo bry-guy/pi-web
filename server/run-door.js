@@ -20,9 +20,9 @@ export function runDoorConfig(env) {
   try { entries = JSON.parse(raw); } catch { return { entries: null, error: "PI_WEB_RUN_TOKENS is not valid JSON" }; }
   const text = v => typeof v === "string" && v.trim() !== "";
   if (!Array.isArray(entries) || !entries.length) return { entries: null, error: "PI_WEB_RUN_TOKENS must be a non-empty array" };
-  const bad = entries.findIndex(e => !e || !text(e.agent) || !text(e.project) || !text(e.grant) || !/^[0-9a-f]{64}$/i.test(e.sha256 ?? ""));
-  if (bad >= 0) return { entries: null, error: `PI_WEB_RUN_TOKENS entry ${bad} needs agent, project, grant and a 64-hex sha256` };
-  return { port: Number(port), entries: entries.map(e => ({ agent: e.agent.trim(), project: e.project.trim(), grant: e.grant.trim(), hash: Buffer.from(e.sha256, "hex") })) };
+  const bad = entries.findIndex(e => !e || !text(e.agent) || !text(e.project) || !text(e.grant) || !/^[0-9a-f]{64}$/i.test(e.sha256 ?? "") || (e.model !== undefined && !text(e.model)));
+  if (bad >= 0) return { entries: null, error: `PI_WEB_RUN_TOKENS entry ${bad} needs agent, project, grant and a 64-hex sha256 (model, if given, a model id)` };
+  return { port: Number(port), entries: entries.map(e => ({ agent: e.agent.trim(), project: e.project.trim(), grant: e.grant.trim(), model: e.model?.trim() || null, hash: Buffer.from(e.sha256, "hex") })) };
 }
 
 export function runDoorFromEnv(env, remote, { log = console.log } = {}) {
@@ -93,7 +93,7 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
     const brief = await readCapped(c.req.raw.body);
     if (brief === null) return c.json({ error: "brief_too_large", message: "the brief is capped at 64 KB" }, 413);
     if (!brief.trim()) return c.json({ error: "empty_brief" }, 400);
-    const model = c.req.query("model") || null;
+    const model = c.req.query("model") || entry.model;
     try {
       const name = await worker(entry);
       const id = await createSession(name, entry, `${entry.agent}: ${now().toISOString().slice(0, 16).replace("T", " ")}`);
@@ -113,4 +113,81 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
   });
   app.notFound(c => c.json({ error: "not_found" }, 404));
   return app;
+}
+
+const PRIME_TURN_ENDS = new Set(["done", "errored"]);
+
+/** The last reply of a transcript's last turn, or "". */
+const finalReply = records => {
+  const turn = (records || []).slice((records || []).findLastIndex(r => r.role === "user") + 1);
+  return turn.findLast(r => r.role === "assistant" && r.text?.trim())?.text.trim() || "";
+};
+
+/**
+ * Primes: each run-door agent has one visible conversation session; its runs stay out of the lists and
+ * report into it. The conversation is created at the first report, on the run's worker, and recorded in
+ * web's agent-sessions.json (kind "conversation"), so a restart finds it.
+ */
+export function createPrimes({ entries, remote, log = console.log, now = () => new Date() }) {
+  const pending = new Map(); // agent → the conversation id being checked or created
+  const entryOf = runId => {
+    const flag = remote.agentOf(runId);
+    return flag?.kind === "run" ? entries.find(e => e.agent === flag.agent) || null : null;
+  };
+
+  async function ensure(entry, runId) {
+    const known = remote.conversationOf(entry.agent);
+    if (known) {
+      const meta = await remote.sessionGet(known, "/meta");
+      if (meta.status < 300) {
+        // End idle may have archived it; restoring a live session does nothing.
+        await remote.sessionPost(known, "/restore", {});
+        return known;
+      }
+      if (meta.status !== 404) throw new Error(`conversation ${known} unavailable (${meta.body.error || meta.status})`);
+    }
+    // None yet, or its worker no longer knows it (a reset disk): a new one replaces it.
+    const name = await remote.owner("session", runId);
+    if (!name) throw new Error(`no worker for run ${runId}`);
+    const model = (await remote.sessionGet(runId, "/meta")).body?.model || entry.model;
+    const created = await remote.createSession(name, `pp-${entry.project}`, { name: entry.agent, agent: entry.agent, kind: "conversation" });
+    if (created.status >= 300 || !created.body.id) throw new Error(`could not create the conversation (${created.body.error || created.status})`);
+    if (known) remote.markAgent(known, null);
+    if (model) {
+      const set = await remote.sessionPost(created.body.id, "/model", { model });
+      if (set.status >= 300) log(`pi-ez-web: ${entry.agent}'s conversation has no model (${set.body.error || set.status})`);
+    }
+    log(`pi-ez-web: ${entry.agent}'s conversation is ${created.body.id}`);
+    return created.body.id;
+  }
+
+  /** The conversation a run reports into (created if needed), or null for a session that is not a prime's run. */
+  function conversationFor(runId) {
+    const entry = entryOf(runId);
+    if (!entry) return Promise.resolve(null);
+    if (!pending.has(entry.agent)) pending.set(entry.agent, ensure(entry, runId).finally(() => pending.delete(entry.agent)));
+    return pending.get(entry.agent);
+  }
+
+  async function report(entry, runId, { reason, error }) {
+    const [meta, transcript] = await Promise.all([
+      remote.sessionGet(runId, "/meta"),
+      reason === "done" ? remote.sessionGet(runId, "/transcript") : null,
+    ]);
+    const body = reason === "errored" ? `Failed: ${error || "unknown error"}` : finalReply(transcript?.body?.records) || "Finished with no reply.";
+    const when = now().toISOString().slice(0, 16).replace("T", " ");
+    const head = `**${meta.body?.name || entry.agent}** · ended ${when} UTC · [open the run](/?s=${encodeURIComponent(runId)})`;
+    const id = await conversationFor(runId);
+    const sent = await remote.sessionPost(id, "/note", { text: `${head}\n\n${body}`, details: { agent: entry.agent, run: runId, outcome: reason } });
+    if (sent.status >= 300) throw new Error(`the conversation refused it (${sent.body.error || sent.status})`);
+  }
+
+  function event(sessionId, type, data = {}) {
+    // Only a turn's final end: a failed attempt pi retries reports through the retry's own end.
+    if (type !== "turn_end" || data.willRetry || !PRIME_TURN_ENDS.has(data.reason)) return;
+    const entry = entryOf(sessionId);
+    if (entry) report(entry, sessionId, data).catch(e => log(`pi-ez-web: ${entry.agent}'s run ${sessionId} was not reported: ${e.message}`));
+  }
+
+  return { event, conversationFor };
 }
