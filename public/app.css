@@ -859,6 +859,7 @@ main.col.settings-open > pi-header { display: none; }
 .session-history { margin-top: 18px; padding-top: 13px; }
 .chats-worker { margin-top: 18px; }
 .session-history-heading { margin: 0 2px 8px; }
+.session-filter-wrap { margin: 0 0 8px; }
 .session-history-heading > span:last-child { color: var(--faint); font-size: 9.5px; font-weight: 400; letter-spacing: normal; text-transform: none; }
 .session-history-scroll { display: grid; gap: 4px; max-height: 230px; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; scrollbar-gutter: stable; }
 .session-history-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 9px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--muted); text-align: left; cursor: pointer; }
