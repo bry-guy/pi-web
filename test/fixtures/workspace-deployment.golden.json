@@ -55,6 +55,14 @@
                 "value": "web-srvivor"
               },
               {
+                "name": "PI_SYNC_ALL_SESSIONS",
+                "value": "on"
+              },
+              {
+                "name": "PI_SYNC_REMOTE_CONTROL",
+                "value": "off"
+              },
+              {
                 "name": "HOME",
                 "value": "/data/pi-ez-operator-home"
               },

@@ -38,12 +38,18 @@ export function remoteWorkspacesFromEnv(env, deps) {
   const modelAuthPath = path.join(env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"), "auth.json");
   const cachePath = env.PI_WEB_HOME ? path.join(env.PI_WEB_HOME, "remote-projects.json") : null;
   let discord = null, primes = null;
+  const remoteSessions = deps.remoteSessions || null;
   const onEvent = (...a) => { discord?.event(...a); primes?.event(...a); };
   const remote = createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, onEvent, ...(fetchImpl ? { fetchImpl } : {}), ...deps });
   // The run door's agents are primes: each run reports into the agent's one conversation.
   const { entries } = runDoorConfig(env);
   primes = entries ? createPrimes({ entries, remote, dm: (...a) => discord?.runReport(...a) }) : null;
-  discord = discordFromEnv(env, { post: remote.sessionPost, titleOf: remote.sessionTitle, agentOf: remote.agentOf });
+  discord = discordFromEnv(env, {
+    post: (id, subpath, body) => (remoteSessions?.owns(id) || remoteSessions?.wasKnown(id) ? remoteSessions.sessionPost(id, subpath, body) : remote.sessionPost(id, subpath, body)),
+    titleOf: id => remoteSessions?.sessionTitle(id) || remote.sessionTitle(id),
+    agentOf: remote.agentOf,
+  });
+  remote.notifyDiscordEvent = evt => discord?.event(evt);
   // Connecting to the workers' events checks for runs that ended while web was down.
   if (primes) remote.refresh().catch(() => {});
   if (discord) {

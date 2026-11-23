@@ -193,6 +193,13 @@ spec:
                   name: pi-sync-token
                   key: PI_SYNC_TOKEN
                   optional: true
+            # Remote control controller token (never given to workspaced or workers).
+            - name: PI_SYNC_REMOTE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pi-sync-remote-token
+                  key: PI_SYNC_REMOTE_TOKEN
+                  optional: true
             # Discord contact (docs/web.md): off until Secret pi-web-discord exists.
             - name: PI_WEB_DISCORD_TOKEN
               valueFrom:
