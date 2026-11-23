@@ -82,6 +82,8 @@ export function register(api, deps) {
       chats,
       endedChats: endedChats || [],
       remoteSessions: remoteSessions ? remoteSessions.list() : [],
+      // Run-door agents: each with its conversation (null until first opened) and its hidden runs.
+      primes: remote?.primes?.() || [],
     });
   });
 

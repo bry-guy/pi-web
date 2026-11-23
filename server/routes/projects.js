@@ -1,7 +1,7 @@
 import { syncConfig } from "../config.js";
 import { remoteConversationPreview, remoteConversationsForProject, remoteConversationsForRepository } from "../pi-sync.js";
 import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
-import { createPiProject, forgetRepo, listPiProjects, piProject, pushState, recordRepo, repoEntry } from "../pi-projects.js";
+import { createPiProject, ensurePrimeAgentsFile, forgetRepo, listPiProjects, piProject, pushState, recordRepo, repoEntry } from "../pi-projects.js";
 import { folderId } from "../domain.js";
 
 const IDLE_MS = 24 * 60 * 60 * 1000;
@@ -206,6 +206,8 @@ export function register(api, deps) {
       const name = typeof body.name === "string" ? body.name.trim() || null : null;
       const reporter = createOperationReporter({ id: operationRequestId(c, body), kind: "create-session", title: "Create session" });
       reporter.log({ type: "request", phase: "request", message: `POST /api/projects/${folder.name}/sessions` });
+      // A prime's run or conversation (run-door.js): the folder tells every session to keep notes.md.
+      if (body.agent && ["run", "conversation"].includes(body.kind)) ensurePrimeAgentsFile(folder.path);
       const base = { projectId: folderId(folder.name), contextId: "folder", branch: null, workspacePath: folder.path, setup: null, setupNeeded: false };
       if (body.mode === "synced") {
         const opened = await openSynced(c, body.syncSessionId, folder.path, reporter);
