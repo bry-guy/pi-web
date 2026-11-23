@@ -50,6 +50,22 @@ export function piProject(name, env = process.env) {
   return listPiProjects(env).find(p => p.name === name) || null;
 }
 
+const PRIME_AGENTS = `# Prime
+
+This project belongs to a prime: an unattended agent whose conversation and scheduled runs are separate sessions.
+No session here remembers another.
+
+- Read \`notes.md\` first (it may not exist yet).
+- Before you finish, update \`notes.md\` with what the next session needs: what you checked, what you found, what is open.
+- \`notes.md\` is the only memory between runs.
+`;
+
+/** Writes a prime project's AGENTS.md if it has none; an existing file is never changed. */
+export function ensurePrimeAgentsFile(dir) {
+  try { fs.writeFileSync(path.join(dir, "AGENTS.md"), PRIME_AGENTS, { flag: "wx" }); return true; }
+  catch (e) { if (e.code !== "EEXIST") throw e; return false; }
+}
+
 /** Web's project entry for one repository of a pi project; the id is stable across machines. */
 export function repoEntry(group, repo) {
   return {
