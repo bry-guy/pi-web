@@ -520,7 +520,7 @@ function applyUiEvent(evt) {
     const activeNext = activeRemoteId ? next.find(item => item.id === activeRemoteId) : null;
     store.set({
       remoteSessions: next,
-      ...(activeNext ? { remoteSessionMeta: activeNext } : {}),
+      ...(activeNext ? { remoteSessionMeta: activeNext, ...(activeNext.model ? { model: activeNext.model } : {}) } : {}),
     });
     for (const r of next) {
       const t = store.state.transcripts[r.id] ||= { records: [], streaming: false, seq: -1 };

@@ -1664,7 +1664,7 @@ export function reportText(text, details) {
 
 // pi-summarize writes a custom session entry that groups the tool calls it summarizes.
 // Its title entries (kind "title") are not step summaries.
-function summaryRecord(entry) {
+export function summaryRecord(entry) {
   const data = entry.data || {};
   if (data.kind === "title" || !data.text) return null;
   return {
