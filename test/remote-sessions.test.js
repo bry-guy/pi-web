@@ -100,13 +100,38 @@ test("remote sessions adapter streams SSE events, serves transcripts, answers qu
   registerRemoteSessionRoutes(app, rs);
   app.all("*", c => c.json({ fallback: true }, 404));
 
-  relay.setSessions([{ sessionId: "r-1", hostId: "h-1", device: "macbook", cwd: "/Users/brain", title: "Home scratch", streaming: false }]);
+  relay.setSessions([{
+    sessionId: "r-1",
+    hostId: "h-1",
+    device: "macbook",
+    cwd: "/Users/brain",
+    title: "Home scratch",
+    model: "antigravity/gemini-4-neon",
+    thinkingLevel: "xhigh",
+    thinkingLevels: ["off", "low", "medium", "high", "xhigh"],
+    context: { window: 200000, used: 50000, remaining: 150000, percent: 25, input: 10000, cacheRead: 40000, cacheWrite: 0, model: "antigravity/gemini-4-neon" },
+    streaming: false,
+  }]);
   rs.start();
 
   try {
     for (let i = 0; i < 40 && !rs.owns("r-1"); i++) await new Promise(r => setTimeout(r, 15));
     assert.equal(rs.owns("r-1"), true);
     assert.equal(rs.list()[0].cwdShort, "~");
+
+    // Context and thinking endpoints reflect live laptop metadata.
+    const ctxRes = await app.request("/sessions/r-1/context");
+    assert.equal(ctxRes.status, 200);
+    assert.equal((await ctxRes.json()).percent, 25);
+    const thinkRes = await app.request("/sessions/r-1/thinking");
+    assert.equal(thinkRes.status, 200);
+    assert.equal((await thinkRes.json()).level, "xhigh");
+    const setThink = await app.request("/sessions/r-1/thinking", { method: "POST", body: JSON.stringify({ level: "high" }) });
+    assert.equal(setThink.status, 200);
+    const setModel = await app.request("/sessions/r-1/model", { method: "POST", body: JSON.stringify({ model: "anthropic/claude-opus-5-5" }) });
+    assert.equal(setModel.status, 200);
+    assert.equal(relay.posted.some(p => p.path === "/v1/remote/sessions/r-1/thinking" && p.body.level === "high"), true);
+    assert.equal(relay.posted.some(p => p.path === "/v1/remote/sessions/r-1/model" && p.body.model === "anthropic/claude-opus-5-5"), true);
 
     // Transcript converts Pi JSONL entries into web transcript records.
     const tRes = await app.request("/sessions/r-1/transcript");
@@ -130,13 +155,20 @@ test("remote sessions adapter streams SSE events, serves transcripts, answers qu
     assert.equal(relay.posted.some(p => p.path === "/v1/remote/sessions/r-1/message" && p.body.text === "ping"), true);
     assert.equal(relay.posted.some(p => p.path === "/v1/remote/sessions/r-1/stop"), true);
 
-    // Streaming events flow onto hub + Discord onEvent.
+    // Streaming events flow onto hub + Discord onEvent, including pi-summarize live working & summary lines.
     relay.emitEvent("r-1", { type: "turn_start" });
+    relay.emitEvent("r-1", { type: "working_message", message: "Inspecting remote routes…" });
+    relay.emitEvent("r-1", {
+      type: "summary",
+      entry: { id: "sum-1", type: "custom", customType: "pi-summarize", data: { kind: "activity", text: "Inspecting remote routes…", toolCallIds: ["t1"] } },
+    });
     relay.emitEvent("r-1", { type: "message_start", role: "assistant" });
     relay.emitEvent("r-1", { type: "text_delta", delta: "hi!" });
     relay.emitEvent("r-1", { type: "message_end", role: "assistant" });
     relay.emitEvent("r-1", { type: "turn_end", ok: true });
     for (let i = 0; i < 40 && !hubFrames.some(f => f.type === "turn_end"); i++) await new Promise(r => setTimeout(r, 15));
+    assert.equal(hubFrames.some(f => f.type === "extension_ui_working" && f.message === "Inspecting remote routes…"), true);
+    assert.equal(hubFrames.some(f => f.type === "summary" && f.record?.text === "Inspecting remote routes…"), true);
     assert.equal(hubFrames.some(f => f.type === "text_delta" && f.delta === "hi!"), true);
     assert.equal(discordEvents.some(e => e.type === "turn_end"), true);
 

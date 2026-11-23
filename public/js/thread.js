@@ -952,7 +952,8 @@ class PiContextMeter extends HTMLElement {
     const id = store.activeKey();
     const transcript = store.transcript(id);
     const lastAssistant = [...transcript.records].reverse().find(record => record.role === "assistant");
-    const key = `${id || ""}:${store.state.model || ""}:${transcript.streaming}:${lastAssistant?.id || ""}:${lastAssistant?.text?.length || 0}`;
+    const remoteUsed = store.remoteSession()?.context?.used ?? "";
+    const key = `${id || ""}:${store.state.model || ""}:${transcript.streaming}:${lastAssistant?.id || ""}:${lastAssistant?.text?.length || 0}:${remoteUsed}`;
     if (!id || key === this.contextKey) return;
     this.contextKey = key;
     try {
@@ -1011,12 +1012,20 @@ class PiThinkingPicker extends HTMLElement {
   }
   async sync() {
     const id = store.activeKey();
-    if (!id || id === this.sessionId) return;
+    if (!id) return;
+    const remoteLevel = store.remoteSession()?.thinkingLevel || null;
+    if (id === this.sessionId) {
+      if (remoteLevel && this.info && this.info.level !== remoteLevel) {
+        this.info = { ...this.info, level: remoteLevel };
+        this.render();
+      }
+      return;
+    }
     this.sessionId = id;
     this.open = false;
     // Keep the effort control present even when a provider does not advertise
     // reasoning metadata. Pi will clamp unsupported choices server-side.
-    this.info = { level: "medium", levels: THINKING_LEVELS, supported: true };
+    this.info = { level: remoteLevel || "medium", levels: THINKING_LEVELS, supported: true };
     this.render();
     try {
       const info = await api.thinking(id);
