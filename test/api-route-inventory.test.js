@@ -53,6 +53,7 @@ const routesBeforeA2 = [
   "POST /sessions/:id/hooks/:name",
   "POST /sessions/:id/bang",
   "POST /sessions/:id/close",
+  "POST /sessions/:id/delete",
   "DELETE /projects/:id/branches/:branch",
   "POST /settings",
 ];
