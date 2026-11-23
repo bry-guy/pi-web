@@ -133,7 +133,9 @@ test("a run creates the worker with the entry's grant, marks an agent session, s
     ["/workspaces/ws-labrat/api/sessions/s1/model", { model: "anthropic/claude-opus-5-5" }],
     ["/workspaces/ws-labrat/api/sessions/s1/message", { text: brief }],
   ]);
-  assert.deepEqual(fake.remote.agentOf("s1"), { agent: "labrat", kind: "run" });
+  const { started, ...flag } = fake.remote.agentOf("s1");
+  assert.deepEqual(flag, { agent: "labrat", kind: "run" });
+  assert.ok(Date.now() - Date.parse(started) < 60_000, "a run records when it started");
 });
 
 test("an existing worker on the same grant is woken and reused; no public URL, no url", async () => {
@@ -210,7 +212,6 @@ test("a prime's runs are hidden runs reporting into one conversation, created on
     assert.equal((await app.request(run("tok-labrat"))).status, 202);
     assert.equal(fake.sessions.get("s1").model, "anthropic/claude-haiku-5-5", "the token's model is the default");
     await primes.event("s1", "turn_end", { reason: "errored", willRetry: true });
-    await primes.event("s1", "turn_end", { reason: "stopped" });
     await Promise.all([primes.event("s1", "turn_end", { reason: "done" }), primes.event("s1", "turn_end", { reason: "done" })]);
     await primes.event("s1", "turn_end", { reason: "done" });
     assert.deepEqual(creates().at(-1), { name: "labrat", agent: "labrat", kind: "conversation" });

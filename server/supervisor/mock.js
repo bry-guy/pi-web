@@ -193,6 +193,13 @@ export class MockSupervisor {
   isOpen(id) { return !!this.opened?.has(id) || this.live.has(id); }
   isLive(id) { return this.live.has(id); }
   isCompacting(id) { return !!this.live.get(id)?.compacting; }
+  async deleteSession(id) {
+    if (this.isStreaming(id)) throw Object.assign(new Error("session_streaming"), { code: "session_streaming" });
+    if (!this._load(id)) throw new Error(`unknown session ${id}`);
+    fs.rmSync(fileOf(id), { force: true });
+    this.live.delete(id);
+    this.opened?.delete(id);
+  }
   async rehome(id, newCwd) {
     const s = this._load(id);
     if (!s) throw new Error("no such session");
