@@ -72,6 +72,9 @@ export function workerEnv({ name, repository }) {
     ["PORT", String(WORKSPACE_PORT)], ["PI_WEB_MODE", "real"],
     // Shared conversations name the machine that last wrote them; a worker is "web-<project>" in that list.
     ["PI_SYNC_DEVICE_LABEL", `web-${name}`],
+    // Workers always sync their conversations (projects + web chats) and never act as remote-control hosts.
+    ["PI_SYNC_ALL_SESSIONS", "on"],
+    ["PI_SYNC_REMOTE_CONTROL", "off"],
     ["HOME", HOME], ["XDG_CONFIG_HOME", `${HOME}/.config`], ["XDG_DATA_HOME", `${HOME}/.local/share`], ["XDG_CACHE_HOME", `${HOME}/.cache`],
     ["PI_WEB_HOME", `${DATA}/pi-ez-web`], ["PI_CODING_AGENT_DIR", `${DATA}/pi-ez-agent`], ["PI_WEB_REPOS_ROOT", `${DATA}/repos`],
     ["PI_WEB_GITHUB_AUTH_FILE", `${GITHUB_DIR}/github-auth.json`],

@@ -154,7 +154,7 @@ export function selectSession(projectId, sessionId, { showOperation = false, his
   // Before the view changes, so a closing settings view goes back over its own entry, not this one.
   showInUrl(sessionId, urlMode);
   store.set({
-    view: "chat", projectId, sessionId, chatId: null, drawerOpen: false, sessionPicker: null, sessionPickerError: null,
+    view: "chat", projectId, sessionId, chatId: null, remoteSessionId: null, remoteSessionMeta: null, drawerOpen: false, sessionPicker: null, sessionPickerError: null,
     filesOpen: store.state.filesOpen, files: [], fileError: null, filePath: null, fileView: null,
     fileTarget: "origin", fileTargets: ["origin", "primary"], fileLoading: false, filesLoading: false, filesLoadedKey: null,
     model: node?.model || store.state.effectiveDefaultModel || null,
@@ -184,14 +184,37 @@ export function selectSessionById(sessionId, options = {}) {
     selectChat(sessionId, options);
     return true;
   }
+  const remote = (store.state.remoteSessions || []).find(item => item.id === sessionId);
+  if (remote) {
+    selectRemoteSession(sessionId, options);
+    return true;
+  }
   return false;
+}
+
+export function selectRemoteSession(remoteId, { history: urlMode } = {}) {
+  const remote = (store.state.remoteSessions || []).find(item => item.id === remoteId);
+  showInUrl(remoteId, urlMode);
+  store.set({
+    view: "chat", remoteSessionId: remoteId, remoteSessionMeta: remote || store.state.remoteSessionMeta || null,
+    chatId: null, sessionId: null, projectId: null, drawerOpen: false, sessionPicker: null, sessionPickerError: null,
+    filesOpen: false, files: [], fileError: null, filePath: null, fileView: null,
+    fileTarget: "origin", fileTargets: ["origin", "primary"], fileLoading: false, filesLoading: false, filesLoadedKey: null,
+    model: remote?.model || store.state.effectiveDefaultModel || null,
+    requestedModel: null,
+    modelFallback: false,
+    modelUnavailable: false,
+  });
+  saveActiveSession({ kind: "remote", id: remoteId });
+  store.markRead(remoteId);
+  openTranscript(remoteId);
 }
 
 export function selectChat(chatId, { history: urlMode } = {}) {
   const chat = store.state.chats.find(c => c.id === chatId);
   showInUrl(chatId, urlMode);
   store.set({
-    view: "chat", chatId, sessionId: null, projectId: null, drawerOpen: false, sessionPicker: null, sessionPickerError: null,
+    view: "chat", chatId, remoteSessionId: null, remoteSessionMeta: null, sessionId: null, projectId: null, drawerOpen: false, sessionPicker: null, sessionPickerError: null,
     filesOpen: false, files: [], fileError: null, filePath: null, fileView: null,
     fileTarget: "origin", fileTargets: ["origin", "primary"], fileLoading: false, filesLoading: false, filesLoadedKey: null,
     model: chat?.model || store.state.effectiveDefaultModel || null,
@@ -220,6 +243,10 @@ export function openSavedSelectionEarly() {
 export function restoreLastSelection(options = {}) {
   const saved = savedActiveSession();
   if (!saved?.id) return false;
+  if (saved.kind === "remote" && (store.state.remoteSessions || []).some(item => item.id === saved.id)) {
+    selectRemoteSession(saved.id, options);
+    return true;
+  }
   if (saved.kind === "chat" && store.state.chats.some(chat => chat.id === saved.id)) {
     selectChat(saved.id, options);
     return true;
@@ -445,6 +472,7 @@ class PiSidebar extends HTMLElement {
     else if (act === "session-row") {
       selectSession(t.dataset.pid, t.dataset.id, { showOperation: true });
     } else if (act === "chat-row") selectChat(t.dataset.id);
+    else if (act === "remote-row") selectRemoteSession(t.dataset.id);
   }
 
   clearSearch() {
@@ -507,6 +535,10 @@ class PiSidebar extends HTMLElement {
           <div class="rail-search-wrap">${icon("search")}<input class="rail-search" type="search" placeholder="Filter chats and sessions" aria-label="Filter chats and sessions"><button class="rail-search-clear" data-act="clear-search" title="Clear filter" aria-label="Clear filter" hidden>${icon("close")}</button></div>
         </div>
         <div class="rail-scroll">
+          <div class="devices-section" hidden>
+            <div class="sec-head"><div class="sec-label">Devices</div></div>
+            <div class="devices-list"></div>
+          </div>
           <div class="sec-head"><div class="sec-label">Projects</div></div>
           <button class="rail-cta" data-act="repo-picker">${icon("plus")}<span>New project</span></button>
           <div class="projects-list"></div>
@@ -562,6 +594,30 @@ class PiSidebar extends HTMLElement {
           data-label="${esc(cRow.title)}" data-branch="" title="End chat" aria-label="End chat ${esc(cRow.title)}">${icon("close")}</button>
       </div>`;
       }).join("");
+    const deviceGroups = new Map();
+    for (const r of s.remoteSessions || []) {
+      if (q && !fuzzyMatch(r.title, q) && !fuzzyMatch(r.device, q) && !fuzzyMatch(r.cwdShort || r.cwd, q)) continue;
+      if (!deviceGroups.has(r.device)) deviceGroups.set(r.device, []);
+      deviceGroups.get(r.device).push(r);
+    }
+    const devRows = [];
+    for (const [device, sessions] of deviceGroups) {
+      devRows.push(`<div class="row-wrap" style="margin-top:1px"><div class="row mono" aria-label="Device ${esc(device)}"><span class="lbl">${esc(device)}</span><span class="count">${sessions.length}</span></div></div>`);
+      for (const r of sessions) {
+        const streaming = r.streaming || store.transcript(r.id).streaming;
+        const unread = !!s.unread[r.id];
+        const sel = s.remoteSessionId === r.id && s.view === "chat";
+        const sub = r.cwdShort ? `<span class="when" title="${esc(r.cwd || r.cwdShort)}">${esc(r.cwdShort)}</span>` : "";
+        devRows.push(`<div class="row-wrap nested" style="margin-left:14px">
+          <div class="row ${sel ? "active " : ""}${streaming ? "streaming " : ""}${unread ? "unread " : ""}" role="button" tabindex="0" data-act="remote-row" data-id="${esc(r.id)}">
+            <span class="lbl">${esc(r.title)}</span><span class="live-dot" aria-label="${unread ? "Unread reply" : "Live"}"></span>${sub}
+          </div></div>`);
+      }
+    }
+    const devSection = this.querySelector(".devices-section");
+    if (devSection) devSection.hidden = devRows.length === 0;
+    const devList = this.querySelector(".devices-list");
+    if (devList) setHTML(devList, devRows.join(""));
     setHTML(this.querySelector(".projects-list"), projRows.join(""));
     setHTML(this.querySelector(".chats-list"), chatRows);
   }
@@ -634,12 +690,25 @@ class PiHeader extends HTMLElement {
     const p = store.project();
     const inProject = store.inProject() && p;
     const chat = s.chats.find(x => x.id === s.chatId);
+    const liveRemote = store.remoteSession();
+    const remoteMeta = liveRemote || (s.remoteSessionId ? s.remoteSessionMeta : null);
     const node = inProject ? store.findSession(s.sessionId) : null;
     const title = s.view === "settings" ? "Settings"
+      : remoteMeta ? remoteMeta.title
       : chat ? chat.title : node ? node.title : (s.chatId ? "New chat" : (p ? p.name : "Chat"));
     const activeSession = node || chat;
     const syncInfo = syncSummary(activeSession?.id && store.state.extensionStatuses[activeSession.id]?.["pi-sync"]);
     const syncLine = syncInfo ? `<span class="sync-label ${syncInfo.tone}" title="${esc(syncInfo.full)}">${esc(`${syncInfo.state}: ${syncInfo.message}`)}</span>` : "";
+    const remoteLine = s.remoteSessionId ? (() => {
+      const dev = remoteMeta?.device || "Device";
+      const cwd = remoteMeta?.cwdShort ? `<span class="workspace-divider">·</span><span class="workspace-commit" title="${esc(remoteMeta.cwd || remoteMeta.cwdShort)}">${esc(remoteMeta.cwdShort)}</span>` : "";
+      const state = !liveRemote
+        ? `<span class="workspace-divider">·</span><span class="sync-label error">Offline</span>`
+        : liveRemote.waitingDialog
+          ? `<span class="workspace-divider">·</span><span class="sync-label busy" title="${esc(liveRemote.waitingDialog)}">Waiting on ${esc(dev)}</span>`
+          : `<span class="workspace-divider">·</span><span class="workspace-state">Live</span>`;
+      return `<span class="workspace-trigger"><span class="workspace-branch">${esc(dev)}</span>${cwd}${state}</span>`;
+    })() : "";
     const workspace = inProject ? this.sessionContext() : null;
     const branch = workspace ? this.contextLabel(workspace, p) : null;
     const commit = workspace?.head ? String(workspace.head) : "";
@@ -647,11 +716,12 @@ class PiHeader extends HTMLElement {
       ? `<span class="workspace-divider">·</span><span class="workspace-commit" title="Current commit ${esc(commit)}">${esc(commit.slice(0, 8))}</span>`
       : "";
     // A project-level session: just its project; repository sessions show repository, branch, commit and Git state.
-    const workspaceTrigger = inProject && workspace?.kind === "folder" ? `<span class="workspace-trigger"><span class="workspace-branch">${esc(p.group || p.name)}</span></span>`
+    const workspaceTrigger = remoteLine
+      || (inProject && workspace?.kind === "folder" ? `<span class="workspace-trigger"><span class="workspace-branch">${esc(p.group || p.name)}</span></span>`
       : inProject && workspace ? `
         <span class="workspace-trigger">
           <span class="workspace-branch">${esc(branch)}</span>${commitLabel}<span class="workspace-divider">·</span><span class="workspace-state">${esc(gitStatusText(workspace))}</span>
-        </span>` : "";
+        </span>` : "");
     // Git then sync on one line, both plain text: the whole title block is the one target.
     const subArea = workspaceTrigger || syncLine ? `<div class="bar-sub">${workspaceTrigger}${syncLine}</div>` : "";
     const operationScope = {

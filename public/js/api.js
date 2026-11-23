@@ -178,6 +178,7 @@ function applyState(s) {
     piProjectsSyncedRoute: !!s.piProjectsSyncedRoute,
     chats: s.chats,
     endedChats: s.endedChats || [],
+    remoteSessions: s.remoteSessions || [],
     buildId: s.buildId || null,
     startedAt: s.startedAt || null,
     reconnecting: false,
@@ -204,6 +205,10 @@ function applyState(s) {
     const transcript = store.state.transcripts[chat.id] ||= { records: [], streaming: false, seq: -1 };
     transcript.streaming = !!chat.streaming;
   }
+  for (const remote of s.remoteSessions || []) {
+    const transcript = store.state.transcripts[remote.id] ||= { records: [], streaming: false, seq: -1 };
+    transcript.streaming = !!remote.streaming;
+  }
   store.notify("transcript");
 }
 
@@ -221,7 +226,9 @@ function findSessionInState(state, id) {
     const hit = findNode(p.sessions, id);
     if (hit) return hit;
   }
-  return (state.chats || []).find(c => c.id === id) || null;
+  return (state.chats || []).find(c => c.id === id)
+    || (state.remoteSessions || []).find(r => r.id === id)
+    || null;
 }
 function findNode(nodes, id) {
   for (const node of nodes || []) {
@@ -504,6 +511,24 @@ function applyUiEvent(evt) {
   }
   if (evt.type === "operation_complete") {
     completeOperationSnapshot(evt.operation);
+    return true;
+  }
+  if (evt.type === "remote_sessions") {
+    const prevOnline = !!store.remoteSession();
+    const next = Array.isArray(evt.sessions) ? evt.sessions : [];
+    const activeRemoteId = store.state.remoteSessionId;
+    const activeNext = activeRemoteId ? next.find(item => item.id === activeRemoteId) : null;
+    store.set({
+      remoteSessions: next,
+      ...(activeNext ? { remoteSessionMeta: activeNext } : {}),
+    });
+    for (const r of next) {
+      const t = store.state.transcripts[r.id] ||= { records: [], streaming: false, seq: -1 };
+      t.streaming = !!r.streaming;
+    }
+    if (activeRemoteId && !prevOnline && activeNext) {
+      void openTranscript(activeRemoteId, { scrollToLatest: false });
+    }
     return true;
   }
   return false;

@@ -1515,17 +1515,21 @@ class PiComposer extends HTMLElement {
     if (this.commandQuery() !== null && activeId) void this.syncCommands();
     else this.renderCommands();
     const error = store.state.error;
+    const remoteOffline = !!(store.state.remoteSessionId && !store.remoteSession());
+    const offlineDevice = store.state.remoteSessionMeta?.device || "Device";
     this.ta.classList.toggle("busy", t.streaming || compacting);
-    this.ta.classList.toggle("error", !!error);
-    this.ta.placeholder = error || (compacting
-      ? "Compacting context…"
-      : t.streaming ? "Enter a steering message, alt+enter a follow-up…"
-        : store.inProject() && p ? `Ask about ${p.name}…` : "Send a message…");
-    this.stopBtn.classList.toggle("hidden", !t.streaming);
+    this.ta.classList.toggle("error", !!error || remoteOffline);
+    this.ta.placeholder = error || (remoteOffline
+      ? `${offlineDevice} is offline — waiting to reconnect…`
+      : compacting
+        ? "Compacting context…"
+        : t.streaming ? "Enter a steering message, alt+enter a follow-up…"
+          : store.inProject() && p ? `Ask about ${p.name}…` : "Send a message…");
+    this.stopBtn.classList.toggle("hidden", !t.streaming || remoteOffline);
     const draftState = store.draftData(activeId);
-    this.ta.disabled = !!draftState?.sending;
-    this.imageInput.disabled = !!draftState?.sending;
-    this.sendBtn.disabled = compacting || !!draftState?.sending || !!draftState?.pendingAttachments;
+    this.ta.disabled = !!draftState?.sending || remoteOffline;
+    this.imageInput.disabled = !!draftState?.sending || remoteOffline;
+    this.sendBtn.disabled = compacting || !!draftState?.sending || !!draftState?.pendingAttachments || remoteOffline;
     // While Pi waits for a typed answer, the message box answers it.
     const answering = !!this.asking(activeId);
     this.sendBtn.classList.toggle("answer", answering);
