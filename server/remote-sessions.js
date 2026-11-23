@@ -4,9 +4,10 @@
 
 import { randomUUID } from "node:crypto";
 import { loadConfig, syncConfig } from "./config.js";
-import { entriesToRecords, renderToolResult, summarizeArgs } from "./supervisor/real.js";
+import { entriesToRecords, renderToolResult, summarizeArgs, summaryRecord } from "./supervisor/real.js";
 
 const CUSTOM_OPTION = "Type something…";
+const DEFAULT_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function compactCwd(cwd) {
   if (!cwd) return "";
@@ -44,6 +45,9 @@ export function createRemoteSessions({ baseUrl, token, hub, onEvent = null, fetc
       cwdShort: compactCwd(raw.cwd),
       title: sessionDisplayTitle(raw),
       model: raw.model || null,
+      thinkingLevel: raw.thinkingLevel || null,
+      thinkingLevels: Array.isArray(raw.thinkingLevels) && raw.thinkingLevels.length ? raw.thinkingLevels : null,
+      context: raw.context && typeof raw.context === "object" ? raw.context : null,
       streaming: !!raw.streaming,
       waitingDialog: raw.waitingDialog || null,
       pendingQuestion: raw.pendingQuestion || null,
@@ -288,10 +292,25 @@ export function createRemoteSessions({ baseUrl, token, hub, onEvent = null, fetc
           emitSessions();
         }
         break;
+      case "working_message":
+        emitEvent(sessionId, "extension_ui_working", { message: evt.message || null });
+        break;
+      case "summary": {
+        const record = evt.entry ? summaryRecord(evt.entry) : null;
+        if (record) emitEvent(sessionId, "summary", { record });
+        break;
+      }
       case "session_meta":
         if (meta) {
           if (typeof evt.title === "string" && evt.title.trim()) meta.title = evt.title.trim();
           if (evt.model !== undefined) meta.model = evt.model;
+          if (typeof evt.thinkingLevel === "string" && evt.thinkingLevel) meta.thinkingLevel = evt.thinkingLevel;
+          if (Array.isArray(evt.thinkingLevels) && evt.thinkingLevels.length) meta.thinkingLevels = evt.thinkingLevels;
+          if (evt.context && typeof evt.context === "object") meta.context = evt.context;
+          emitEvent(sessionId, "session_meta", {
+            ...(meta.model ? { model: meta.model } : {}),
+            ...(meta.thinkingLevel ? { thinkingLevel: meta.thinkingLevel } : {}),
+          });
           emitSessions();
         }
         break;
@@ -402,6 +421,12 @@ export function createRemoteSessions({ baseUrl, token, hub, onEvent = null, fetc
     }
     replayPendingQuestion(sessionId);
     const meta = live.get(sessionId);
+    if (meta) {
+      if (body.model !== undefined) meta.model = body.model;
+      if (typeof body.thinkingLevel === "string" && body.thinkingLevel) meta.thinkingLevel = body.thinkingLevel;
+      if (Array.isArray(body.thinkingLevels) && body.thinkingLevels.length) meta.thinkingLevels = body.thinkingLevels;
+      if (body.context && typeof body.context === "object") meta.context = body.context;
+    }
     return {
       status: 200,
       body: {
@@ -458,6 +483,35 @@ export function createRemoteSessions({ baseUrl, token, hub, onEvent = null, fetc
     get: id => live.get(id) || known.get(id) || null,
     sessionTitle: id => (live.get(id) || known.get(id))?.title || null,
     transcript,
+    context: id => {
+      const m = live.get(id) || known.get(id);
+      if (m?.context) return m.context;
+      return { window: null, used: null, remaining: null, percent: null, input: 0, cacheRead: 0, cacheWrite: 0, model: m?.model || null };
+    },
+    thinking: id => {
+      const m = live.get(id) || known.get(id);
+      const levels = m?.thinkingLevels || DEFAULT_THINKING_LEVELS;
+      return { level: m?.thinkingLevel || "off", levels, supported: levels.length > 1 };
+    },
+    setThinking: async (id, body) => {
+      const out = await proxyPost(id, "/thinking", body);
+      const m = live.get(id);
+      if (out.status === 200 && m && typeof out.body?.level === "string") {
+        m.thinkingLevel = out.body.level;
+        if (Array.isArray(out.body.levels) && out.body.levels.length) m.thinkingLevels = out.body.levels;
+        emitSessions();
+      }
+      return out;
+    },
+    setModel: async (id, body) => {
+      const out = await proxyPost(id, "/model", body);
+      const m = live.get(id);
+      if (out.status === 200 && m && typeof out.body?.model === "string") {
+        m.model = out.body.model;
+        emitSessions();
+      }
+      return out;
+    },
     message: (id, body) => proxyPost(id, "/message", body),
     stopTurn: id => proxyPost(id, "/stop", {}),
     respondQuestion,
@@ -509,6 +563,34 @@ export function registerRemoteSessionRoutes(api, remoteSessions) {
       device: m?.device || null,
       online: remoteSessions.owns(id),
     });
+  });
+
+  api.get("/sessions/:id/context", async (c, next) => {
+    const id = c.req.param("id");
+    if (!remoteSessions.owns(id) && !remoteSessions.wasKnown(id)) return next();
+    return c.json(remoteSessions.context(id));
+  });
+
+  api.get("/sessions/:id/thinking", async (c, next) => {
+    const id = c.req.param("id");
+    if (!remoteSessions.owns(id) && !remoteSessions.wasKnown(id)) return next();
+    return c.json(remoteSessions.thinking(id));
+  });
+
+  api.post("/sessions/:id/thinking", async (c, next) => {
+    const id = c.req.param("id");
+    if (!remoteSessions.owns(id) && !remoteSessions.wasKnown(id)) return next();
+    const body = await c.req.json().catch(() => ({}));
+    const { status, body: out } = await remoteSessions.setThinking(id, body);
+    return c.json(out, status);
+  });
+
+  api.post("/sessions/:id/model", async (c, next) => {
+    const id = c.req.param("id");
+    if (!remoteSessions.owns(id) && !remoteSessions.wasKnown(id)) return next();
+    const body = await c.req.json().catch(() => ({}));
+    const { status, body: out } = await remoteSessions.setModel(id, body);
+    return c.json(out, status);
   });
 
   api.post("/sessions/:id/message", async (c, next) => {
