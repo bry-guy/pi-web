@@ -203,6 +203,26 @@ test("remote sessions adapter streams SSE events, serves transcripts, answers qu
       ],
     });
 
+    // Close forwards to relay and drops session from live + known on 200.
+    const cRes = await app.request("/sessions/r-1/close", { method: "POST" });
+    assert.equal(cRes.status, 200);
+    assert.equal(relay.posted.some(p => p.path === "/v1/remote/sessions/r-1/close"), true);
+    assert.equal(rs.owns("r-1"), false);
+    assert.equal(rs.wasKnown("r-1"), false);
+
+    // Re-register to verify offline refusal after disconnect.
+    relay.setSessions([
+      {
+        sessionId: "r-1",
+        hostId: "h-1",
+        device: "macbook",
+        cwd: "/Users/brain",
+        title: "Scratch",
+        model: "anthropic/claude-opus-4-6",
+        streaming: false,
+      },
+    ]);
+    for (let i = 0; i < 40 && !rs.owns("r-1"); i++) await new Promise(r => setTimeout(r, 15));
     // When host disconnects, session returns 503 host_offline (never queued).
     relay.setSessions([]);
     for (let i = 0; i < 40 && rs.owns("r-1"); i++) await new Promise(r => setTimeout(r, 15));
