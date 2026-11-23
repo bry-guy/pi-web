@@ -514,11 +514,33 @@ export function createRemoteSessions({ baseUrl, token, hub, onEvent = null, fetc
     },
     message: (id, body) => proxyPost(id, "/message", body),
     stopTurn: id => proxyPost(id, "/stop", {}),
+    close: async id => {
+      const out = await proxyPost(id, "/close", {});
+      if (out.status === 200) {
+        live.delete(id);
+        known.delete(id);
+        runtime.delete(id);
+        clearStepper(id, true);
+        emitSessions();
+      }
+      return out;
+    },
     respondQuestion,
     cancelQuestion,
     sessionPost: async (id, subpath, body) => {
       if (subpath === "/message") return proxyPost(id, "/message", body);
       if (subpath === "/stop") return proxyPost(id, "/stop", {});
+      if (subpath === "/close") {
+        const out = await proxyPost(id, "/close", {});
+        if (out.status === 200) {
+          live.delete(id);
+          known.delete(id);
+          runtime.delete(id);
+          clearStepper(id, true);
+          emitSessions();
+        }
+        return out;
+      }
       const extMatch = /^\/extension-ui\/([^/]+)$/.exec(subpath || "");
       if (extMatch) return respondQuestion(id, decodeURIComponent(extMatch[1]), body);
       return { status: 404, body: { error: "not_found" } };
@@ -605,6 +627,13 @@ export function registerRemoteSessionRoutes(api, remoteSessions) {
     const id = c.req.param("id");
     if (!remoteSessions.owns(id) && !remoteSessions.wasKnown(id)) return next();
     const { status, body: out } = await remoteSessions.stopTurn(id);
+    return c.json(out, status);
+  });
+
+  api.post("/sessions/:id/close", async (c, next) => {
+    const id = c.req.param("id");
+    if (!remoteSessions.owns(id) && !remoteSessions.wasKnown(id)) return next();
+    const { status, body: out } = await remoteSessions.close(id);
     return c.json(out, status);
   });
 

@@ -1,6 +1,6 @@
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { beginOperation, combineOperationResults, completeOperation, operationFor, operationHint } from "./operations.js";
-import { setHTML, store } from "./store.js";
+import { setHTML, store, toast } from "./store.js";
 import { esc, icon, openSessionPicker, selectSession } from "./shell.js";
 import { gitErrorMessage, workerErrorMessage } from "./panel-utils.js";
 
@@ -122,7 +122,7 @@ class PiConfirm extends HTMLElement {
     const project = store.state.projects.find(item => item.id === c.projectId);
     const primary = c.primaryBranch || project?.defaultBranch || project?.primaryBranch || "main";
     this.busy = true;
-    this.busyLabel = c.type === "merge" ? `Fetching ${primary}…` : c.type === "push" ? "Pushing commits…" : c.type === "deleteBranch" ? "Deleting branch…" : "Working…";
+    this.busyLabel = c.type === "merge" ? `Fetching ${primary}…` : c.type === "push" ? "Pushing commits…" : c.type === "deleteBranch" ? "Deleting branch…" : c.type === "closeRemote" ? `Closing on ${c.device || "device"}…` : "Working…";
     const operation = ["merge", "push", "deleteBranch"].includes(c.type)
       ? beginOperation(c.type === "merge" ? "merge" : c.type === "push" ? "push" : "delete", c.type === "merge" ? `Merge ${c.branch}` : c.type === "push" ? `Push ${c.branch}` : `Delete ${c.branch}`, "", "Request started.", c.id)
       : null;
@@ -131,6 +131,14 @@ class PiConfirm extends HTMLElement {
     try {
       if (c.type === "close") {
         await api.close(c.id);
+      } else if (c.type === "closeRemote") {
+        await api.close(c.id, null, "remote");
+        const remaining = (store.state.remoteSessions || []).filter(item => item.id !== c.id);
+        store.set({
+          remoteSessions: remaining,
+          ...(store.state.remoteSessionId === c.id ? { remoteSessionId: null, remoteSessionMeta: null } : {}),
+        });
+        toast(`Closed “${c.label || "Session"}” on ${c.device || "device"}.`, "info");
       } else if (c.type === "merge") {
         result = await api.mergeBranch(c.id, operation?.id);
       } else if (c.type === "push") {
@@ -221,6 +229,10 @@ class PiConfirm extends HTMLElement {
       title = c.kind === "chat" ? "Close chat" : "Close session";
       body = `“${esc(c.label)}” will be archived. Its transcript and Git context remain available.`;
       action = c.kind === "chat" ? "Close chat" : "Close session";
+    } else if (c.type === "closeRemote") {
+      title = `Close on ${esc(c.device)}?`;
+      body = `This exits pi on ${esc(c.device)} for “${esc(c.label)}”. The session file stays on disk and can be resumed locally with <code>/resume</code>.`;
+      action = "Close session";
     } else if (c.type === "merge") {
       title = `Merge ${esc(c.branch)} to ${esc(primary)}?`;
       body = `This merges into the local ${esc(primary)} checkout, returns affected sessions to it, and deletes the local branch and worktree. It does not push.`;

@@ -1369,6 +1369,19 @@ class PiComposer extends HTMLElement {
       return;
     }
     if (action === "quit") {
+      if (store.state.remoteSessionId === id) {
+        const meta = store.remoteSession();
+        store.set({
+          confirm: {
+            type: "closeRemote",
+            id,
+            label: meta?.title || "Session",
+            device: meta?.device || "device",
+            error: null,
+          },
+        });
+        return;
+      }
       await closeConversation(id, store.state.chatId ? "chat" : "session");
       return;
     }

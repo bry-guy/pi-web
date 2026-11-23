@@ -436,6 +436,18 @@ class PiSidebar extends HTMLElement {
     if (act === "clear-search") { this.clearSearch(); return; }
     if (act === "close-row") {
       e.stopPropagation();
+      if (t.dataset.kind === "remote") {
+        store.set({
+          confirm: {
+            type: "closeRemote",
+            id: t.dataset.id,
+            label: t.dataset.label || "Session",
+            device: t.dataset.device || "device",
+            error: null,
+          },
+        });
+        return;
+      }
       void closeConversation(t.dataset.id, t.dataset.kind);
       return;
     }
@@ -611,6 +623,8 @@ class PiSidebar extends HTMLElement {
         devRows.push(`<div class="row-wrap nested" style="margin-left:14px">
           <div class="row ${sel ? "active " : ""}${streaming ? "streaming " : ""}${unread ? "unread " : ""}" role="button" tabindex="0" data-act="remote-row" data-id="${esc(r.id)}">
             <span class="lbl">${esc(r.title)}</span><span class="live-dot" aria-label="${unread ? "Unread reply" : "Live"}"></span>${sub}
+            <button class="row-close" data-act="close-row" data-kind="remote" data-id="${esc(r.id)}"
+              data-label="${esc(r.title)}" data-device="${esc(r.device)}" title="Close on ${esc(r.device)}" aria-label="Close ${esc(r.title)} on ${esc(r.device)}">${icon("close")}</button>
           </div></div>`);
       }
     }
