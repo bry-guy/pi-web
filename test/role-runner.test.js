@@ -1,0 +1,104 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { EventHub } from "../server/events.js";
+import { createRoleRunner, installRoleRunner, ROLE_RUNNER } from "../server/role-runner.js";
+
+process.env.PI_WEB_MODE = "mock";
+process.env.PI_WEB_HOME = mkdtempSync(path.join(tmpdir(), "pi-web-role-runner-"));
+const { createApp } = await import("../server/index.js");
+
+// A hub whose events are kept, and a runner on it.
+function setup(options) {
+  const hub = new EventHub();
+  const events = [];
+  hub.addClient(frame => { const data = /^data: (.*)$/m.exec(frame)?.[1]; if (data) events.push(JSON.parse(data)); });
+  return { runner: createRoleRunner(hub, options), events };
+}
+const ask = (runner, extra = {}) => runner.run({ role: "app/dev", msg: "do it", name: "dev: do it", cwd: ".", session: "s1", ...extra });
+const notes = () => { const kept = []; return { kept, note: async (...a) => { kept.push(a); } }; };
+
+test("a run asks web with an event on the calling session and returns web's final reply", async () => {
+  const { runner, events } = setup();
+  const updates = [];
+  const result = ask(runner, { onUpdate: t => updates.push(t) });
+  const { request, ...event } = events[0];
+  assert.deepEqual({ sessionId: event.sessionId, type: event.type, role: event.role, msg: event.msg, cwd: event.cwd }, { sessionId: "s1", type: "role_run_request", role: "app/dev", msg: "do it", cwd: "." });
+  const { kept, note } = notes();
+  for (const state of ["accepted", "started"]) assert.equal(await runner.answer({ request, state, run: "r1" }, note), true);
+  assert.equal(await runner.answer({ request, state: "done", status: "done", text: "app/dev run done\n\nshipped", role: "app/dev", run: "r1" }, note), true);
+  assert.deepEqual(await result, { text: "app/dev run done\n\nshipped", isError: false, status: "done", background: false });
+  assert.deepEqual(updates, ["app/dev: starting", "app/dev: running"]);
+  assert.deepEqual(kept, [], "a waiting call takes the result; nothing is written into the session");
+});
+
+test("no answer from web is an error, and so is web's refusal", async () => {
+  const silent = setup({ ackMs: 20 });
+  await assert.rejects(ask(silent.runner), /pi-web did not answer, so app\/dev was not started/);
+  const refused = setup();
+  const result = ask(refused.runner);
+  const { request } = refused.events[0];
+  await refused.runner.answer({ request, state: "accepted" }, null);
+  await refused.runner.answer({ request, state: "failed", message: "Can't start app/dev: app/dev is not granted to p on pi-web" }, null);
+  await assert.rejects(result, /not granted to p on pi-web/);
+  const never = setup({ waitMs: 20 });
+  const stuck = ask(never.runner);
+  await never.runner.answer({ request: never.events[0].request, state: "accepted" }, null);
+  await assert.rejects(stuck, /did not start app\/dev in time/);
+});
+
+test("background and long runs hand over; their result is written into the session as a note", async () => {
+  const { runner, events } = setup({ waitMs: 30 });
+  const { kept, note } = notes();
+  const background = ask(runner, { background: true });
+  const first = events[0].request;
+  await runner.answer({ request: first, state: "accepted" }, note);
+  await runner.answer({ request: first, state: "started", run: "r1" }, note);
+  assert.deepEqual(await background, { text: "app/dev started. Its result will arrive here as a message when it ends.", isError: false, status: "running", background: true });
+
+  const long = ask(runner);
+  const second = events[1].request;
+  await runner.answer({ request: second, state: "accepted" }, note);
+  await runner.answer({ request: second, state: "started", run: "r2" }, note);
+  assert.match((await long).text, /continues in the background: it is still running after 15 minutes/);
+
+  assert.equal(await runner.answer({ request: first, state: "done", status: "done", text: "app/dev run done\n\nshipped", role: "app/dev", run: "r1" }, note), true);
+  assert.equal(kept.length, 1);
+  assert.match(kept[0][0], /^Result of the app\/dev run this session started with role_agent \(done\)\. This is the run's own output, not a message from the owner:\n\napp\/dev run done\n\nshipped$/);
+  assert.deepEqual(kept[0][1], { agent: "app/dev", run: "r1", outcome: "done", head: "**app/dev** · done · [open the run](/?s=r1)" });
+  assert.equal(await runner.answer({ request: "unknown", state: "started" }, note), false, "nothing to do with a stray answer");
+});
+
+test("abort asks web to stop the run and fails the call", async () => {
+  const { runner, events } = setup();
+  const controller = new AbortController();
+  const result = ask(runner, { signal: controller.signal });
+  const { request } = events[0];
+  await runner.answer({ request, state: "accepted" }, null);
+  controller.abort();
+  await assert.rejects(result, /Aborted: asked pi-web to stop app\/dev/);
+  assert.deepEqual([events[1].type, events[1].request, events[1].sessionId], ["role_run_stop", request, "s1"]);
+});
+
+test("only a project worker that is not a sandbox offers the runner", () => {
+  try {
+    assert.equal(installRoleRunner({}), false);
+    assert.equal(installRoleRunner({ PI_WEB_PROJECT: "p", PI_ANTHROPIC_PLACEHOLDER_FILE: "/data/placeholder" }), false, "a role's own worker cannot start role runs");
+    assert.equal(globalThis[ROLE_RUNNER], undefined);
+    assert.equal(installRoleRunner({ PI_WEB_PROJECT: "p" }), true);
+    assert.equal(typeof globalThis[ROLE_RUNNER].run, "function");
+  } finally { delete globalThis[ROLE_RUNNER]; }
+});
+
+test("POST /sessions/:id/role-run hands web's answer to the runner; a stray one is 404", async () => {
+  const { app } = createApp({ uiOnly: false });
+  const post = body => app.request("/api/sessions/s1/role-run", { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body) });
+  assert.equal((await post("{")).status, 400);
+  assert.equal((await post({ state: "done" })).status, 400);
+  const stray = await post({ request: "nobody", state: "started" });
+  assert.deepEqual([stray.status, (await stray.json()).error], [404, "no_such_request"]);
+  const gone = await post({ request: "nobody", state: "done", text: "late result" });
+  assert.deepEqual([gone.status, (await gone.json()).error], [404, "no_such_session"], "a result for a session this worker does not have");
+});

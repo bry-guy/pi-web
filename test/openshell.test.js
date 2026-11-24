@@ -115,6 +115,15 @@ test("grants: provider openshell takes an egress list; other grants keep the lab
   assert.throws(bad({ provider: "openshell", serviceAccount: "sa" }), /serviceAccount is not supported/);
 });
 
+test("grants: a role grant is an OpenShell sandbox locked to its projects", () => {
+  const role = g => parseGrants(JSON.stringify({ default: { anyProject: true }, dev: { repos: ["project:p-dev"], provider: "openshell", role: "app/dev", ...g } })).dev;
+  assert.equal(role({}).role, "app/dev");
+  assert.equal(GRANTS.sandboxed.role, undefined);
+  assert.throws(() => role({ provider: undefined }), /role needs provider openshell/, "never a worker that holds web's logins");
+  assert.throws(() => role({ anyProject: true }), /role cannot be combined with anyProject/);
+  for (const bad of ["dev", "app/dev/x", "App/Dev", 7]) assert.throws(() => role({ role: bad }), /role must be <repo>\/<role>/, String(bad));
+});
+
 test("openshell is configured only by its gateway endpoint", () => {
   assert.equal(openshellConfig({}), null);
   assert.deepEqual({ ...CONFIG, image: undefined }, { endpoint: "http://127.0.0.1:8080", gateway: null, configHome: null, tlsDir: null, workspace: "default", bin: "/opt/openshell", namespace: "openshell", serviceDomain: "openshell.localhost", image: undefined, storage: "20Gi", storageClassName: null });

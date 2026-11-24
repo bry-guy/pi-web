@@ -10,6 +10,9 @@
 //                   "egress": [{ "host": "api.github.com", "port": 443 }],
 //                   "providers": ["labrat-kube"], "environment": { "TZ": "UTC" },
 //                   "packages": ["npm:@gotgenes/pi-anthropic-auth@3.4.4"] } }
+//
+// A grant with "role": "<repo>/<role>" is that role's worker for role_agent (server/role-runs.js): an OpenShell
+// sandbox, locked to the projects in `repos` ("project:<calling project>-<grant name>").
 import { workerEnv } from "./manifests.js";
 
 const K8S_NAME = /^[a-z0-9]([a-z0-9.-]{0,61}[a-z0-9])?$/;
@@ -19,13 +22,14 @@ export const PROVIDERS = ["openshell"];
 const HOST = /^[A-Za-z0-9*]([A-Za-z0-9*.-]{0,252})$/;
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const GATEWAY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
+const ROLE_ID = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
 // The gateway provider workspaced feeds the model login into, attached to every sandbox when fed.
 export const MODEL_PROVIDER = "pi-web-anthropic";
 // Sandbox variables workspaced sets itself, beside workerEnv.
 export const SANDBOX_ENV = ["HOST", "PI_ANTHROPIC_PLACEHOLDER_FILE", "PI_WEB_PACKAGES"];
 const RESERVED_ENV = new Set([...workerEnv({ name: "x", repository: "project:x" }).map(e => e.name), ...SANDBOX_ENV]);
-const KNOWN_KEYS = new Set(["anyProject", "repos", "env", "namespace", "serviceAccount", "runtimeClass", "provider", "egress", "description", "providers", "environment", "packages"]);
-const OPENSHELL_ONLY = ["providers", "environment", "packages"];
+const KNOWN_KEYS = new Set(["anyProject", "repos", "env", "namespace", "serviceAccount", "runtimeClass", "provider", "egress", "description", "providers", "environment", "packages", "role"]);
+const OPENSHELL_ONLY = ["providers", "environment", "packages", "role"];
 
 // An OpenShell grant's gateway providers, plain environment and pi packages.
 function parseSandboxFields(name, g) {
@@ -41,7 +45,10 @@ function parseSandboxFields(name, g) {
   }
   const packages = g.packages ?? [];
   if (!Array.isArray(packages) || !packages.every(p => typeof p === "string" && /^\S+$/.test(p) && !/^[./~]/.test(p))) fail(`${name}.packages must be pi package sources (npm:, git:, https:)`);
-  return { providers: [...new Set(providers)], environment: { ...environment }, packages: [...new Set(packages)] };
+  if (g.role != null && (typeof g.role !== "string" || !ROLE_ID.test(g.role))) fail(`${name}.role must be <repo>/<role>`);
+  // A role's credentials must never be open to every project.
+  if (g.role != null && g.anyProject) fail(`${name}.role cannot be combined with anyProject`);
+  return { providers: [...new Set(providers)], environment: { ...environment }, packages: [...new Set(packages)], ...(g.role ? { role: g.role } : {}) };
 }
 
 // An OpenShell grant's egress: default deny, plus these endpoints.

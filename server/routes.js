@@ -46,6 +46,7 @@ import { registerRemoteRoutes, remoteWorkspacesFromEnv } from "./remote-workspac
 import { registerRemoteSessionRoutes, remoteSessionsFromEnv } from "./remote-sessions.js";
 import { registerMockWorkers } from "./supervisor/mock.js";
 import { runDoorFromEnv } from "./run-door.js";
+import { roleRunner } from "./role-runner.js";
 
 export function buildApi(sup, { extensionUi = null, remoteSessions: injectedRemoteSessions = null } = {}) {
   const api = new Hono();
@@ -65,7 +66,7 @@ export function buildApi(sup, { extensionUi = null, remoteSessions: injectedRemo
   remote = remoteWorkspacesFromEnv(process.env, { hub, github, sup, remoteSessions });
   if (remote) runDoorFromEnv(process.env, remote);
   const deps = {
-    remote, remoteSessions, sup, extensionUi, hub, github, githubFlows, authFlows, guardedWorkspaceSessions,
+    remote, remoteSessions, sup, extensionUi, hub, roleRunner, github, githubFlows, authFlows, guardedWorkspaceSessions,
     streamSSE, fs, execFile, path, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID,
     chatsDir, loadBindings, loadConfig, newId, normalizeHookSets, normalizeHooks, normalizePiConfig,
     normalizeSyncConfig, normalizeThinkingLevel, repositorySource, reposRoot, resolvePath,
