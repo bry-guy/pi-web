@@ -30,7 +30,8 @@ RUN apt-get update \
 
 # mise and yadm let deployment prestart hooks install the operator's dotfiles
 # and project tools; workspaced drives OpenShell sandboxes with the openshell
-# CLI (a static musl build); kubectl matches the cluster (v1.34). Downloads are
+# CLI (a static musl build); kubectl matches the cluster (v1.34); gh is for
+# role workers and carries no login (see the wrapper below). Downloads are
 # pinned by SHA-256, kubectl by the SHA-512 its release notes publish.
 RUN set -eu; \
     tmp="$(mktemp -d)"; \
@@ -49,10 +50,15 @@ RUN set -eu; \
       'https://dl.k8s.io/v1.34.5/kubernetes-client-linux-amd64.tar.gz'; \
     echo "293977e3cb48e669a1354d643a61ff736337e6869a6ce5e109428fadda8e1fcf8597ebdbedfafd60fd096e1521fab4dfade6430c1911d1f4f05f7737dc5c453a  $tmp/kubernetes-client.tar.gz" | sha512sum -c -; \
     tar -xzf "$tmp/kubernetes-client.tar.gz" -C "$tmp" kubernetes/client/bin/kubectl; \
+    curl -fsSL --proto '=https' --tlsv1.2 --max-time 120 -o "$tmp/gh.tar.gz" \
+      'https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_amd64.tar.gz'; \
+    echo "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112  $tmp/gh.tar.gz" | sha256sum -c -; \
+    tar -xzf "$tmp/gh.tar.gz" -C "$tmp" gh_2.97.0_linux_amd64/bin/gh; \
     install -m 0755 "$tmp/mise" /usr/local/bin/mise; \
     install -m 0755 "$tmp/yadm-3.5.0/yadm" /usr/local/bin/yadm; \
     install -m 0755 "$tmp/openshell" /usr/local/bin/openshell; \
     install -m 0755 "$tmp/kubernetes/client/bin/kubectl" /usr/local/bin/kubectl; \
+    install -m 0755 "$tmp/gh_2.97.0_linux_amd64/bin/gh" /usr/bin/gh; \
     rm -rf "$tmp"
 
 COPY package.json package-lock.json ./
@@ -74,10 +80,15 @@ COPY workspaced ./workspaced
 
 COPY public ./public
 
+# git asks the helper for its GitHub login. /usr/local/bin/gh comes before the
+# real /usr/bin/gh on PATH: in a role's sandbox it hands gh the bot's gateway
+# placeholder, everywhere else it runs gh untouched (docs/workspaced.md).
 RUN mkdir -p /data/pi-ez-operator-home \
     && printf '#!/bin/sh\nexec node /app/server/git-credential-helper.js "$@"\n' > /usr/local/bin/pi-ez-web-git-credential-helper \
     && chmod 0755 /usr/local/bin/pi-ez-web-git-credential-helper \
     && git config --system credential.https://github.com.helper /usr/local/bin/pi-ez-web-git-credential-helper \
+    && printf '#!/bin/sh\nexec node /app/server/git-credential-helper.js gh "$@"\n' > /usr/local/bin/gh \
+    && chmod 0755 /usr/local/bin/gh \
     && chown -R node:node /data
 
 # Last, so a new build ID does not invalidate the dependency layers above.

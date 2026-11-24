@@ -68,6 +68,9 @@ spec:
                 configMapKeyRef:
                   name: pi-workspaced-grants
                   key: grants.json
+            # One mounted Secret per GitHub App, for grants with `github` (docs/workspaced.md).
+            - name: WORKSPACED_GITHUB_APPS_DIR
+              value: /run/secrets/github-apps
             # pi-web carries no Secrets by contract; network-policy.yaml admits
             # only the pi-ez-web pod, which is the authentication boundary.
             - name: WORKSPACED_AUTH
@@ -94,6 +97,11 @@ spec:
             - name: openshell-client-tls
               mountPath: /var/lib/openshell-client/openshell/gateways/openshell/mtls
               readOnly: true
+            # Keys app-id and private-key. workspaced mints the role's installation tokens with it;
+            # the key never reaches a worker.
+            - name: github-app-pi-web-developer
+              mountPath: /run/secrets/github-apps/pi-web-developer-github-app
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
@@ -102,6 +110,13 @@ spec:
         - name: openshell-client-tls
           secret:
             secretName: openshell-client-tls
+            optional: true
+            defaultMode: 0440
+        # Optional so workspaced starts without it; a role worker then fails to start with
+        # github_token_unavailable until the Secret exists (it is picked up without a restart).
+        - name: github-app-pi-web-developer
+          secret:
+            secretName: pi-web-developer-github-app
             optional: true
             defaultMode: 0440
 ---
