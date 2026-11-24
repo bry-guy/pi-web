@@ -2,7 +2,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, watchFile, writeFileSync } from "node:fs";
 import os from "node:os";
 import { Hono } from "hono";
 import path from "node:path";
@@ -15,13 +15,15 @@ import { createSupervisor } from "./supervisor/index.js";
 import { publicError } from "./pi-configuration.js";
 import { writeLog } from "./logging.js";
 import { BUILD_ID } from "./version.js";
+import { installRoleRunner } from "./role-runner.js";
 
 // An OpenShell sandbox worker's Claude login: the access "token" is a marker the openshell-oauth extension swaps
 // for the gateway's placeholder, and the gateway swaps for the real token. Nothing real is stored in the sandbox.
 export const SANDBOX_MODEL_AUTH = { anthropic: { type: "oauth", access: "sk-ant-oat01-openshell", refresh: "refreshed-by-pi-web", expires: 4102444800000 } };
 
-// Workers borrow web's model logins via a read-only file; Pi reads auth.json through the link.
-export function linkModelAuth(env = process.env) {
+// Workers borrow web's model logins from a read-only secret file. Pi locks a file beside auth.json (following links),
+// so workers get a writable copy, refreshed whenever web republishes the secret.
+export function copyModelAuth(env = process.env, { watch = true } = {}) {
   const target = env.PI_WEB_MODEL_AUTH_FILE;
   const dir = env.PI_CODING_AGENT_DIR;
   if (env.PI_ANTHROPIC_PLACEHOLDER_FILE && dir) {
@@ -32,11 +34,16 @@ export function linkModelAuth(env = process.env) {
     return;
   }
   if (!target || !dir) return;
-  const link = path.join(dir, "auth.json");
-  try { if (readlinkSync(link) === target) return; } catch { /* missing or a regular file */ }
-  mkdirSync(dir, { recursive: true });
-  rmSync(link, { force: true });
-  symlinkSync(target, link);
+  const file = path.join(dir, "auth.json");
+  const copy = () => {
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(`${file}.tmp`, readFileSync(target), { mode: 0o600 });
+      renameSync(`${file}.tmp`, file); // replaces an older link without writing through it
+    } catch (error) { console.error(`pi-ez-web: could not copy the shared model login: ${error.message}`); }
+  };
+  copy();
+  if (watch) watchFile(target, { interval: 5_000 }, copy).unref();
 }
 
 // Pi compiles extensions with jiti into os.tmpdir()/jiti, which a restarted
@@ -147,9 +154,10 @@ export function createApp({ uiOnly = uiOnlyEnabled() } = {}) {
   });
   if (!uiOnly) {
     ensureHome();
-    linkModelAuth();
+    copyModelAuth();
     if ((process.env.PI_WEB_MODE || "real") !== "mock") linkJitiCache();
     sup = createSupervisor(hub);
+    installRoleRunner();
     const realMode = (process.env.PI_WEB_MODE || "real") !== "mock";
     // Mock mode has no SDK sessions, so no extension UI to bind.
     const extensionUi = realMode ? sup.extensionUi : null;

@@ -34,7 +34,7 @@ const state = {
   chats: [],
   sync: { configured: false, serverUrl: "", allConversations: false },
   providers: [
-    { id: "anthropic", name: "Anthropic", configured: true, sourceLabel: "OAuth", availableModels: 2, authMethods: [{ id: "oauth", label: "Anthropic OAuth" }], canLogout: true },
+    { id: "anthropic", name: "Anthropic", configured: true, source: "stored", authType: "oauth", sourceLabel: "OAuth", availableModels: 2, authMethods: [{ id: "oauth", label: "Anthropic OAuth", subscription: true }, { id: "api_key", label: "Anthropic API key" }], canLogout: true },
     { id: "openai", name: "OpenAI", configured: false, availableModels: 0, authMethods: [{ id: "api_key", label: "OpenAI API key" }], canLogout: false },
   ],
   repositorySources: { default: "github", sources: [{ id: "github", enabled: true, configured: false, authenticated: false, owner: "bry-guy" }, { id: "git-url", enabled: true }] },
@@ -746,6 +746,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.set({ settingsCategory: "providers" });
   assert.match(root.querySelector("pi-settings").textContent, /Anthropic/);
   for (const button of root.querySelectorAll("pi-settings .provider-actions [data-auth-login]")) assert.equal(button.title, button.textContent, "a login button's full label survives an ellipsis");
+  const providerRows = [...root.querySelectorAll("pi-settings .provider-row")].map(row => [row.querySelector(".sr-title").textContent, row.querySelector(".provider-actions")?.textContent.trim()]);
+  assert.deepEqual(providerRows, [["Claude", "Sign out"], ["Anthropic", "Add key"], ["OpenAI", "Add key"]], "a subscription and an API key for one provider are separate rows, each with one action");
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Default model/, "only the active category renders");
   store.set({ settingsCategory: "pi" });
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Pi profile & extensions/);
@@ -1233,6 +1235,60 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   root.querySelector("pi-project-menu [data-act='close-project-menu']").click();
   assert.ok(store.state.projectMenu, "Back from a repository returns to its project");
   assert.match(menuText(), /Plan the week/);
+
+  // Role runs fold into one collapsed row below the user's own sessions, and stay open across re-renders once opened.
+  store.set({ projectMenu: { projectId: "group:eco", synced: [
+    { sessionId: "rr1", title: "pi-web-developer: Fix the review findings", repo: null, device: "laptop", when: "1m" },
+    { sessionId: "rr2", title: "You are running as role pi-web/pi-web-developer for project eco", repo: null, device: "laptop", when: "2m" },
+    { sessionId: "mine", title: "primes-impl", repo: null, device: "laptop", when: "3m" },
+  ] } });
+  const runGroup = () => root.querySelector("pi-project-menu details[data-role-runs]");
+  assert.equal(runGroup().querySelector("summary").textContent, "Role runs 2");
+  assert.equal(runGroup().open, false);
+  assert.deepEqual([...runGroup().querySelectorAll(".history-entry-head strong")].map(node => node.textContent).sort(), ["You are running as role pi-web/pi-web-developer for project eco", "pi-web-developer: Fix the review findings"]);
+  assert.ok(!runGroup().querySelector("[data-sync-id='mine']"), "a renamed run is the user's");
+  runGroup().open = true;
+  runGroup().dispatchEvent(new dom.window.Event("toggle"));
+  store.notify("state");
+  assert.equal(runGroup().open, true);
+
+  // The Sessions filter: above 8 sessions; every word must match a row's title, device or branch.
+  const { sessionMatches } = await import("../public/js/project-menu.js");
+  assert.ok(sessionMatches(["Fix the Bug", "laptop"], "bug LAP"));
+  assert.ok(!sessionMatches(["Fix the bug", "laptop"], "bug desktop"));
+  assert.ok(sessionMatches(["Anything"], "  "));
+  const extra = n => Array.from({ length: n }, (_, i) => ({ sessionId: `x${i}`, title: `Extra ${i}`, repo: null, device: i ? "desktop" : "phone", when: "5m" }));
+  const filterBox = () => root.querySelector("pi-project-menu .session-filter");
+  const shownTitles = () => [...root.querySelectorAll("pi-project-menu .history-entry-head strong")].map(node => node.textContent);
+  const sessionCount = () => [...root.querySelectorAll("pi-project-menu .session-history-heading")].find(node => /^Sessions/.test(node.textContent)).lastElementChild.textContent;
+  const typeFilter = text => { filterBox().value = text; filterBox().dispatchEvent(new dom.window.Event("input", { bubbles: true })); };
+  store.set({ projectMenu: { projectId: "group:eco", synced: extra(7) } });
+  assert.equal(filterBox(), null, "no filter with 8 sessions");
+  store.set({ projectMenu: { projectId: "group:eco", synced: extra(8) } });
+  assert.ok(filterBox(), "a filter with 9 sessions");
+  assert.equal(dom.window.document.activeElement, filterBox(), "focused on open on a desktop");
+  typeFilter("EXTRA 3");
+  assert.deepEqual(shownTitles(), ["Extra 3"]);
+  assert.equal(sessionCount(), "1 / 9");
+  assert.equal(dom.window.document.activeElement, filterBox(), "typing keeps focus");
+  typeFilter("extra desktop");
+  assert.equal(shownTitles().length, 7, "several words must all match, device included");
+  store.notify("state");
+  assert.equal(filterBox().value, "extra desktop", "a live update keeps the filter");
+  typeFilter("phone 3");
+  assert.deepEqual(shownTitles(), []);
+  assert.match(menuText(), /No sessions match the filter\./);
+  assert.equal(sessionCount(), "0 / 9");
+  filterBox().dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  assert.ok(store.state.projectMenu, "Esc clears a filter first");
+  assert.equal(filterBox().value, "");
+  assert.equal(shownTitles().length, 9);
+  typeFilter("plan");
+  store.set({ projectMenu: { projectId: "group:eco", synced: extra(8) } });
+  assert.equal(filterBox().value, "", "a new opening starts unfiltered");
+  filterBox().dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  assert.equal(store.state.projectMenu, null, "Esc on an empty filter closes the menu");
+
   store.set({ projectMenu: null, view: "chat", projectId: "pp-eco", sessionId: "f1", chatId: null });
   assert.equal(root.querySelector("pi-header .workspace-trigger").textContent.trim(), "eco", "a project session's header names only its project");
   assert.match(root.querySelector("pi-header [data-act='session-panel']").getAttribute("aria-label"), /^Session menu for /);
@@ -1650,6 +1706,88 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     assert.equal(thread.querySelector(".steps-view"), null);
     assert.ok(thread.querySelector(".turn-done-row"), "the chat returns with its turn row");
     assert.equal(location.hash, "");
+  }
+
+  // Primes: a run session stays out of the sidebar and its count; its report shows in the conversation.
+  {
+    const p1 = store.state.projects.find(p => p.id === "p1");
+    const countOf = () => root.querySelector("[data-act='project-row'][data-id='p1'] .count").textContent;
+    store.set({ openTree: { ...store.state.openTree, p1: true } });
+    const before = Number(countOf());
+    p1.sessions.push(
+      { id: "run1", title: "labrat: 2026-11-22 08:00", agent: "labrat", agentKind: "run", contextId: "ctx-main", branch: "main", when: "now", streaming: false, children: [] },
+      { id: "conv1", title: "labrat", agent: "labrat", agentKind: "conversation", contextId: "ctx-main", branch: "main", when: "now", streaming: false, children: [] },
+      { id: "agent1", title: "nightly", agent: "nightly", agentKind: "agent", contextId: "ctx-main", branch: "main", when: "now", streaming: false, children: [] },
+    );
+    store.notify("state");
+    assert.ok(root.querySelector("[data-act='session-row'][data-id='conv1']"), "the conversation is listed");
+    assert.equal(root.querySelector("[data-act='session-row'][data-id='run1']"), null, "the run is not");
+    assert.ok(root.querySelector("[data-act='session-row'][data-id='agent1']"), "an agent session created through the API is listed, as before primes");
+    assert.equal(Number(countOf()), before + 2);
+    store.state.transcripts.conv1 = { streaming: false, seq: 0, records: [{ id: "c1", role: "report", text: "**labrat: 2026-11-22 08:00** · [open the run](/?s=run1)\n\nAll quiet.", at: 1 }] };
+    store.set({ view: "chat", projectId: "p1", sessionId: "conv1", chatId: null });
+    store.notify("transcript");
+    const report = root.querySelector("pi-thread .block.report");
+    assert.match(report.textContent, /All quiet\./);
+    assert.equal(report.querySelector("a").getAttribute("href"), "/?s=run1");
+
+    // The Primes section lists each prime; its caret shows the Activity list; a run opens in the session view.
+    const section = () => root.querySelector(".primes-section");
+    assert.equal(section().hidden, true, "no primes, no section");
+    store.set({ primes: [{ agent: "labrat", project: "labrat", conversation: null, runs: [
+      { id: "run2", name: null, started: "2026-11-23T08:00:00.000Z", running: true, failed: false },
+      { id: "run1", name: "labrat: 2026-11-22 08:00", started: "2026-11-22T08:00:00.000Z", running: false, failed: true },
+    ] }] });
+    assert.equal(section().hidden, false);
+    const primeRow = section().querySelector("[data-act='prime-row'][data-agent='labrat']");
+    assert.equal(primeRow.querySelector(".count").textContent, "2");
+    assert.equal(section().querySelector("[data-act='prime-run']"), null, "activity starts collapsed");
+    primeRow.querySelector("[data-act='toggle-tree']").click();
+    const runs = [...section().querySelectorAll("[data-act='prime-run']")];
+    assert.deepEqual(runs.map(r => [r.dataset.id, r.dataset.state]), [["run2", "running"], ["run1", "failed"]]);
+    assert.match(runs[0].querySelector(".lbl").textContent, /^Run /, "a run with no name yet is named by its start");
+    assert.match(runs[1].textContent, /labrat: 2026-11-22 08:00[\s\S]*failed ·/);
+    runs[1].click();
+    assert.equal(store.state.sessionId, "run1");
+    assert.ok(section().querySelector("[data-act='prime-run'][data-id='run1']").classList.contains("active"));
+    // No conversation yet: the first open creates it.
+    const bootFetch = globalThis.fetch;
+    const opened = [];
+    globalThis.fetch = async (input, options) => {
+      if (String(input) === "/api/primes/labrat/conversation") { opened.push(options?.method); return new Response(JSON.stringify({ id: "conv1" }), { status: 200, headers: { "content-type": "application/json" } }); }
+      return bootFetch(input, options);
+    };
+    try {
+      section().querySelector("[data-act='prime-row']").click();
+      for (let i = 0; i < 50 && store.state.sessionId !== "conv1"; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    } finally { globalThis.fetch = bootFetch; }
+    assert.deepEqual(opened, ["POST"]);
+    assert.equal(store.state.sessionId, "conv1");
+    // A closed run is not in state: it is restored, then opened.
+    store.set({ primes: [{ agent: "labrat", project: "labrat", conversation: "conv1", runs: [
+      { id: "run3", name: "labrat: closed", started: "2026-11-21T08:00:00.000Z", running: false, failed: false },
+    ] }] });
+    const restored = [];
+    globalThis.fetch = async (input, options) => {
+      if (String(input) === "/api/sessions/run3/restore") {
+        restored.push(options?.method);
+        state.projects.find(p => p.id === "p1").sessions.push({ id: "run3", title: "labrat: closed", agent: "labrat", agentKind: "run", contextId: "ctx-main", branch: "main", when: "now", streaming: false, children: [] });
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return bootFetch(input, options);
+    };
+    try {
+      section().querySelector("[data-act='prime-run'][data-id='run3']").click();
+      for (let i = 0; i < 50 && store.state.sessionId !== "run3"; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    } finally {
+      globalThis.fetch = bootFetch;
+      const live = state.projects.find(p => p.id === "p1").sessions;
+      live.splice(live.findIndex(n => n.id === "run3"), 1);
+    }
+    assert.deepEqual(restored, ["POST"]);
+    assert.equal(store.state.sessionId, "run3");
+    store.set({ primes: [] });
+    p1.sessions.splice(-3);
   }
 
   dom.window.close();

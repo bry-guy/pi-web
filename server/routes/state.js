@@ -4,7 +4,7 @@ import { saveConfig } from "../config.js";
 import { listPiProjects, piProjectsDir, reconcile } from "../pi-projects.js";
 
 export function register(api, deps) {
-  const { remote, loadBindings, loadConfig, reposRoot, chatsListing, projectState, folderState, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID, readLogs, logFileName, safe, repositorySourceState, settingsState, github, sup } = deps;
+  const { remote, remoteSessions, loadBindings, loadConfig, reposRoot, chatsListing, projectState, folderState, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID, readLogs, logFileName, safe, repositorySourceState, settingsState, github, sup } = deps;
 
 
   // ---------- state ----------
@@ -81,6 +81,9 @@ export function register(api, deps) {
       piProjects: remoteState ? remoteState.piProjects || [] : listPiProjects().map(({ name, path, repos }) => ({ name, path, repos })),
       chats,
       endedChats: endedChats || [],
+      remoteSessions: remoteSessions ? remoteSessions.list() : [],
+      // Run-door agents: each with its conversation (null until first opened) and its hidden runs.
+      primes: remote?.primes?.() || [],
     });
   });
 

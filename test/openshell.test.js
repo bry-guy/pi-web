@@ -118,6 +118,15 @@ test("grants: provider openshell takes an egress list; other grants keep the lab
   assert.throws(bad({ provider: "openshell", serviceAccount: "sa" }), /serviceAccount is not supported/);
 });
 
+test("grants: a role grant is an OpenShell sandbox locked to its projects", () => {
+  const role = g => parseGrants(JSON.stringify({ default: { anyProject: true }, dev: { repos: ["project:p-dev"], provider: "openshell", role: "app/dev", ...g } })).dev;
+  assert.equal(role({}).role, "app/dev");
+  assert.equal(GRANTS.sandboxed.role, undefined);
+  assert.throws(() => role({ provider: undefined }), /role needs provider openshell/, "never a worker that holds web's logins");
+  assert.throws(() => role({ anyProject: true }), /role cannot be combined with anyProject/);
+  for (const bad of ["dev", "app/dev/x", "App/Dev", 7]) assert.throws(() => role({ role: bad }), /role must be <repo>\/<role>/, String(bad));
+});
+
 test("openshell is configured only by its gateway endpoint", () => {
   assert.equal(openshellConfig({}), null);
   assert.deepEqual({ ...CONFIG, image: undefined }, { endpoint: "http://127.0.0.1:8080", gateway: null, configHome: null, tlsDir: null, workspace: "default", bin: "/opt/openshell", namespace: "openshell", serviceDomain: "openshell.localhost", image: undefined, storage: "20Gi", storageClassName: null });
@@ -196,7 +205,7 @@ test("openshell scale stops and starts, restart is stop + start, remove keeps th
   const cli = fakeCli([sandbox("agent")]);
   const kube = fakeKube({ "DELETE /api/v1/namespaces/openshell/persistentvolumeclaims/ws-agent": { status: 200, body: {} } });
   const provider = openshellProvider({ kube, config: CONFIG, exec: cli.exec, pollMs: 1 });
-  const acts = () => cli.calls.filter(a => a[1] !== "list").map(a => a.slice(1).join(" "));
+  const acts = () => cli.calls.filter(a => a[0] === "sandbox" && a[1] !== "list").map(a => a.slice(1).join(" "));
   await provider.scale("agent", 0);
   await provider.scale("agent", 0);
   assert.equal((await provider.list())[0].state, "sleeping");
@@ -491,6 +500,17 @@ const TOKEN_A = "sk-ant-oat01-REAL-A";
 const TOKEN_B = "sk-ant-oat01-REAL-B";
 const modelAuth = (access, expires = Date.now() + 3_600_000) => JSON.stringify({ anthropic: { type: "oauth", access, refresh: "refreshed-by-pi-web", expires } });
 const never = () => new Promise(() => {});
+// Timers the test fires by hand: openshellProvider's setTimer/clearTimer.
+function fakeTimers() {
+  const due = [];
+  return {
+    due,
+    setTimer: (fn, ms) => { const t = { fn, ms }; due.push(t); return t; },
+    clearTimer: t => { const i = due.indexOf(t); if (i >= 0) due.splice(i, 1); },
+    fire() { const t = due.shift(); t.fn(); return t.ms; },
+  };
+}
+const execAt = (cli, verb) => cli.calls.findIndex(a => a.slice(0, 2).join(" ") === verb);
 
 test("grants: OpenShell grants take providers, environment and packages; others and reserved names are refused", () => {
   assert.deepEqual([MODEL_GRANTS.agent.providers, MODEL_GRANTS.agent.environment, MODEL_GRANTS.agent.packages],
@@ -501,7 +521,7 @@ test("grants: OpenShell grants take providers, environment and packages; others 
   assert.throws(bad({ environment: { A: "1" } }), /g\.environment needs provider openshell/);
   assert.throws(bad({ packages: ["npm:x"] }), /g\.packages needs provider openshell/);
   assert.throws(bad({ provider: "openshell", environment: { OPENSHELL_X: "1" } }), /OPENSHELL_X is reserved/);
-  for (const k of ["HOME", "PI_WEB_PACKAGES", "PI_ANTHROPIC_PLACEHOLDER_FILE", "HOST", "PI_WEB_PROJECT"]) assert.throws(bad({ provider: "openshell", environment: { [k]: "1" } }), /is reserved/, k);
+  for (const k of ["HOME", "PI_WEB_PACKAGES", "PI_ANTHROPIC_PLACEHOLDER_FILE", "PI_WEB_SANDBOX", "HOST", "PI_WEB_PROJECT"]) assert.throws(bad({ provider: "openshell", environment: { [k]: "1" } }), /is reserved/, k);
   assert.throws(bad({ provider: "openshell", environment: { A: 1 } }), /string value/);
   assert.throws(bad({ provider: "openshell", providers: ["pi-web-anthropic"] }), /attached by workspaced/);
   assert.throws(bad({ provider: "openshell", providers: ["a b"] }), /gateway provider names/);
@@ -591,13 +611,11 @@ test("a sandbox gets the fed model login, the grant's providers, environment and
   const rules = cli.policies[0].network_policies;
   assert.deepEqual(rules.anthropic.endpoints, [{ protocol: "rest", enforcement: "enforce", host: "api.anthropic.com", port: 443, access: "read-write" }]);
   assert.deepEqual(rules.npm.endpoints, [{ protocol: "rest", enforcement: "enforce", host: "registry.npmjs.org", port: 443, access: "read-write", allow_encoded_slash: true }]);
-  await new Promise(r => setTimeout(r, 20));
-  assert.equal(cli.calls.at(-1)[3], "ws-agent", "the placeholder is written right after create");
+  assert.equal(cli.calls.at(-1)[3], "ws-agent", "the placeholder is written before create returns");
   assert.equal(cli.calls.at(-1)[1], "exec");
   // Waking a sleeping one writes it again.
   cli.sandboxes[0].phase = "Stopped";
   await provider.scale("agent", 1);
-  await new Promise(r => setTimeout(r, 20));
   assert.deepEqual(cli.calls.slice(-2).map(a => a[1]), ["start", "exec"]);
 });
 
@@ -608,6 +626,7 @@ test("first start: no login yet means no model provider, unless an earlier works
   await provider.create({ name: "agent", repository: "project:agent", grant: GRANTS.sandboxed });
   const args = cli.calls.find(a => a[0] === "sandbox" && a[1] === "create");
   assert.ok(!args.includes("--provider") && !args.some(a => a.startsWith("PI_ANTHROPIC_PLACEHOLDER_FILE=")));
+  assert.ok(args.includes("PI_WEB_SANDBOX=1"), "marked as a sandbox even without a model login");
   assert.equal(cli.policies[0].network_policies.anthropic, undefined);
   assert.ok(logs.includes("workspaced: ws-agent starts without a model login (pi-web has not shared one with this workspaced yet)"));
 
@@ -617,4 +636,143 @@ test("first start: no login yet means no model provider, unless an earlier works
   const again = kept.calls.find(a => a[0] === "sandbox" && a[1] === "create");
   assert.equal(again[again.indexOf("--provider") + 1], "pi-web-anthropic");
   assert.ok(kept.policies[0].network_policies.anthropic);
+  assert.deepEqual(kept.calls.at(-1).slice(0, 4), ["sandbox", "exec", "-n", "ws-agent"], "its placeholder is written before create returns");
+});
+
+test("a failed model feed succeeds on the quick retry and rewrites running sandboxes' placeholders", async () => {
+  const logs = [];
+  const fail = new Set(["provider create"]);
+  const cli = fakeCli([sandbox("agent")], { fail });
+  const timers = fakeTimers();
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec, log: m => logs.push(m), reconcileMs: 0, ...timers });
+  await provider.setModelAuth(modelAuth(TOKEN_A));
+  await provider.settled();
+  assert.match(logs.find(l => l.includes("model feed failed")), /retried in 5 s/);
+  fail.clear();
+  assert.equal(timers.fire(), 5_000);
+  await provider.settled();
+  assert.equal(cli.gateway.providers.get("pi-web-anthropic"), TOKEN_A);
+  assert.ok(logs.includes("workspaced: OpenShell gateway has the current model login"));
+  assert.deepEqual(cli.calls.slice(-2).map(a => a.slice(0, 2).join(" ")), ["sandbox list", "sandbox exec"]);
+  assert.equal(logs.filter(l => l.includes("model feed failed")).length, 1);
+});
+
+test("an update the gateway stored but a stopped sandbox could not confirm counts as fed", async () => {
+  const logs = [];
+  const cli = fakeCli([sandbox("agent"), sandbox("asleep", "Stopped")], { gateway: { profiles: new Set(["pi-web-anthropic"]), providers: new Map([["pi-web-anthropic", "old"]]) } });
+  const exec = async (bin, args, opts) => {
+    const out = await cli.exec(bin, args, opts);
+    if (args[1] === "update") throw Object.assign(new Error("Command failed"), { stderr: "ws-asleep: pending\nError:   × provider readiness wait did not complete for every selected sandbox; inspect the reported outcomes\n" });
+    return out;
+  };
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec, log: m => logs.push(m), reconcileMs: 0 });
+  await provider.setModelAuth(modelAuth(TOKEN_A));
+  await provider.settled();
+  assert.equal(cli.gateway.providers.get("pi-web-anthropic"), TOKEN_A);
+  assert.ok(!logs.some(l => l.includes("feed failed")), logs.join("\n"));
+  assert.deepEqual(logs.filter(l => l.includes("did not confirm")), ["workspaced: OpenShell stored the model login; some attached sandboxes did not confirm it (stopped ones never do; they get it on wake)"]);
+  assert.ok(!logs.some(l => l.includes(TOKEN_A) || l.includes("openshell:resolve")));
+  assert.equal(cli.calls.at(-1)[1], "exec", "running sandboxes get the new placeholder");
+});
+
+test("waking a worker while the model feed is failing feeds first, then writes its placeholder before it is ready", async () => {
+  const logs = [];
+  const fail = new Set(["provider create"]);
+  const cli = fakeCli([sandbox("agent", "Stopped")], { fail });
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec, log: m => logs.push(m), reconcileMs: 0, pollMs: 1, feedRetryMs: [] });
+  await provider.setModelAuth(modelAuth(TOKEN_A));
+  await provider.settled();
+  fail.clear();
+  cli.calls.length = 0;
+  await provider.scale("agent", 1);
+  const at = verb => cli.calls.findIndex(a => a.slice(0, 2).join(" ") === verb);
+  assert.ok(at("provider create") >= 0 && at("provider create") < at("sandbox start"), "fed before the start");
+  assert.ok(cli.calls.slice(at("sandbox start")).some(a => a[1] === "exec" && a[3] === "ws-agent"), "placeholder written before scale returns");
+  assert.ok(!logs.some(l => l.includes("no model login yet")));
+});
+
+test("waking a worker while the model feed keeps failing or hangs still wakes it, with one log line", async () => {
+  const logs = [];
+  const cli = fakeCli([sandbox("agent", "Stopped")], { fail: new Set(["provider create"]) });
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec, log: m => logs.push(m), reconcileMs: 0, pollMs: 1, feedRetryMs: [] });
+  await provider.setModelAuth(modelAuth(TOKEN_A));
+  await provider.settled();
+  await provider.scale("agent", 1);
+  assert.equal((await provider.list())[0].state, "running");
+  assert.deepEqual(logs.filter(l => l.includes("no model login yet")), ["workspaced: ws-agent has no model login yet (the OpenShell model feed is failing); it gets one when a retry succeeds"]);
+
+  // A hung CLI holds the wake for feedWaitMs only.
+  const hung = fakeCli([sandbox("agent", "Stopped")]);
+  const exec = (bin, args, opts) => args[0] === "provider" ? never() : hung.exec(bin, args, opts);
+  const stuck = openshellProvider({ kube: fakeKube(), config: CONFIG, exec, log: () => {}, reconcileMs: 0, pollMs: 1, feedWaitMs: 20, settleWaitMs: 20 });
+  await stuck.setModelAuth(modelAuth(TOKEN_A));
+  await Promise.race([stuck.scale("agent", 1), new Promise((_, no) => setTimeout(() => no(new Error("wake waited on the feed")), 1000))]);
+  assert.equal(hung.sandboxes[0].phase, "Ready");
+});
+
+test("a worker asleep across two login updates gets the current placeholder written before its wake returns", async () => {
+  const cli = fakeCli([sandbox("agent", "Stopped")]);
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec, log: () => {}, reconcileMs: 0, pollMs: 1 });
+  for (const token of [TOKEN_A, TOKEN_B]) { await provider.setModelAuth(modelAuth(token)); await provider.settled(); }
+  assert.equal(cli.gateway.providers.get("pi-web-anthropic"), TOKEN_B);
+  assert.ok(!cli.calls.some(a => a[1] === "exec"), "a stopped sandbox gets nothing on update");
+  cli.calls.length = 0;
+  await provider.scale("agent", 1);
+  assert.ok(execAt(cli, "sandbox start") >= 0 && execAt(cli, "sandbox exec") > execAt(cli, "sandbox start"));
+  assert.ok(!cli.calls.some(a => a[0] === "provider"), "a fed login is not fed again");
+});
+
+test("after a workspaced restart a wake asks the gateway for the provider and writes the placeholder before it returns", async () => {
+  const cli = fakeCli([sandbox("agent", "Stopped")], { gateway: { profiles: new Set(["pi-web-anthropic"]), providers: new Map([["pi-web-anthropic", TOKEN_A]]) } });
+  // Fresh process, no push from web yet.
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec: cli.exec, log: () => {}, reconcileMs: 0, pollMs: 1 });
+  await provider.scale("agent", 1);
+  assert.ok(execAt(cli, "provider get") > execAt(cli, "sandbox start"));
+  assert.ok(execAt(cli, "sandbox exec") > execAt(cli, "provider get"), "placeholder written before scale returns");
+
+  // No provider on the gateway: nothing to write.
+  const bare = fakeCli([sandbox("agent", "Stopped")]);
+  await openshellProvider({ kube: fakeKube(), config: CONFIG, exec: bare.exec, log: () => {}, reconcileMs: 0, pollMs: 1 }).scale("agent", 1);
+  assert.equal(execAt(bare, "sandbox exec"), -1);
+});
+
+test("wakes during a failing model feed join the attempt in flight instead of using up the retry schedule", async () => {
+  const logs = [];
+  const timers = fakeTimers();
+  const cli = fakeCli(["a", "b", "c"].map(n => sandbox(n, "Stopped")), { fail: new Set(["provider create"]) });
+  let release;
+  const gate = new Promise(r => { release = r; });
+  let creates = 0;
+  const exec = async (bin, args, opts) => {
+    if (args[0] === "provider" && args[1] === "create" && ++creates === 2) await gate;
+    return cli.exec(bin, args, opts);
+  };
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec, log: m => logs.push(m), reconcileMs: 0, pollMs: 1, ...timers });
+  await provider.setModelAuth(modelAuth(TOKEN_A));
+  await provider.settled();
+  assert.deepEqual(timers.due.map(t => t.ms), [5_000]);
+  const wakes = Promise.all(["a", "b", "c"].map(n => provider.scale(n, 1)));
+  while (creates < 2) await new Promise(r => setImmediate(r));
+  for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  release();
+  await wakes;
+  await provider.settled();
+  assert.equal(creates, 2, "the first wake ran the pending retry early; the others joined it");
+  assert.deepEqual(timers.due.map(t => t.ms), [15_000], "one retry used, the next one scheduled");
+  assert.equal(logs.filter(l => l.includes("model feed failed")).length, 2);
+  assert.ok(cli.sandboxes.every(s => s.phase === "Ready"));
+});
+
+test("a slow placeholder write does not turn a healthy wake into starting", async () => {
+  let clock = 1_000_000;
+  const cli = fakeCli([sandbox("agent", "Stopped")], { gateway: { profiles: new Set(["pi-web-anthropic"]), providers: new Map([["pi-web-anthropic", TOKEN_A]]) } });
+  // The write takes longer than the whole wake budget.
+  const exec = async (bin, args, opts) => { if (args[1] === "exec") clock += 60_000; return cli.exec(bin, args, opts); };
+  const provider = openshellProvider({ kube: fakeKube(), config: CONFIG, exec, log: () => {}, reconcileMs: 0, pollMs: 1 });
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ ok: true }) });
+  const lifecycle = createLifecycle({ provider, fetchImpl, now: () => clock, idleMs: 0, sweepMs: 0, cacheMs: 0, pollMs: 1, log: () => {} });
+  try {
+    assert.equal(await lifecycle.ensureAwake("agent"), true);
+    assert.ok(execAt(cli, "sandbox exec") > execAt(cli, "sandbox start"));
+  } finally { lifecycle.stop(); }
 });

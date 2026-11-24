@@ -3,6 +3,7 @@
 // are derived from those entries (or their known parent while an entry is
 // streaming), so a snapshot and its replay address the same records.
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { exportSyncEnvironment, loadBindings, loadConfig, prepareSessionVisibilityReplacement } from "../config.js";
@@ -43,6 +44,25 @@ function packageFailureMessage(error, configured, failed) {
 
 export function isPackageSetupFailure(error) {
   return /\b(?:npm|pnpm|bun|git)\b[\s\S]*\b(?:failed with (?:code|signal)|ENOENT)\b/i.test(errorDetails(error));
+}
+
+// Subscription providers that ship as Pi extensions. Only their providers are taken, not their tools or commands.
+const PROVIDER_EXTENSIONS = [
+  path.join(path.dirname(createRequire(import.meta.url).resolve("pi-antigravity/package.json")), "src", "index.ts"),
+];
+
+async function registerExtensionProviders(SDKModule, runtime) {
+  const loader = new SDKModule.DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: SDKModule.getAgentDir(),
+    settingsManager: SDKModule.SettingsManager.inMemory(),
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    additionalExtensionPaths: PROVIDER_EXTENSIONS,
+  });
+  await loader.reload();
+  const { errors, runtime: extensionRuntime } = loader.getExtensions();
+  for (const error of errors || []) console.error(`pi-ez-web: provider extension ${error.path} failed to load: ${error.error}`);
+  for (const { name, config } of extensionRuntime.pendingProviderRegistrations) runtime.registerProvider(name, config);
 }
 
 let sdk = null;
@@ -113,8 +133,9 @@ export class RealSupervisor {
     if (this.runtime) return this.runtime;
     if (!this.runtimePromise) {
       const initializing = (async () => {
-        const { ModelRuntime } = await SDK();
-        const runtime = await ModelRuntime.create();
+        const SDKModule = await SDK();
+        const runtime = await SDKModule.ModelRuntime.create();
+        await registerExtensionProviders(SDKModule, runtime).catch(error => console.error("pi-ez-web: extension providers unavailable", publicError(error?.message || String(error))));
         this.runtime = runtime;
         return runtime;
       })();
@@ -303,9 +324,15 @@ export class RealSupervisor {
       } else {
         try {
           resources = await loadResources(true);
-          this.packageSources = configuredPackages;
-          this.packageSetupError = null;
-          this.packageStatus = { configured: configuredPackages.length, loaded: configuredPackages.length, failed: 0 };
+          // Pi >= 1.5 skips a package that fails to install and reports it as an extension warning instead of throwing.
+          const warnings = resources.resourceLoader.getExtensions().warnings || [];
+          const failedPackages = configuredPackages.flatMap(source => {
+            const warning = warnings.find(w => w.path === (typeof source === "string" ? source : source?.source) && /failed to install/.test(w.warning));
+            return warning ? [{ source, error: new Error(warning.warning) }] : [];
+          });
+          this.packageSources = configuredPackages.filter(source => !failedPackages.some(failed => failed.source === source));
+          this.packageSetupError = failedPackages.length ? packageFailureMessage(null, configuredPackages, failedPackages) : null;
+          this.packageStatus = { configured: configuredPackages.length, loaded: this.packageSources.length, failed: failedPackages.length };
         } catch (error) {
           if (!isPackageSetupFailure(error)) throw error;
           const workingPackages = [];
@@ -421,7 +448,7 @@ export class RealSupervisor {
     return this.live.get(session.sessionId);
   }
 
-  _endTurnWithError(id, st, error) {
+  _endTurnWithError(id, st, error, willRetry = false) {
     if (st.turnEnded) return;
     st.turnEnded = true;
     st.pendingMessages = [];
@@ -429,7 +456,18 @@ export class RealSupervisor {
     const record = st.msgId && st.liveRecords?.get(st.msgId);
     if (record) delete record.streaming;
     if (st.msgId) this.hub.emit(id, "message_end", { messageId: st.msgId });
-    this.hub.emit(id, "turn_end", { turnId: st.turnId, reason: "errored", error: message });
+    this.hub.emit(id, "turn_end", { turnId: st.turnId, reason: "errored", error: message, ...(willRetry ? { willRetry } : {}) });
+  }
+
+  // Reports the final end of a turn whose last end said willRetry when no retry attempt started: once, as
+  // agent_start clears retryPending. Runs on a failed auto_retry_end and when the prompt's run is over.
+  _finishRetry(id, st) {
+    if (!st?.retryPending) return;
+    const { error } = st.retryPending;
+    st.retryPending = null;
+    const stopped = !!st.aborted;
+    st.aborted = false;
+    this.hub.emit(id, "turn_end", { turnId: st.turnId, reason: stopped ? "stopped" : "errored", ...(stopped ? {} : { error: turnErrorMessage(error) }) });
   }
 
   // ---- pi AgentEvent -> wire contract ----
@@ -478,6 +516,7 @@ export class RealSupervisor {
         break;
       }
       case "agent_start":
+        st.retryPending = null;
         st.turnId = `t:${id}:${Date.now().toString(36)}`;
         st.turnEnded = false;
         hub.emit(id, "turn_start", { turnId: st.turnId });
@@ -494,10 +533,6 @@ export class RealSupervisor {
         break;
       case "message_update": {
         const e = evt.assistantMessageEvent;
-        if (e?.type === "error") {
-          this._endTurnWithError(id, st, e.error);
-          break;
-        }
         if (e?.type === "thinking_delta" && e.delta && st.msgId) {
           const record = st.liveRecords.get(st.msgId);
           if (record) record.thinking = (record.thinking || "") + e.delta;
@@ -511,12 +546,15 @@ export class RealSupervisor {
         }
         break;
       }
-      case "turn_end": {
-        const error = st.aborted ? "" : assistantErrorMessage(evt.message);
-        if (error) this._endTurnWithError(id, st, error);
-        break;
-      }
+      // An errored pi turn_end is followed at once by agent_end, which ends the turn: only it knows whether pi will retry.
       case "message_end":
+        // A prime report (note()) is appended, then announced; the leaf is its entry, so the transcript's id matches.
+        if (evt.message?.role === "custom" && evt.message.customType === PRIME_REPORT) {
+          const record = reportRecord({ id: st.session.sessionManager.getLeafId?.(), content: evt.message.content, details: evt.message.details, timestamp: evt.message.timestamp });
+          st.liveRecords.set(record.id, record);
+          hub.emit(id, "report", { record });
+          break;
+        }
         if (evt.message?.role === "assistant" && st.msgId) {
           const record = st.liveRecords.get(st.msgId);
           if (record) delete record.streaming;
@@ -563,7 +601,9 @@ export class RealSupervisor {
       case "agent_end": {
         const error = st.aborted ? "" : [...(evt.messages || [])].reverse().map(assistantErrorMessage).find(Boolean);
         if (error) {
-          this._endTurnWithError(id, st, error);
+          const ended = !st.turnEnded;
+          this._endTurnWithError(id, st, error, evt.willRetry === true);
+          if (ended && evt.willRetry === true) st.retryPending = { error };
           break;
         }
         if (st.turnEnded) break;
@@ -573,6 +613,10 @@ export class RealSupervisor {
         hub.emit(id, "turn_end", { turnId: st.turnId, reason });
         break;
       }
+      // pi announced a retry (agent_end willRetry) but gave up before starting it (cancelled or aborted).
+      case "auto_retry_end":
+        if (!evt.success) this._finishRetry(id, st);
+        break;
       case "session_info_changed":
         hub.emit(id, "session_meta", { name: st.session.sessionName });
         break;
@@ -823,10 +867,19 @@ export class RealSupervisor {
   _startPrompt(id, task, onError) {
     this.pendingPrompts.set(id, (this.pendingPrompts.get(id) || 0) + 1);
     void Promise.resolve().then(task).catch(onError).finally(() => {
+      const st = this.live.get(id);
+      // A prompt rejected or queued during pi's retry backoff is not the end of the retried turn.
+      if (!st?.session?.isStreaming) this._finishRetry(id, st);
       const remaining = this.pendingPrompts.get(id) - 1;
       if (remaining) this.pendingPrompts.set(id, remaining);
       else this.pendingPrompts.delete(id);
     });
+  }
+
+  /** Appends a read-only prime report to the conversation without a model call; mid-turn, pi defers it to the turn end. */
+  async note(id, text, details) {
+    const st = await this._attachById(id);
+    await st.session.sendCustomMessage({ customType: PRIME_REPORT, content: text, display: true, details }, { triggerTurn: false });
   }
 
   async waitForIdle(id) {
@@ -1203,6 +1256,28 @@ export class RealSupervisor {
     } catch { return null; }
   }
 
+  async deleteSession(id) {
+    const refuseBusy = () => { if (this.isStreaming(id) || this.pendingPrompts.has(id)) throw Object.assign(new Error("session_streaming"), { code: "session_streaming" }); };
+    refuseBusy();
+    if (!await this._discover(id)) throw new Error("unknown session " + id);
+    // A message may have arrived during the await.
+    refuseBusy();
+    const file = this.paths.get(id) || this.info.get(id)?.path;
+    const st = this.live.get(id);
+    if (st) {
+      await this._disposeLiveState(st, "quit");
+      this.live.delete(id);
+    }
+    if (file) {
+      await fs.promises.rm(file, { force: true });
+      // Its subagent transcripts (<session stem>/tasks).
+      if (file.endsWith(".jsonl")) await fs.promises.rm(file.slice(0, -6), { recursive: true, force: true });
+    }
+    this.paths.delete(id);
+    this.info.delete(id);
+    this.opened?.delete(id);
+  }
+
   async rehome(id, newCwd) {
     const st = this.live.get(id);
     if (st) {
@@ -1268,7 +1343,7 @@ export class RealSupervisor {
 
   async listProviders() {
     const runtime = await this._modelRuntime();
-    const supported = new Set(["anthropic", "openai-codex", "openai"]);
+    const supported = new Set(["anthropic", "openai-codex", "antigravity", "openai"]);
     const models = await this.listModels();
     const availableByProvider = new Map();
     for (const model of models) {
@@ -1553,6 +1628,10 @@ export function entriesToRecords(entries) {
       if (summary) records.push(summary);
       continue;
     }
+    if (entry.type === "custom_message" && entry.customType === PRIME_REPORT) {
+      records.push(reportRecord(entry));
+      continue;
+    }
     if (entry.type === "custom" || entry.type === "custom_message") continue;
     if (entry.type !== "message") continue;
     const message = entry.message || {};
@@ -1622,9 +1701,19 @@ function toolStartRecord(evt) {
   };
 }
 
+const PRIME_REPORT = "pi-web:prime-report";
+function reportRecord(entry) {
+  return { id: entry.id, role: "report", text: reportText(contentText(entry.content), entry.details), at: entryTime(entry) };
+}
+// The model reads the report's first paragraph (a label saying whose words follow); the chat shows details.head there.
+export function reportText(text, details) {
+  const cut = text.indexOf("\n\n");
+  return typeof details?.head === "string" && cut >= 0 ? details.head + text.slice(cut) : text;
+}
+
 // pi-summarize writes a custom session entry that groups the tool calls it summarizes.
 // Its title entries (kind "title") are not step summaries.
-function summaryRecord(entry) {
+export function summaryRecord(entry) {
   const data = entry.data || {};
   if (data.kind === "title" || !data.text) return null;
   return {

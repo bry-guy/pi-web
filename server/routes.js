@@ -43,9 +43,12 @@ import { register as registerLifecycle } from "./routes/lifecycle.js";
 import { register as registerBranches } from "./routes/branches.js";
 import { register as registerSettings } from "./routes/settings.js";
 import { registerRemoteRoutes, remoteWorkspacesFromEnv } from "./remote-workspaces.js";
+import { registerRemoteSessionRoutes, remoteSessionsFromEnv } from "./remote-sessions.js";
 import { registerMockWorkers } from "./supervisor/mock.js";
+import { runDoorFromEnv } from "./run-door.js";
+import { roleRunner } from "./role-runner.js";
 
-export function buildApi(sup, { extensionUi = null } = {}) {
+export function buildApi(sup, { extensionUi = null, remoteSessions: injectedRemoteSessions = null } = {}) {
   const api = new Hono();
   const guardedWorkspaceSessions = async (project, workspacePath, allowStreaming = false) => {
     const sessions = await sessionsUsingWorkspaceAsync(project, workspacePath, sup);
@@ -55,9 +58,15 @@ export function buildApi(sup, { extensionUi = null } = {}) {
   const authFlows = new AuthFlowManager(sup);
   const github = new GitHubClient();
   const githubFlows = new GitHubDeviceFlowManager(github);
-  const remote = remoteWorkspacesFromEnv(process.env, { hub, github, sup });
+  let remote = null;
+  const remoteSessions = injectedRemoteSessions ?? remoteSessionsFromEnv(process.env, {
+    hub,
+    onEvent: evt => remote?.notifyDiscordEvent?.(evt),
+  });
+  remote = remoteWorkspacesFromEnv(process.env, { hub, github, sup, remoteSessions });
+  if (remote) runDoorFromEnv(process.env, remote);
   const deps = {
-    remote, sup, extensionUi, hub, github, githubFlows, authFlows, guardedWorkspaceSessions,
+    remote, remoteSessions, sup, extensionUi, hub, roleRunner, github, githubFlows, authFlows, guardedWorkspaceSessions,
     streamSSE, fs, execFile, path, ws, API_CAPABILITIES, API_CONTRACT_VERSION, BUILD_ID,
     chatsDir, loadBindings, loadConfig, newId, normalizeHookSets, normalizeHooks, normalizePiConfig,
     normalizeSyncConfig, normalizeThinkingLevel, repositorySource, reposRoot, resolvePath,
@@ -72,6 +81,7 @@ export function buildApi(sup, { extensionUi = null } = {}) {
     bindSessionToContext, bindRehomedSession, boundProject, branchContext, branchContextAsync,
     primaryBranch, ensureBranchContext, sessionBelongsToProject,
   };
+  if (remoteSessions) registerRemoteSessionRoutes(api, remoteSessions);
   if (remote) registerRemoteRoutes(api, remote);
   else if (process.env.PI_WEB_MODE === "mock") registerMockWorkers(api);
   registerState(api, deps);

@@ -702,6 +702,10 @@ class PiThread extends HTMLElement {
     }
     // Tool calls, diffs, and summaries belong to the turn's steps view, not the chat.
     if (m.role === "tool" || m.role === "diff" || m.role === "summary") return "";
+    // A prime's run report (web posts it; read-only): header line with the run's link, then the run's reply.
+    if (m.role === "report") {
+      return `<div class="msg"><div class="block report"><div class="markdown-content">${renderMarkdown(m.text)}</div></div></div>`;
+    }
     if (m.role === "bang") {
       return `<div class="msg"><div class="block bang">
         <div class="block-head">
@@ -948,7 +952,8 @@ class PiContextMeter extends HTMLElement {
     const id = store.activeKey();
     const transcript = store.transcript(id);
     const lastAssistant = [...transcript.records].reverse().find(record => record.role === "assistant");
-    const key = `${id || ""}:${store.state.model || ""}:${transcript.streaming}:${lastAssistant?.id || ""}:${lastAssistant?.text?.length || 0}`;
+    const remoteUsed = store.remoteSession()?.context?.used ?? "";
+    const key = `${id || ""}:${store.state.model || ""}:${transcript.streaming}:${lastAssistant?.id || ""}:${lastAssistant?.text?.length || 0}:${remoteUsed}`;
     if (!id || key === this.contextKey) return;
     this.contextKey = key;
     try {
@@ -1007,12 +1012,20 @@ class PiThinkingPicker extends HTMLElement {
   }
   async sync() {
     const id = store.activeKey();
-    if (!id || id === this.sessionId) return;
+    if (!id) return;
+    const remoteLevel = store.remoteSession()?.thinkingLevel || null;
+    if (id === this.sessionId) {
+      if (remoteLevel && this.info && this.info.level !== remoteLevel) {
+        this.info = { ...this.info, level: remoteLevel };
+        this.render();
+      }
+      return;
+    }
     this.sessionId = id;
     this.open = false;
     // Keep the effort control present even when a provider does not advertise
     // reasoning metadata. Pi will clamp unsupported choices server-side.
-    this.info = { level: "medium", levels: THINKING_LEVELS, supported: true };
+    this.info = { level: remoteLevel || "medium", levels: THINKING_LEVELS, supported: true };
     this.render();
     try {
       const info = await api.thinking(id);
@@ -1356,6 +1369,19 @@ class PiComposer extends HTMLElement {
       return;
     }
     if (action === "quit") {
+      if (store.state.remoteSessionId === id) {
+        const meta = store.remoteSession();
+        store.set({
+          confirm: {
+            type: "closeRemote",
+            id,
+            label: meta?.title || "Session",
+            device: meta?.device || "device",
+            error: null,
+          },
+        });
+        return;
+      }
       await closeConversation(id, store.state.chatId ? "chat" : "session");
       return;
     }
@@ -1511,17 +1537,21 @@ class PiComposer extends HTMLElement {
     if (this.commandQuery() !== null && activeId) void this.syncCommands();
     else this.renderCommands();
     const error = store.state.error;
+    const remoteOffline = !!(store.state.remoteSessionId && !store.remoteSession());
+    const offlineDevice = store.state.remoteSessionMeta?.device || "Device";
     this.ta.classList.toggle("busy", t.streaming || compacting);
-    this.ta.classList.toggle("error", !!error);
-    this.ta.placeholder = error || (compacting
-      ? "Compacting context…"
-      : t.streaming ? "Enter a steering message, alt+enter a follow-up…"
-        : store.inProject() && p ? `Ask about ${p.name}…` : "Send a message…");
-    this.stopBtn.classList.toggle("hidden", !t.streaming);
+    this.ta.classList.toggle("error", !!error || remoteOffline);
+    this.ta.placeholder = error || (remoteOffline
+      ? `${offlineDevice} is offline — waiting to reconnect…`
+      : compacting
+        ? "Compacting context…"
+        : t.streaming ? "Enter a steering message, alt+enter a follow-up…"
+          : store.inProject() && p ? `Ask about ${p.name}…` : "Send a message…");
+    this.stopBtn.classList.toggle("hidden", !t.streaming || remoteOffline);
     const draftState = store.draftData(activeId);
-    this.ta.disabled = !!draftState?.sending;
-    this.imageInput.disabled = !!draftState?.sending;
-    this.sendBtn.disabled = compacting || !!draftState?.sending || !!draftState?.pendingAttachments;
+    this.ta.disabled = !!draftState?.sending || remoteOffline;
+    this.imageInput.disabled = !!draftState?.sending || remoteOffline;
+    this.sendBtn.disabled = compacting || !!draftState?.sending || !!draftState?.pendingAttachments || remoteOffline;
     // While Pi waits for a typed answer, the message box answers it.
     const answering = !!this.asking(activeId);
     this.sendBtn.classList.toggle("answer", answering);

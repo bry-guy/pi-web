@@ -3,7 +3,7 @@
 // The Chats menu is its sibling for plain chats: new chat, past chats, and the chats worker.
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { setHTML, store, toast } from "./store.js";
-import { esc, groupMembers, icon, sidebarEntry, newChat, newProjectSession, restoreConversation, selectChat, selectSession, syncSummary } from "./shell.js";
+import { esc, groupMembers, icon, mobile, sidebarEntry, newChat, newProjectSession, restoreConversation, selectChat, selectSession, syncSummary } from "./shell.js";
 import { workerAction, workerCard } from "./workers.js";
 import { gitErrorMessage, launchSetup } from "./panel-utils.js";
 import { renderMarkdown } from "./markdown.js";
@@ -25,7 +25,19 @@ export function openChatsMenu() {
 
 // What pi-sync last reported for a session open on this server ("up to date", "in use on …"), if anything.
 const syncOf = id => syncSummary(store.state.extensionStatuses?.[id]?.["pi-sync"])?.message || "";
+// Sessions pi-projects' role_agent started: its "<role>: <task>" name, or the role prompt as title before names existed.
+// shortcut: matched by title since pi-sync records no role marker; a run renamed by hand counts as yours.
+const isRoleRun = title => /^(?:You are running as role |Foreground Role Agent Mode$|[a-z0-9]+(?:-[a-z0-9]+)+: )/.test(title || "");
 const shortSha = sha => (sha ? String(sha).slice(0, 8) : "");
+
+/** True when every word of `filter` appears in one of `labels`, ignoring case. */
+export function sessionMatches(labels, filter) {
+  const text = labels.filter(Boolean).join("\n").toLowerCase();
+  return String(filter || "").toLowerCase().split(/\s+/).filter(Boolean).every(word => text.includes(word));
+}
+
+// The Sessions list gets a filter box above this many sessions.
+const FILTER_ABOVE = 8;
 
 // workspaced's worker for plain chats.
 const CHATS_WORKER = "chats";
@@ -34,6 +46,15 @@ class PiProjectMenu extends HTMLElement {
   connectedCallback() {
     this.unsub = store.subscribe(w => { if (w === "state") this.render(); });
     this.addEventListener("click", e => void this.onClick(e));
+    this.addEventListener("input", e => {
+      if (e.target.matches(".session-filter")) { this.menu().filter = e.target.value; this.render(); }
+    });
+    // toggle doesn't bubble; capture keeps the role-runs group open across re-renders.
+    this.addEventListener("toggle", e => { if (e.target.matches?.("[data-role-runs]") && this.menu()) this.menu().roleRunsOpen = e.target.open; }, true);
+    this.addEventListener("keydown", e => {
+      // Esc clears a filter first; an empty one lets Esc close the menu as before.
+      if (e.key === "Escape" && e.target.matches(".session-filter") && e.target.value) { e.preventDefault(); this.menu().filter = ""; this.render(); }
+    });
     this.render();
   }
 
@@ -107,6 +128,7 @@ class PiProjectMenu extends HTMLElement {
   }
 
   async onClick(e) {
+    if (e.target.closest("[data-act='clear-filter']")) { this.menu().filter = ""; this.render(); this.querySelector(".session-filter")?.focus(); return; }
     if (this.menu()?.chats) return this.onChatsClick(e);
     if (this.group()) return this.onGroupClick(e);
     const project = this.project();
@@ -168,13 +190,13 @@ class PiProjectMenu extends HTMLElement {
     if (e.target.matches(".session-picker-scrim")) { this.close(); return; }
     if (e.target.closest("[data-act='close-project-menu']")) {
       // Back from a repository's view returns to its project.
-      if (menu.repo) { menu.repo = null; menu.preview = null; this.render(); } else this.close();
+      if (menu.repo) { menu.repo = null; menu.preview = null; menu.filter = ""; this.render(); } else this.close();
       return;
     }
     const t = e.target.closest("[data-act]");
     const act = t?.dataset.act;
     const member = id => group.members.find(m => m.id === id) || group.members[0];
-    if (act === "open-repo") { menu.repo = t.dataset.id; menu.preview = null; this.render(); return; }
+    if (act === "open-repo") { menu.repo = t.dataset.id; menu.preview = null; menu.filter = ""; this.render(); return; }
     // Repository sessions start in the repository, on its default branch.
     if (act === "new-repo-session") { this.close(); await newProjectSession(t.dataset.id); return; }
     if (act === "new-session") {
@@ -286,7 +308,7 @@ class PiProjectMenu extends HTMLElement {
       <div class="panel-rows">${repoRows}${row("Add repository", "Clones it into this project and records it in project.json.", `<button class="btn btn-secondary" data-act="add-repo" ${busy ? "disabled" : ""}>Add…</button>`)}</div></section>`;
 
     const flat = [];
-    const walk = (nodes, pid) => { for (const n of nodes || []) { if (!n.draft) flat.push({ ...n, pid }); walk(n.children, pid); } };
+    const walk = (nodes, pid) => { for (const n of nodes || []) { if (!n.draft && n.agentKind !== "run") flat.push({ ...n, pid }); walk(n.children, pid); } };
     if (group.folder) walk(group.folder.sessions, group.folder.id);
     // Other devices' project-level sessions sit in the same list; repository ones list under their repository.
     for (const item of menu.synced || []) if (!item.repo) flat.push(this.syncedNode(item));
@@ -314,7 +336,7 @@ class PiProjectMenu extends HTMLElement {
   /** A repository's sessions here plus its other-device ones (pi-sync's listing names the repository). */
   repoSessions(menu, repo) {
     const flat = [];
-    const walk = nodes => { for (const n of nodes || []) { if (!n.draft) flat.push({ ...n, pid: repo.id }); walk(n.children); } };
+    const walk = nodes => { for (const n of nodes || []) { if (!n.draft && n.agentKind !== "run") flat.push({ ...n, pid: repo.id }); walk(n.children); } };
     walk(repo.sessions);
     for (const item of menu.synced || []) if (item.repo === repo.name) flat.push({ ...this.syncedNode(item), repoId: repo.id });
     return flat;
@@ -326,9 +348,19 @@ class PiProjectMenu extends HTMLElement {
     const head = n => n.synced
       ? `data-act="open-synced" data-sync-id="${esc(n.synced)}" data-branch="${esc(n.branch || "")}" data-repo="${esc(n.repoId || "")}"`
       : `data-act="open-session" data-id="${esc(n.id)}" data-pid="${esc(n.pid)}"`;
-    const empty = menu.synced === null ? "Loading sessions…" : "No sessions yet.";
-    return `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Sessions</span><span>${flat.length}</span></div>
-      ${flat.length ? `<div class="history-list">${flat.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" ${head(n)}><span class="history-main"><strong>${esc(n.title)}</strong><small>${esc(meta(n).filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("")}</div>`
+    const total = flat.length;
+    const filter = total > FILTER_ABOVE ? (menu.filter || "").trim() : "";
+    // Match what the row shows: its title, device and branch (when the hint lists them).
+    const shown = filter ? flat.filter(n => sessionMatches([n.title, ...meta(n).filter(v => v && (v === n.where || v === n.branch))], filter)) : flat;
+    const search = total > FILTER_ABOVE ? `<div class="rail-search-wrap session-filter-wrap">${icon("search")}<input class="rail-search session-filter" type="search" placeholder="Filter sessions" aria-label="Filter sessions" value="${esc(menu.filter || "")}"><button class="rail-search-clear" data-act="clear-filter" title="Clear filter" aria-label="Clear filter" ${menu.filter ? "" : "hidden"}>${icon("close")}</button></div>` : "";
+    const empty = total ? "No sessions match the filter." : menu.synced === null ? "Loading sessions…" : "No sessions yet.";
+    const entries = list => list.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" ${head(n)}><span class="history-main"><strong>${esc(n.title)}</strong><small>${esc(meta(n).filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("");
+    const runs = shown.filter(n => isRoleRun(n.title));
+    const mine = shown.filter(n => !isRoleRun(n.title));
+    const runGroup = runs.length
+      ? `<details class="role-runs" data-role-runs ${menu.roleRunsOpen ? "open" : ""}><summary>Role runs <span>${runs.length}</span></summary><div class="history-list">${entries(runs)}</div></details>` : "";
+    return `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Sessions</span><span>${filter ? `${shown.length} / ${total}` : total}</span></div>${search}
+      ${shown.length ? `${mine.length ? `<div class="history-list">${entries(mine)}</div>` : ""}${runGroup}`
         : `<div class="session-history-empty">${empty}</div>`}</section>`;
   }
 
@@ -409,9 +441,17 @@ class PiProjectMenu extends HTMLElement {
     }
     const scroller = this.querySelector(".session-picker-body");
     const top = scroller.scrollTop;
+    // Re-rendering replaces the filter box; keep typing in it uninterrupted.
+    const typing = document.activeElement?.matches(".session-filter") ? document.activeElement : null;
+    const caret = typing && [typing.selectionStart, typing.selectionEnd];
     setHTML(this.querySelector(".session-picker-head"), head);
     setHTML(scroller, body);
     scroller.scrollTop = top;
+    const filter = scroller.querySelector(".session-filter");
+    const menu = this.menu();
+    if (filter && typing && !typing.isConnected) { filter.focus(); filter.setSelectionRange(...caret); }
+    // Focus it once per opening on desktop (on phones it would pop the keyboard), unless something in the menu has focus.
+    else if (filter && menu && !menu.filterFocused && !mobile() && !this.contains(document.activeElement)) { menu.filterFocused = true; filter.focus(); }
   }
 
   listRow(menu, key, title, sub, openAttrs) {

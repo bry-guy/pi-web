@@ -72,6 +72,8 @@ export const store = {
     projectId: null,
     sessionId: null,
     chatId: null,            // non-null => plain chat (no project workspace controls)
+    remoteSessionId: null,   // non-null => live remote-controlled session on another device
+    remoteSessionMeta: null, // last-seen { device, cwdShort, title } so offline banner stays readable
     railOpen: true,
     drawerOpen: false,
     openTree: {},
@@ -127,6 +129,8 @@ export const store = {
     piProjectsEnabled: false,
     piProjectsSyncedRoute: false,
     chats: [],
+    remoteSessions: [],
+    primes: [],              // run-door agents: { agent, project, conversation, runs: [{ id, name, started, running, failed }] }
     buildId: null,
     startedAt: null,
     reconnecting: false,
@@ -207,7 +211,11 @@ export const store = {
     return () => this.listeners.delete(fn);
   },
   activeKey() {
-    return this.state.chatId || this.state.sessionId;
+    return this.state.remoteSessionId || this.state.chatId || this.state.sessionId;
+  },
+  remoteSession(id = this.state.remoteSessionId) {
+    if (!id) return null;
+    return (this.state.remoteSessions || []).find(item => item.id === id) || null;
   },
   draft(id = this.activeKey()) {
     if (!id) return "";
@@ -294,7 +302,9 @@ export const store = {
       const node = this.findSession(id, project.sessions);
       if (node) return node;
     }
-    return this.state.chats.find(chat => chat.id === id) || null;
+    return this.state.chats.find(chat => chat.id === id)
+      || (this.state.remoteSessions || []).find(item => item.id === id)
+      || null;
   },
   sessionsUsingWorkspace(workspacePath) {
     const sessions = [];
@@ -306,7 +316,7 @@ export const store = {
     return sessions;
   },
   inProject() {
-    return this.state.view === "chat" && !this.state.chatId && !!this.state.sessionId;
+    return this.state.view === "chat" && !this.state.chatId && !this.state.remoteSessionId && !!this.state.sessionId;
   },
 };
 

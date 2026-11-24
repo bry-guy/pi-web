@@ -7,6 +7,7 @@ import path from "node:path";
 import { appHome, loadConfig, newId } from "../config.js";
 import { WEB_PI_COMMANDS, parseSlashCommand } from "../commands.js";
 import { PiConfiguration } from "../pi-configuration.js";
+import { reportText } from "./real.js";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const MOCK_MODELS = [
@@ -192,6 +193,13 @@ export class MockSupervisor {
   isOpen(id) { return !!this.opened?.has(id) || this.live.has(id); }
   isLive(id) { return this.live.has(id); }
   isCompacting(id) { return !!this.live.get(id)?.compacting; }
+  async deleteSession(id) {
+    if (this.isStreaming(id)) throw Object.assign(new Error("session_streaming"), { code: "session_streaming" });
+    if (!this._load(id)) throw new Error(`unknown session ${id}`);
+    fs.rmSync(fileOf(id), { force: true });
+    this.live.delete(id);
+    this.opened?.delete(id);
+  }
   async rehome(id, newCwd) {
     const s = this._load(id);
     if (!s) throw new Error("no such session");
@@ -243,6 +251,15 @@ export class MockSupervisor {
     s.name = name;
     this._save(s);
     this.hub.emit(id, "session_meta", { name });
+  }
+
+  async note(id, text, details) {
+    const s = this._load(id);
+    if (!s) throw new Error(`unknown session ${id}`);
+    const record = { id: newId("r"), role: "report", text: reportText(text, details), at: Date.now() };
+    s.records.push(record);
+    this._save(s);
+    this.hub.emit(id, "report", { record });
   }
 
   // Fork transcript at (before) a user message; new session in newCwd.

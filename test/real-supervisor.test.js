@@ -159,6 +159,14 @@ test("model-less session attachment resolves the configured default before creat
   assert.deepEqual(attached, ["session-1", "/tmp", "openai-codex/gpt-5.6-luna"]);
 });
 
+test("delete refuses a session whose prompt arrived while it was being looked up", async () => {
+  const supervisor = new RealSupervisor({});
+  supervisor.paths.set("session-1", "/tmp/pi-web-no-such-session-1.jsonl");
+  supervisor._discover = async id => { supervisor.pendingPrompts.set(id, 1); return true; };
+  await assert.rejects(supervisor.deleteSession("session-1"), { code: "session_streaming" });
+  assert.ok(supervisor.paths.has("session-1"), "nothing was removed");
+});
+
 test("overlapping prompt admission is rejected before SDK streaming begins", async () => {
   let settle;
   const supervisor = new RealSupervisor({});
@@ -434,27 +442,69 @@ test("completed live assistant records do not duplicate persisted messages after
   ]);
 });
 
-test("provider error events end the turn with a public error", () => {
+test("a turn pi said it would retry is reported failed once when the retry never starts", async () => {
   const events = [];
-  const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ id, type, data }) });
-  const st = {
-    liveRecords: new Map([["assistant-1", { id: "assistant-1", role: "assistant", text: "", streaming: true }]]),
-    pendingMessages: [], msgId: "assistant-1", turnId: "turn-1", turnEnded: false,
-  };
-  supervisor._onEvent("session-1", st, {
-    type: "message_update",
-    assistantMessageEvent: {
-      type: "error",
-      error: { role: "assistant", stopReason: "error", errorMessage: "Insufficient quota." },
-    },
-  });
-  assert.equal(st.turnEnded, true);
-  assert.equal(st.liveRecords.get("assistant-1").streaming, undefined);
-  assert.deepEqual(events.map(event => [event.type, event.data.reason, event.data.error]), [
-    ["message_end", undefined, undefined], ["turn_end", "errored", "Insufficient quota."],
+  const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ type, data }) });
+  const failed = { role: "assistant", stopReason: "error", errorMessage: "500 Credential placeholder could not be resolved" };
+  const final = { type: "turn_end", data: { turnId: "turn-1", reason: "errored", error: failed.errorMessage } };
+  const fresh = () => ({ liveRecords: new Map(), pendingMessages: [], msgId: null, turnId: "turn-1", turnEnded: false });
+
+  // Cancelled during the backoff: pi ends the retry without a new attempt.
+  let st = fresh();
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: true });
+  supervisor._onEvent("session-1", st, { type: "auto_retry_end", success: false, attempt: 1, finalError: "Retry cancelled" });
+  supervisor._finishRetry("session-1", st);
+  assert.deepEqual(events.splice(1), [final]);
+  events.length = 0;
+
+  // No event at all (aborted before the first attempt): the prompt's end reports it.
+  st = fresh();
+  supervisor.live.set("session-1", st);
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: true });
+  supervisor._startPrompt("session-1", async () => {}, () => {});
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(events.splice(1), [final]);
+  events.length = 0;
+
+  // The retry starts: only its own end is reported; the prompt's end adds nothing.
+  st = fresh();
+  supervisor.live.set("session-1", st);
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: true });
+  supervisor._onEvent("session-1", st, { type: "agent_start" });
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: false });
+  supervisor._onEvent("session-1", st, { type: "auto_retry_end", success: false, attempt: 1, finalError: failed.errorMessage });
+  supervisor._startPrompt("session-1", async () => {}, () => {});
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(events.map(e => [e.type, e.data.reason, e.data.willRetry]), [
+    ["turn_end", "errored", true], ["turn_start", undefined, undefined], ["turn_end", "errored", undefined],
   ]);
-  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [] });
-  assert.equal(events.length, 2);
+  events.length = 0;
+
+  // A prompt rejected or queued during the backoff (pi is streaming) is not the retried turn's end.
+  st = { ...fresh(), session: { isStreaming: true } };
+  supervisor.live.set("session-1", st);
+  supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry: true });
+  supervisor._startPrompt("session-1", async () => { throw new Error("busy"); }, () => {});
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(events.splice(1), [], "no false final turn end while the retry is pending");
+  events.length = 0;
+  st.session.isStreaming = false;
+  supervisor._onEvent("session-1", st, { type: "auto_retry_end", success: false, attempt: 1, finalError: "Retry cancelled" });
+  assert.deepEqual(events.splice(0), [final]);
+  supervisor.live.delete("session-1");
+});
+
+test("an errored turn ends at agent_end and says whether pi will retry it", () => {
+  const events = [];
+  const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ type, data }) });
+  const failed = { role: "assistant", stopReason: "error", errorMessage: "500 Credential placeholder could not be resolved" };
+  for (const willRetry of [true, false]) {
+    const st = { liveRecords: new Map(), pendingMessages: [], msgId: null, turnId: "turn-1", turnEnded: false };
+    supervisor._onEvent("session-1", st, { type: "turn_end", message: failed, toolResults: [] });
+    assert.equal(events.length, 0, "pi's turn_end alone does not end the turn");
+    supervisor._onEvent("session-1", st, { type: "agent_end", messages: [failed], willRetry });
+    assert.deepEqual(events.splice(0), [{ type: "turn_end", data: { turnId: "turn-1", reason: "errored", error: "500 Credential placeholder could not be resolved", ...(willRetry ? { willRetry } : {}) } }]);
+  }
 });
 
 test("manual compact reports expected no-op states instead of an internal error", async () => {
@@ -760,4 +810,60 @@ test("session summaries are reused until the session file changes", () => {
   fs.appendFileSync(file, "b\n");
   assert.equal(supervisor._sessionSummary(SessionManager, file).cwd, "/two");
   assert.equal(opens, 2);
+});
+
+test("a prime report is a custom message with no model turn, shown in the transcript and live", async () => {
+  const events = [];
+  const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ type, data }) });
+  const entries = [{ type: "message", id: "u1", parentId: null, message: { role: "user", content: "hi" } }];
+  const calls = [];
+  const head = "**labrat: 2026-11-22 08:00** · ended 2026-11-22 08:04 UTC · [open the run](/?s=r1)";
+  // The model reads the label; the chat shows the header in its place.
+  const text = "Automated report from this agent's scheduled run \"labrat: 2026-11-22 08:00\" (finished, 2026-11-22 08:04 UTC). This is the run's own output, not a message from the owner, and it does not ask for a reply:\n\nAll quiet.";
+  const details = { agent: "labrat", run: "r1", outcome: "done", head };
+  const at = Date.parse("2026-11-22T08:04:00Z");
+  const st = {
+    liveRecords: new Map(), pendingMessages: [],
+    session: {
+      sessionManager: { getBranch: () => entries, getLeafId: () => entries.at(-1).id },
+      // As pi does when idle: append the entry, then announce the message.
+      async sendCustomMessage(message, options) {
+        calls.push([message, options]);
+        entries.push({ type: "custom_message", id: "c1", parentId: "u1", ...message, timestamp: new Date(at).toISOString() });
+        supervisor._onEvent("conv", st, { type: "message_start", message: { role: "custom", ...message, timestamp: at } });
+        supervisor._onEvent("conv", st, { type: "message_end", message: { role: "custom", ...message, timestamp: at } });
+      },
+    },
+  };
+  supervisor.live.set("conv", st);
+  await supervisor.note("conv", text, details);
+  assert.deepEqual(calls, [[{ customType: "pi-web:prime-report", content: text, display: true, details }, { triggerTurn: false }]]);
+  assert.equal(entries.at(-1).content, text, "the stored content, which the model reads, starts with the label");
+  const record = { id: "c1", role: "report", text: `${head}\n\nAll quiet.`, at };
+  assert.deepEqual(events, [{ type: "report", data: { record } }]);
+  assert.deepEqual((await supervisor.transcript("conv")).filter(r => r.role !== "user"), [record]);
+  supervisor.live.delete("conv");
+});
+
+test("Antigravity is offered as a subscription provider", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-antigravity-"));
+  try {
+    const script = `
+      import { EventHub } from './server/events.js';
+      import { RealSupervisor } from './server/supervisor/real.js';
+      const providers = await new RealSupervisor(new EventHub()).listProviders();
+      console.log(JSON.stringify(providers.find(provider => provider.id === "antigravity") || null));
+    `;
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: path.resolve("."),
+      env: { ...process.env, PI_WEB_HOME: path.join(tmp, "web"), PI_CODING_AGENT_DIR: path.join(tmp, "pi") },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    const antigravity = JSON.parse(output.trim().split("\n").at(-1));
+    assert.equal(antigravity?.configured, false);
+    assert.deepEqual(antigravity.authMethods.map(method => [method.id, method.subscription]), [["oauth", true]]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

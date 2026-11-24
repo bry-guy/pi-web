@@ -73,7 +73,9 @@ export function localProvider({ root, env: extraEnv = {}, spawnImpl = spawn, ser
       env: { ...process.env, PORT: String(port), PI_WEB_MODE: process.env.PI_WEB_MODE || "real",
         PI_WEB_HOME: path.join(dir, "pi-ez-web"), PI_CODING_AGENT_DIR: path.join(dir, "pi-ez-agent"),
         PI_WEB_REPOS_ROOT: path.join(dir, "repos"), PI_WEB_GITHUB_AUTH_FILE: authFile, PI_WEB_MODEL_AUTH_FILE: modelAuthFile,
-        WORKSPACED_TOKEN: "", PI_WEB_WORKSPACED_URL: "", PI_WEB_DISCORD_TOKEN: "", PI_WEB_DISCORD_USER: "", ...projectEnvironment(projectOf(repository), dir), ...extraEnv },
+        WORKSPACED_TOKEN: "", PI_WEB_WORKSPACED_URL: "", PI_WEB_DISCORD_TOKEN: "", PI_WEB_DISCORD_USER: "",
+        PI_SYNC_REMOTE_TOKEN: "", PI_SYNC_REMOTE_CONTROL: "off", PI_SYNC_ALL_SESSIONS: "on",
+        ...projectEnvironment(projectOf(repository), dir), ...extraEnv },
     });
     child.port = port;
     procs.set(name, child);

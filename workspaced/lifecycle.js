@@ -114,7 +114,9 @@ export function createLifecycle({
     const started = now();
     await makeRoom(name, 1);
     await provider.scale(name, 1);
-    const deadline = started + wakeTimeoutMs;
+    // The budget is for the worker to answer: it starts after scale, which for an OpenShell sandbox also waits (bounded,
+    // at most 40 s: openshellProvider's feedWaitMs + settleWaitMs) for the model login, so that wait never reads as "starting".
+    const deadline = now() + wakeTimeoutMs;
     while (now() < deadline) {
       const w = cache.byName.get(name);
       if (w?.problem?.fatal) { log(`workspaced: ${name} failed to start: ${w.problem.reason}`); return false; }

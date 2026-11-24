@@ -54,6 +54,7 @@ export const api = {
   providerLogout: providerId => fetch(`/api/providers/${encodeURIComponent(providerId)}/logout`, { method: "POST" }).then(j),
   fetchProject: (id, operationId = null, sessionId = null) => fetch(`/api/projects/${encodeURIComponent(id)}/fetch`, { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify({ ...(operationId ? { operationId } : {}), ...(sessionId ? { sessionId } : {}) }) }).then(j),
   newChat: () => fetch("/api/chats", { method: "POST" }).then(j),
+  primeConversation: agent => fetch(`/api/primes/${encodeURIComponent(agent)}/conversation`, { method: "POST" }).then(j),
   newProject: value => {
     const body = typeof value === "string" ? { repoPath: value } : (value || {});
     return fetch("/api/projects", { method: "POST", headers: JH, body: JSON.stringify(body) }).then(j);
@@ -178,6 +179,8 @@ function applyState(s) {
     piProjectsSyncedRoute: !!s.piProjectsSyncedRoute,
     chats: s.chats,
     endedChats: s.endedChats || [],
+    remoteSessions: s.remoteSessions || [],
+    primes: s.primes || [],
     buildId: s.buildId || null,
     startedAt: s.startedAt || null,
     reconnecting: false,
@@ -204,6 +207,10 @@ function applyState(s) {
     const transcript = store.state.transcripts[chat.id] ||= { records: [], streaming: false, seq: -1 };
     transcript.streaming = !!chat.streaming;
   }
+  for (const remote of s.remoteSessions || []) {
+    const transcript = store.state.transcripts[remote.id] ||= { records: [], streaming: false, seq: -1 };
+    transcript.streaming = !!remote.streaming;
+  }
   store.notify("transcript");
 }
 
@@ -221,7 +228,9 @@ function findSessionInState(state, id) {
     const hit = findNode(p.sessions, id);
     if (hit) return hit;
   }
-  return (state.chats || []).find(c => c.id === id) || null;
+  return (state.chats || []).find(c => c.id === id)
+    || (state.remoteSessions || []).find(r => r.id === id)
+    || null;
 }
 function findNode(nodes, id) {
   for (const node of nodes || []) {
@@ -506,6 +515,30 @@ function applyUiEvent(evt) {
     completeOperationSnapshot(evt.operation);
     return true;
   }
+  if (evt.type === "remote_sessions") {
+    const prevOnline = !!store.remoteSession();
+    const next = Array.isArray(evt.sessions) ? evt.sessions : [];
+    // A host that drops mid-turn never sends turn_end, so its turn would look like it runs forever.
+    const nextIds = new Set(next.map(item => item.id));
+    for (const prev of store.state.remoteSessions || []) {
+      const t = store.state.transcripts[prev.id];
+      if (t && !nextIds.has(prev.id)) t.streaming = false;
+    }
+    const activeRemoteId = store.state.remoteSessionId;
+    const activeNext = activeRemoteId ? next.find(item => item.id === activeRemoteId) : null;
+    store.set({
+      remoteSessions: next,
+      ...(activeNext ? { remoteSessionMeta: activeNext, ...(activeNext.model ? { model: activeNext.model } : {}) } : {}),
+    });
+    for (const r of next) {
+      const t = store.state.transcripts[r.id] ||= { records: [], streaming: false, seq: -1 };
+      t.streaming = !!r.streaming;
+    }
+    if (activeRemoteId && !prevOnline && activeNext) {
+      void openTranscript(activeRemoteId, { scrollToLatest: false });
+    }
+    return true;
+  }
   return false;
 }
 
@@ -557,6 +590,9 @@ function applyTranscriptEvent(evt, t, replay) {
     }
     case "summary":
       if (evt.record && !byId(recs, evt.record.id)) recs.splice(lastStreamingIndex(recs), 0, evt.record);
+      break;
+    case "report":
+      if (evt.record && !byId(recs, evt.record.id)) recs.push(evt.record);
       break;
     case "text_delta": {
       let r = byId(recs, evt.messageId);
