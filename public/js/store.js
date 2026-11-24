@@ -130,6 +130,7 @@ export const store = {
     piProjectsSyncedRoute: false,
     chats: [],
     remoteSessions: [],
+    primes: [],              // run-door agents: { agent, project, conversation, runs: [{ id, name, started, running, failed }] }
     buildId: null,
     startedAt: null,
     reconnecting: false,
