@@ -34,7 +34,7 @@ const state = {
   chats: [],
   sync: { configured: false, serverUrl: "", allConversations: false },
   providers: [
-    { id: "anthropic", name: "Anthropic", configured: true, sourceLabel: "OAuth", availableModels: 2, authMethods: [{ id: "oauth", label: "Anthropic OAuth" }], canLogout: true },
+    { id: "anthropic", name: "Anthropic", configured: true, source: "stored", authType: "oauth", sourceLabel: "OAuth", availableModels: 2, authMethods: [{ id: "oauth", label: "Anthropic OAuth", subscription: true }, { id: "api_key", label: "Anthropic API key" }], canLogout: true },
     { id: "openai", name: "OpenAI", configured: false, availableModels: 0, authMethods: [{ id: "api_key", label: "OpenAI API key" }], canLogout: false },
   ],
   repositorySources: { default: "github", sources: [{ id: "github", enabled: true, configured: false, authenticated: false, owner: "bry-guy" }, { id: "git-url", enabled: true }] },
@@ -746,6 +746,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.set({ settingsCategory: "providers" });
   assert.match(root.querySelector("pi-settings").textContent, /Anthropic/);
   for (const button of root.querySelectorAll("pi-settings .provider-actions [data-auth-login]")) assert.equal(button.title, button.textContent, "a login button's full label survives an ellipsis");
+  const providerRows = [...root.querySelectorAll("pi-settings .provider-row")].map(row => [row.querySelector(".sr-title").textContent, row.querySelector(".provider-actions")?.textContent.trim()]);
+  assert.deepEqual(providerRows, [["Claude", "Sign out"], ["Anthropic", "Add key"], ["OpenAI", "Add key"]], "a subscription and an API key for one provider are separate rows, each with one action");
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Default model/, "only the active category renders");
   store.set({ settingsCategory: "pi" });
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Pi profile & extensions/);
