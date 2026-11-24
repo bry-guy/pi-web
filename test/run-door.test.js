@@ -440,6 +440,44 @@ test("retention deletes reported runs older than 30 days on awake workers, and n
   } finally { awake.remote.stop(); }
 });
 
+test("retention: a worker without the delete route keeps its runs hidden; a vanished run is dropped; reconcile deletes too", async () => {
+  const old = { agent: "labrat", kind: "run", started: "2026-10-01T00:00:00.000Z", reported: true, outcome: "done" };
+  const snapshot = { "ws-labrat": [{ id: "pp-labrat", sessions: ["noRoute", "gone", "viaReconcile"].map(id => ({ id, children: [] })) }] };
+  const now = () => new Date("2026-11-22T08:00:00Z");
+  const fake = primeWorkspaced(primeDir({ "agent-sessions.json": { noRoute: old, gone: old }, "remote-projects.json": snapshot }));
+  try {
+    fake.sessions.set("noRoute", { name: "noRoute" });
+    const plain = fake.remote.sessionPost;
+    // An older image answers 404 with no session error for a route it does not have.
+    fake.remote.sessionPost = (id, rest, body) => id === "noRoute" ? Promise.resolve({ status: 404, body: {} }) : plain(id, rest, body);
+    const primes = createPrimes({ entries: labrat(), remote: fake.remote, log: () => {}, now });
+    await primes.sweep();
+    assert.deepEqual(fake.remote.runIds(), ["noRoute"], "the vanished run is dropped, the other stays hidden");
+    fake.remote.sessionPost = plain;
+    // A worker asleep at every sweep: its old runs go when it connects.
+    fake.sessions.set("viaReconcile", { name: "viaReconcile" });
+    fake.remote.markAgent("viaReconcile", "labrat", "run");
+    fake.remote.markReported("viaReconcile", "reported", "done");
+    fake.remote.agentOf("viaReconcile").started = "2026-10-02T00:00:00.000Z";
+    fake.remote.markAgent("conv", "labrat", "conversation");
+    fake.sessions.set("conv", { name: "conv" });
+    await primes.event(null, "worker_connected", { workspace: "ws-labrat" });
+    assert.deepEqual(fake.calls.filter(c => c[1] === "/sessions/viaReconcile/delete" || c[1] === "/sessions/conv/delete").map(c => c[1]), ["/sessions/viaReconcile/delete"]);
+    assert.deepEqual(fake.remote.runIds(), []);
+    assert.ok(fake.sessions.has("conv"));
+  } finally { fake.remote.stop(); }
+});
+
+test("web's public API refuses to delete a session and forwards nothing", async () => {
+  const forwarded = [];
+  const api = new Hono();
+  registerRemoteRoutes(api, { owner: async () => "ws-labrat", forward: c => { forwarded.push(c.req.path); return c.json({ ok: true }); }, wake() {} });
+  const res = await api.request("/sessions/conv/delete", { method: "POST" });
+  assert.equal(res.status, 403);
+  assert.deepEqual(forwarded, []);
+  assert.equal((await api.request("/sessions/conv/close", { method: "POST" })).status, 200, "other session routes still forward");
+});
+
 test("part 1 gaps: a stopped run and a run with no reply are reported", async () => {
   const fake = primeWorkspaced(primeDir({}));
   const dms = [];
@@ -472,5 +510,24 @@ test("a failed write of agent-sessions.json is logged and retried", async () => 
     rmSync(`${file}.tmp`, { recursive: true });
     await new Promise(r => setTimeout(r, 150));
     assert.equal(JSON.parse(readFileSync(file, "utf8")).r1.kind, "run");
+  } finally { fake.remote.stop(); }
+});
+
+test("a write of agent-sessions.json that keeps failing stops retrying", async () => {
+  const cachePath = primeDir({});
+  const file = path.join(path.dirname(cachePath), "agent-sessions.json");
+  mkdirSync(`${file}.tmp`);
+  const logs = [];
+  const fake = primeWorkspaced(cachePath, { log: l => logs.push(l) });
+  try {
+    fake.remote.markAgent("r1", "labrat", "run");
+    // retryMs 50: retries after 50, 100 and 200 ms, then none.
+    await new Promise(r => setTimeout(r, 700));
+    const failed = logs.filter(l => l.includes("could not save agent-sessions.json"));
+    assert.equal(failed.length, 4);
+    assert.match(failed.at(-1), /giving up until the next change/);
+    rmSync(`${file}.tmp`, { recursive: true });
+    fake.remote.markAgent("r2", "labrat", "run");
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort(), ["r1", "r2"], "the next change saves the whole map");
   } finally { fake.remote.stop(); }
 });

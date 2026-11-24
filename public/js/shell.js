@@ -157,6 +157,18 @@ async function openPrime(agent) {
   }
 }
 
+// A closed run sits with ended sessions, which state leaves out: restore it, then open it.
+async function openRun(id) {
+  if (selectSessionById(id, { showOperation: true })) return;
+  try {
+    await api.restore(id);
+    await refreshState();
+    selectSessionById(id, { showOperation: true });
+  } catch (err) {
+    store.setError(`Could not open the run: ${err.detail || err.error || err.message || err}`);
+  }
+}
+
 const runWhen = iso => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -505,7 +517,7 @@ class PiSidebar extends HTMLElement {
     } else if (act === "chat-row") selectChat(t.dataset.id);
     else if (act === "remote-row") selectRemoteSession(t.dataset.id);
     else if (act === "prime-row") void openPrime(t.dataset.agent);
-    else if (act === "prime-run") selectSessionById(t.dataset.id, { showOperation: true });
+    else if (act === "prime-run") void openRun(t.dataset.id);
   }
 
   clearSearch() {

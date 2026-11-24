@@ -206,18 +206,23 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
 
   // Deletes runs older than RUN_RETENTION_MS that are reported (so ended), on awake workers only: a sleeping
   // worker is skipped until the next sweep. Conversations and agent sessions are never runs, so never deleted.
+  // reconcile() also deletes them, so a worker asleep at every sweep still loses its old runs.
+  const oldRuns = () => {
+    const cutoff = now().getTime() - RUN_RETENTION_MS;
+    return remote.runIds().filter(id => remote.agentOf(id).reported && Date.parse(remote.agentOf(id).started) < cutoff);
+  };
+  async function deleteRun(id) {
+    const res = await remote.sessionPost(id, "/delete", {});
+    // Any other 404 (a worker without the route) keeps the run's flag, or it would list as a visible session.
+    if (res.status < 300 || res.body?.error === "no_such_session") remote.markAgent(id, null);
+    else log(`pi-ez-web: old run ${id} was not deleted (${res.body?.error || res.status})`);
+  }
   async function sweep() {
     try {
-      const cutoff = now().getTime() - RUN_RETENTION_MS;
-      const old = remote.runIds().filter(id => remote.agentOf(id).reported && Date.parse(remote.agentOf(id).started) < cutoff);
+      const old = oldRuns();
       if (!old.length) return;
       const awake = new Set((await remote.list()).filter(w => (w.state ? w.state === "running" : w.ready)).map(w => w.name));
-      for (const id of old) {
-        if (!awake.has(await remote.owner("session", id))) continue;
-        const res = await remote.sessionPost(id, "/delete", {});
-        if (res.status < 300 || res.status === 404) remote.markAgent(id, null);
-        else log(`pi-ez-web: old run ${id} was not deleted (${res.body.error || res.status})`);
-      }
+      for (const id of old) if (awake.has(await remote.owner("session", id))) await deleteRun(id);
     } catch (e) { log(`pi-ez-web: deleting old runs failed: ${e.message}`); }
   }
 
@@ -281,6 +286,7 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
         : { reason: "done" };
       await settle(id, outcome, t);
     }
+    for (const id of oldRuns()) if (await remote.owner("session", id) === workspace) await deleteRun(id);
   }
 
   function event(sessionId, type, data = {}) {

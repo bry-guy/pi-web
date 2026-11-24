@@ -167,16 +167,19 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     if (outcome) agents[id].outcome = outcome;
     saveAgents();
   }
-  // A failed write is retried: a lost flag would re-report a run or list it as a visible session.
+  // A failed write is retried a few times, each later: a lost flag would re-report a run or list it as a visible
+  // session. After that the next change saves the whole map again.
   let saveRetry = null;
-  function saveAgents() {
+  function saveAgents(attempt = 0) {
     if (!agentsPath) return;
     try {
       writeFileSync(`${agentsPath}.tmp`, JSON.stringify(agents), { mode: 0o600 });
       renameSync(`${agentsPath}.tmp`, agentsPath);
     } catch (e) {
-      log(`pi-ez-web: could not save agent-sessions.json (${e.message}); retrying`);
-      saveRetry ??= setTimeout(() => { saveRetry = null; saveAgents(); }, retryMs);
+      const retry = attempt < 3;
+      log(`pi-ez-web: could not save agent-sessions.json (${e.message}); ${retry ? "retrying" : "giving up until the next change"}`);
+      if (!retry) return;
+      saveRetry ??= setTimeout(() => { saveRetry = null; saveAgents(attempt + 1); }, retryMs * 2 ** attempt);
       saveRetry.unref?.();
     }
   }
@@ -696,6 +699,8 @@ export function registerRemoteRoutes(api, remote) {
     const { status, body } = await remote.remove(c.req.param("name"), { purge: c.req.query("purge") === "1" });
     return c.json(body, status);
   });
+  // Only web's retention sweep deletes a worker's session (run-door.js calls the worker directly).
+  api.post("/sessions/:id/delete", c => c.json({ error: "forbidden" }, 403));
   for (const [kind, pattern] of [["project", "/projects/:id/*"], ["session", "/sessions/:id/*"]]) {
     api.use(pattern, async c => {
       const name = await remote.owner(kind, c.req.param("id"));

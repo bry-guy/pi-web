@@ -1230,8 +1230,11 @@ export class RealSupervisor {
   }
 
   async deleteSession(id) {
-    if (this.isStreaming(id) || this.pendingPrompts.has(id)) throw Object.assign(new Error("session_streaming"), { code: "session_streaming" });
+    const refuseBusy = () => { if (this.isStreaming(id) || this.pendingPrompts.has(id)) throw Object.assign(new Error("session_streaming"), { code: "session_streaming" }); };
+    refuseBusy();
     if (!await this._discover(id)) throw new Error("unknown session " + id);
+    // A message may have arrived during the await.
+    refuseBusy();
     const file = this.paths.get(id) || this.info.get(id)?.path;
     const st = this.live.get(id);
     if (st) {

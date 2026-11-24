@@ -635,7 +635,9 @@ test("agent-sessions.json: an old bare name reads as an agent session, and sessi
     remote.markAgent("r1", "labrat", "run");
     assert.deepEqual(remote.agentOf("a1"), { agent: "nightly", kind: "agent" }, "only the run door marks runs");
     const onDisk = JSON.parse(readFileSync(path.join(path.dirname(cachePath), "agent-sessions.json"), "utf8"));
-    assert.deepEqual([onDisk.a1, { ...onDisk.r1, started: "t" }], ["nightly", { agent: "labrat", kind: "run", started: "t" }], "an agent session stays the bare name older builds read");
+    const { started, ...run } = onDisk.r1;
+    assert.deepEqual([onDisk.a1, run], ["nightly", { agent: "labrat", kind: "run" }], "an agent session stays the bare name older builds read");
+    assert.ok(Math.abs(Date.now() - Date.parse(started)) < 60_000, `a run's start is now (${started})`);
     assert.equal(remote.conversationOf("labrat"), "c0");
     remote.markAgent("c0", null);
     assert.equal(remote.conversationOf("labrat"), null);
