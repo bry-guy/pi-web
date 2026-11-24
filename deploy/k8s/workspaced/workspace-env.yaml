@@ -53,6 +53,9 @@ data:
     if [ -n "${PI_ROLES_SIGNER:-}" ]; then
       mkdir -p "$HOME/.local/state/pi-roles"
       printf 'pi-roles %s\n' "$PI_ROLES_SIGNER" > "$HOME/.local/state/pi-roles/allowed_signers"
+    else
+      # The disk outlives this value: without a signer, an earlier trust anchor must not keep granting roles.
+      rm -f "$HOME/.local/state/pi-roles/allowed_signers"
     fi
     # Default project setup hook; a project's own hooks in config.json win.
     cfg="$PI_WEB_HOME/config.json"
