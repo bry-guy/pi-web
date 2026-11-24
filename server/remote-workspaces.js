@@ -669,6 +669,8 @@ export function registerRemoteRoutes(api, remote) {
     const { status, body } = await remote.remove(c.req.param("name"), { purge: c.req.query("purge") === "1" });
     return c.json(body, status);
   });
+  // Only web answers a role_agent call (role-runs.js, through sessionPost): a browser must not forge a run's result.
+  api.post("/sessions/:id/role-run", c => c.json({ error: "forbidden" }, 403));
   for (const [kind, pattern] of [["project", "/projects/:id/*"], ["session", "/sessions/:id/*"]]) {
     api.use(pattern, async c => {
       const name = await remote.owner(kind, c.req.param("id"));

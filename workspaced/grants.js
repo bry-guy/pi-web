@@ -26,7 +26,7 @@ const ROLE_ID = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
 // The gateway provider workspaced feeds the model login into, attached to every sandbox when fed.
 export const MODEL_PROVIDER = "pi-web-anthropic";
 // Sandbox variables workspaced sets itself, beside workerEnv.
-export const SANDBOX_ENV = ["HOST", "PI_ANTHROPIC_PLACEHOLDER_FILE", "PI_WEB_PACKAGES"];
+export const SANDBOX_ENV = ["HOST", "PI_WEB_SANDBOX", "PI_ANTHROPIC_PLACEHOLDER_FILE", "PI_WEB_PACKAGES"];
 const RESERVED_ENV = new Set([...workerEnv({ name: "x", repository: "project:x" }).map(e => e.name), ...SANDBOX_ENV]);
 const KNOWN_KEYS = new Set(["anyProject", "repos", "env", "namespace", "serviceAccount", "runtimeClass", "provider", "egress", "description", "providers", "environment", "packages", "role"]);
 const OPENSHELL_ONLY = ["providers", "environment", "packages", "role"];

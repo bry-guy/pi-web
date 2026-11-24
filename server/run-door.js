@@ -66,6 +66,8 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
   async function worker(entry) {
     const existing = (await remote.list()).find(w => w.repository === `project:${entry.project}`);
     if (existing && (existing.grant || "default") !== entry.grant) throw fail(409, "grant_mismatch", `project ${entry.project} runs under another grant`);
+    // A role's worker must be a sandbox: one of that name from before its grant was one is refused, never woken.
+    if (existing && entry.provider && existing.provider !== entry.provider) throw fail(409, "provider_mismatch", `project ${entry.project} exists and is not an ${entry.provider} sandbox; remove that project first`);
     if (existing) {
       await remote.workspaceAction(existing.name, "wake");
       await remote.waitReady(existing.name);
