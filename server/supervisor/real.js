@@ -303,9 +303,15 @@ export class RealSupervisor {
       } else {
         try {
           resources = await loadResources(true);
-          this.packageSources = configuredPackages;
-          this.packageSetupError = null;
-          this.packageStatus = { configured: configuredPackages.length, loaded: configuredPackages.length, failed: 0 };
+          // Pi >= 1.5 skips a package that fails to install and reports it as an extension warning instead of throwing.
+          const warnings = resources.resourceLoader.getExtensions().warnings || [];
+          const failedPackages = configuredPackages.flatMap(source => {
+            const warning = warnings.find(w => w.path === (typeof source === "string" ? source : source?.source) && /failed to install/.test(w.warning));
+            return warning ? [{ source, error: new Error(warning.warning) }] : [];
+          });
+          this.packageSources = configuredPackages.filter(source => !failedPackages.some(failed => failed.source === source));
+          this.packageSetupError = failedPackages.length ? packageFailureMessage(null, configuredPackages, failedPackages) : null;
+          this.packageStatus = { configured: configuredPackages.length, loaded: this.packageSources.length, failed: failedPackages.length };
         } catch (error) {
           if (!isPackageSetupFailure(error)) throw error;
           const workingPackages = [];
