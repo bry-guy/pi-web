@@ -115,7 +115,8 @@ export function createLifecycle({
     await makeRoom(name, 1);
     await provider.scale(name, 1);
     // The budget is for the worker to answer: it starts after scale, which for an OpenShell sandbox also waits (bounded,
-    // at most 40 s: openshellProvider's feedWaitMs + settleWaitMs) for the model login, so that wait never reads as "starting".
+    // at most 40 s: openshellProvider's feedWaitMs + settleWaitMs) for the model login, and for a role's GitHub token,
+    // so that wait never reads as "starting".
     const deadline = now() + wakeTimeoutMs;
     while (now() < deadline) {
       const w = cache.byName.get(name);
