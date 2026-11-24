@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import YAML from "yaml";
-import { DEFAULT_GRANT, grantError, MODEL_PROVIDER } from "./grants.js";
+import { DEFAULT_GRANT, githubProvider, grantError, MODEL_PROVIDER } from "./grants.js";
 import { DATA, MANAGED_BY, pvcManifest, WORKSPACE_PORT, workerEnv } from "./manifests.js";
 
 // Workers as NVIDIA OpenShell sandboxes (CLI 0.1.7), driven through the `openshell` CLI. A sandbox
@@ -32,6 +32,14 @@ const PROFILE_FILE = fileURLToPath(new URL("./pi-web-anthropic.yaml", import.met
 // Placeholders are versioned and a running process keeps the one it started with; a new process (this exec)
 // sees the current one, so writing it to the file moves the running worker to it.
 const WRITE_PLACEHOLDER = `[ -n "$${PLACEHOLDER_VAR}" ] || exit 0; mkdir -p ${path.posix.dirname(PLACEHOLDER_FILE)} && printenv ${PLACEHOLDER_VAR} > ${PLACEHOLDER_FILE}.tmp && mv ${PLACEHOLDER_FILE}.tmp ${PLACEHOLDER_FILE}`;
+// GitHub as a role's bot (docs/workspaced.md#github-as-a-roles-bot): the gateway provider <app>-github holds the
+// App's installation token; a sandbox sees only a placeholder, which its git and gh read from GITHUB_AUTH_FILE.
+const GITHUB_VAR = "OPENSHELL_GITHUB_PLACEHOLDER";
+const GITHUB_PROFILE = "pi-web-github";
+const GITHUB_PROFILE_FILE = fileURLToPath(new URL("./pi-web-github.yaml", import.meta.url));
+export const GITHUB_AUTH_FILE = `${DATA}/pi-ez-agent/openshell-github-auth.json`;
+// The shape server/git-credential-helper.js reads. A placeholder has no character JSON would escape.
+const WRITE_GITHUB_AUTH = `[ -n "$${GITHUB_VAR}" ] || { echo "this sandbox was created without the GitHub provider; remove the project and add it again" >&2; exit 1; }; mkdir -p ${path.posix.dirname(GITHUB_AUTH_FILE)} && printf '{"accessToken":"%s"}\\n' "$${GITHUB_VAR}" > ${GITHUB_AUTH_FILE}.tmp && mv ${GITHUB_AUTH_FILE}.tmp ${GITHUB_AUTH_FILE}`;
 const PHASE_STATE = { Ready: "running", Stopped: "sleeping", Stopping: "sleeping", Suspended: "sleeping", Suspending: "sleeping", Error: "failed" };
 
 export function openshellConfig(env = process.env) {
@@ -55,7 +63,8 @@ export function openshellConfig(env = process.env) {
 }
 
 // Base (as the spike's worker-policy.yaml: the app read-only, /data the only writable data) plus the
-// grant's egress rules, the model API when the model login is attached, and npm for npm: packages.
+// grant's egress rules, the model API when the model login is attached, GitHub for a grant with a
+// GitHub App, and npm for npm: packages.
 // No rule, no network: OpenShell denies by default.
 export function sandboxPolicy(grant, { model = false } = {}) {
   const policy = {
@@ -76,6 +85,8 @@ export function sandboxPolicy(grant, { model = false } = {}) {
       binaries: (r.binaries || [NODE]).map(p => ({ path: p })),
     }])),
     ...(model ? { anthropic: named("anthropic", { host: "api.anthropic.com", port: 443, access: "read-write" }) } : {}),
+    // read-write is every method but DELETE: push and pull requests work, deleting a branch does not.
+    ...(grant?.github ? { github: { name: "github", endpoints: ["api.github.com", "github.com"].map(host => ({ protocol: "rest", enforcement: "enforce", host, port: 443, access: "read-write" })), binaries: [{ path: NODE }] } } : {}),
     // Scoped package names are %2F-encoded in registry paths.
     ...(grant?.packages?.some(p => p.startsWith("npm:")) ? { npm: named("npm", { host: "registry.npmjs.org", port: 443, access: "read-write", allow_encoded_slash: true }) } : {}),
   };
@@ -92,7 +103,14 @@ export function createArgs({ name, repository, grant, config, policyFile, model 
     ...(grant?.packages?.length ? [{ name: "PI_WEB_PACKAGES", value: JSON.stringify(grant.packages) }] : []),
     ...Object.entries(grant?.environment || {}).map(([n, value]) => ({ name: n, value })),
   ];
-  const providers = [...(model ? [MODEL_PROVIDER] : []), ...(grant?.providers || [])];
+  const github = grant?.github;
+  if (github) {
+    // Not web's login (workerEnv's path, which a sandbox never has): the file workspaced writes the placeholder to.
+    env.find(e => e.name === "PI_WEB_GITHUB_AUTH_FILE").value = GITHUB_AUTH_FILE;
+    // Tells the worker's git helper and gh wrapper that this file is their only source.
+    env.push({ name: "PI_WEB_GITHUB_BOT", value: github.app });
+  }
+  const providers = [...(model ? [MODEL_PROVIDER] : []), ...(github ? [githubProvider(github.app)] : []), ...(grant?.providers || [])];
   const driver = { kubernetes: {
     volumes: [{ name: "data", persistent_volume_claim: { claim_name: `ws-${name}`, read_only: false } }],
     containers: { agent: { volume_mounts: [{ name: "data", mount_path: DATA, read_only: false }] } },
@@ -168,8 +186,12 @@ function toWorkspace(s) {
 // feedWaitMs: how long creating or waking a worker waits for a feed when the gateway may lack the current login.
 // settleWaitMs: how long creating or waking a worker waits for its placeholder file to be written.
 // Worst case a wake or create waits feedWaitMs + settleWaitMs (40 s) on the model login before workspaced polls its health.
+// A grant with a GitHub App adds the mint and store (it must succeed) and up to settleWaitMs for its file.
 // setTimer/clearTimer: the feed retry timer, injectable for tests.
-export function openshellProvider({ kube, config, exec = promisify(execFile), waitMs = 90_000, pollMs = 2_000, log = console.log, tlsCheckMs = 30_000, reconcileMs = 300_000, feedRetryMs = [5_000, 15_000, 45_000], feedWaitMs = 20_000, settleWaitMs = 20_000, setTimer = setTimeout, clearTimer = clearTimeout }) {
+// grants: the parsed grants, for the `github` of a sandbox's grant. mintGitHubToken({ app, repos, permissions })
+// resolves { token, expiresAt }: github-app.js's minter, or null when no App keys are mounted.
+// githubRefreshMs: a stored GitHub token with less than this left is replaced.
+export function openshellProvider({ kube, config, exec = promisify(execFile), waitMs = 90_000, pollMs = 2_000, log = console.log, tlsCheckMs = 30_000, reconcileMs = 300_000, feedRetryMs = [5_000, 15_000, 45_000], feedWaitMs = 20_000, settleWaitMs = 20_000, setTimer = setTimeout, clearTimer = clearTimeout, grants = {}, mintGitHubToken = null, githubRefreshMs = 30 * 60_000, now = Date.now }) {
   // The CLI gets only what it reads: never workspaced's own token or the workers' secrets.
   const own = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(PATH|HOME|XDG_CONFIG_HOME|OPENSHELL_.*)$/.test(k)));
   const env = {
@@ -183,10 +205,10 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
   // shortcut: pins live in memory (the CLI cannot change a sandbox's annotations); persist them if pinning sandboxes matters.
   const pinned = new Set();
 
-  // secret: the model access token, for the one call that stores it; the CLI reads it from its env.
-  async function run(args, timeout = 120_000, secret = null) {
+  // secret: a token, for the one call that stores it; the CLI reads it from its env, in the variable named.
+  async function run(args, timeout = 120_000, secret = null, variable = PLACEHOLDER_VAR) {
     try {
-      return (await exec(config.bin, args, { env: secret ? { ...env, [PLACEHOLDER_VAR]: secret } : env, timeout, maxBuffer: 16 * 1024 * 1024 })).stdout;
+      return (await exec(config.bin, args, { env: secret ? { ...env, [variable]: secret } : env, timeout, maxBuffer: 16 * 1024 * 1024 })).stdout;
     } catch (e) {
       let detail = String(e.stderr || (e.killed ? "timed out" : `exit ${e.code ?? "unknown"}`)).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").filter(Boolean).pop();
       if (secret) detail = String(detail).replaceAll(secret, "[redacted]");
@@ -194,6 +216,16 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     }
   }
   const succeeds = args => run(args, 30_000).then(() => true, () => false);
+  // The two calls that store a credential's value on the gateway. wait: until attached sandboxes confirm it.
+  const updateProvider = (name, variable, secret, wait = true) => run(["provider", "update", name, "--credential", variable, ...(wait ? ["--wait", "--timeout", "60"] : [])], 120_000, secret, variable);
+  async function createProvider(name, type, profileFile, variable, secret) {
+    // shortcut: an existing profile is never re-imported; delete it on the gateway if its YAML changes.
+    if (!await succeeds(["profile", "describe", type])) await run(["profile", "import", "-f", profileFile]);
+    await run(["provider", "create", "--name", name, "--type", type, "--credential", variable], 120_000, secret, variable);
+  }
+  // The CLI ends with this ("provider readiness wait did not complete for every selected sandbox; …") only after the
+  // gateway stored the update, when an attached sandbox did not confirm it in time (a stopped one never does).
+  const storedUnconfirmed = e => e.message.includes("inspect the reported outcomes");
 
   // The model feed. modelAuth is the last auth.json web shared with this process (none after a restart until web
   // shares a changed one); fed is the access token this process last stored on the gateway.
@@ -222,17 +254,13 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     providerExists ||= await succeeds(["provider", "get", MODEL_PROVIDER]);
     if (providerExists) {
       // Look again next time if this fails: the provider may have been deleted on the gateway.
-      try { await run(["provider", "update", MODEL_PROVIDER, "--credential", PLACEHOLDER_VAR, "--wait", "--timeout", "60"], 120_000, token); } catch (e) {
-        // The CLI ends with this ("provider readiness wait did not complete for every selected sandbox; …") only after
-        // the gateway stored the update, when an attached sandbox did not confirm it in time (a stopped one never does);
-        // placeholders are rewritten by reconcile and settle, not by this wait.
-        if (!e.message.includes("inspect the reported outcomes")) { providerExists = false; throw e; }
+      try { await updateProvider(MODEL_PROVIDER, PLACEHOLDER_VAR, token); } catch (e) {
+        // Placeholders are rewritten by reconcile and settle, not by this wait.
+        if (!storedUnconfirmed(e)) { providerExists = false; throw e; }
         log("workspaced: OpenShell stored the model login; some attached sandboxes did not confirm it (stopped ones never do; they get it on wake)");
       }
     } else {
-      // shortcut: an existing profile is never re-imported; delete it on the gateway if pi-web-anthropic.yaml changes.
-      if (!await succeeds(["profile", "describe", MODEL_PROVIDER])) await run(["profile", "import", "-f", PROFILE_FILE]);
-      await run(["provider", "create", "--name", MODEL_PROVIDER, "--type", MODEL_PROVIDER, "--credential", PLACEHOLDER_VAR], 120_000, token);
+      await createProvider(MODEL_PROVIDER, MODEL_PROVIDER, PROFILE_FILE, PLACEHOLDER_VAR, token);
       providerExists = true;
     }
     fed = token;
@@ -295,6 +323,63 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     })();
   }
 
+  // GitHub as a role's bot. State and queue per App, apart from the model feed: a hung model feed must not hold up
+  // a role's wake, and the other way round.
+  const githubOf = grantName => grants[grantName]?.github || null;
+  const hasGitHub = Object.values(grants).some(g => g.github);
+  const githubError = message => httpError(message, 502, "github_token_unavailable");
+  const githubApps = new Map(); // app → { expiresAt: of the token this process stored, queue }
+  // Mints and stores a token unless the one this process stored has githubRefreshMs left; true when it stored one.
+  // Rejects with github_token_unavailable: creating or waking a worker fails on it, so a role worker never runs
+  // without its own login (there is no other one to fall back to). wait: as updateProvider's.
+  function ensureGitHub(github, { wait = false } = {}) {
+    if (!githubApps.has(github.app)) githubApps.set(github.app, { expiresAt: 0, queue: Promise.resolve() });
+    const state = githubApps.get(github.app);
+    const step = async () => {
+      if (state.expiresAt - now() > githubRefreshMs) return false;
+      if (!mintGitHubToken) throw githubError(`GitHub App ${github.app}: no App keys are mounted (WORKSPACED_GITHUB_APPS_DIR is not set)`);
+      const { token, expiresAt } = await mintGitHubToken(github);
+      const name = githubProvider(github.app);
+      try {
+        if (await succeeds(["provider", "get", name])) await updateProvider(name, GITHUB_VAR, token, wait).catch(e => { if (!storedUnconfirmed(e)) throw e; });
+        else await createProvider(name, GITHUB_PROFILE, GITHUB_PROFILE_FILE, GITHUB_VAR, token);
+      } catch (e) {
+        throw githubError(`GitHub App ${github.app}: the gateway did not store its token (${e.message})`);
+      }
+      state.expiresAt = expiresAt;
+      log(`workspaced: OpenShell gateway has a GitHub token for ${github.app}, valid until ${new Date(expiresAt).toISOString()}`);
+      return true;
+    };
+    return (state.queue = state.queue.then(step, step));
+  }
+  const githubAuthArgs = name => ["sandbox", "exec", "-n", `ws-${name}`, "--no-login-shell", "--timeout", "60", "--", "sh", "-c", WRITE_GITHUB_AUTH];
+  // As settle, for the file git and gh read. Until it is written they have no login and fail.
+  function settleGitHub(name) {
+    return (async () => {
+      for (let i = 0; i < 30; i++) {
+        try { await run(githubAuthArgs(name), 90_000); return; } catch { await new Promise(r => setTimeout(r, pollMs)); }
+      }
+      log(`workspaced: could not write the GitHub placeholder in ws-${name} yet; the next refresh retries`);
+    })();
+  }
+  // Every reconcileMs: a fresh token for each App with a running sandbox (when due), then every such sandbox's file.
+  // An App with no running sandbox gets no token until one is created or woken. Never rejects.
+  let refreshingGitHub = null;
+  function refreshGitHub() {
+    return refreshingGitHub ||= (async () => {
+      try {
+        const running = (await list()).filter(w => w.state === "running" && githubOf(w.grant));
+        for (const github of new Map(running.map(w => [githubOf(w.grant).app, githubOf(w.grant)])).values()) {
+          await ensureGitHub(github, { wait: true }).catch(e => log(`workspaced: GitHub token refresh failed (retried in ${Math.round(reconcileMs / 60_000)} min): ${e.message}`));
+        }
+        for (const w of running) await run(githubAuthArgs(w.name), 90_000).catch(e => log(`workspaced: could not refresh the GitHub placeholder in ws-${w.name}: ${e.message}`));
+      } catch (e) {
+        log(`workspaced: GitHub token refresh failed: ${e.message}`);
+      } finally { refreshingGitHub = null; }
+    })();
+  }
+  if (reconcileMs && hasGitHub) setInterval(refreshGitHub, reconcileMs).unref?.();
+
   async function list() {
     const out = JSON.parse(await run(["sandbox", "list", "-o", "json", "--selector", `${MANAGED_LABEL}=${MANAGED_BY}`], 10_000) || "{}");
     // shortcut: one page (100 sandboxes); follow next_page_token if a gateway ever holds more workers.
@@ -339,6 +424,8 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
         if ((existing.repository ?? null) !== (repository ?? null)) throw httpError("workspace name taken", 409, "workspace_name_taken");
         return existing;
       }
+      // Before anything is created: a role worker without its GitHub login is not made.
+      if (grant?.github) await ensureGitHub(grant.github);
       await ensurePvc(name, repository);
       // First sandbox since this process started: store the model login first, or attach one an earlier process stored.
       await feedFirst(name);
@@ -356,6 +443,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       }
       // Before create returns (and so before the worker is listed and reported ready).
       if (model) await within(settle(name), settleWaitMs);
+      if (grant?.github) await within(settleGitHub(name), settleWaitMs);
       // What the gateway will list, until it does.
       return toWorkspace({ phase: "Provisioning", labels: { [NAME_LABEL]: name }, annotations: { [GRANT_ANNOTATION]: grant?.name || DEFAULT_GRANT, [IMAGE_ANNOTATION]: config.image, ...(repository ? { [REPO_ANNOTATION]: repository } : {}) } });
     },
@@ -363,28 +451,38 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       const w = await mustFind(name);
       if (replicas === 0 && w.state !== "sleeping") await run(["sandbox", "stop", `ws-${name}`]);
       if (replicas > 0 && w.state === "sleeping") {
+        // First, so a wake that cannot get the role's GitHub token fails before anything waits or starts.
+        const github = githubOf(w.grant);
+        if (github) await ensureGitHub(github);
         await feedFirst(name);
         await run(["sandbox", "start", `ws-${name}`]);
         // The file from before it slept may hold a placeholder of a login updated since, which no longer resolves.
         await within(settle(name), settleWaitMs);
+        if (github) await within(settleGitHub(name), settleWaitMs);
       }
     },
     // New pod, same disk: stop, then start once it has stopped.
     async restart(name) {
+      const github = hasGitHub ? githubOf((await mustFind(name)).grant) : null;
+      if (github) await ensureGitHub(github);
       await run(["sandbox", "stop", `ws-${name}`]);
       await stopped(name);
       await run(["sandbox", "start", `ws-${name}`]);
       settle(name);
+      if (github) settleGitHub(name);
     },
     // Wipe the disk: stop, drop and recreate the PVC, start. Stays awake, as the kubernetes provider's reset.
     async reset(name) {
       const w = await mustFind(name);
+      const github = githubOf(w.grant);
+      if (github) await ensureGitHub(github);
       await run(["sandbox", "stop", `ws-${name}`]);
       await stopped(name);
       await deletePvc(name);
       await ensurePvc(name, w.repository);
       await run(["sandbox", "start", `ws-${name}`]);
       settle(name);
+      if (github) settleGitHub(name);
     },
     // The PVC holds unpushed work; it goes only when purged.
     async remove(name, { purge = false } = {}) {
@@ -405,7 +503,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
         ...(error ? { error: { code: "openshell_tls_unavailable", message: `OpenShell client certificate unusable: ${error}` } } : {}),
       };
     },
-    // shortcut: no GitHub login for sandbox workers; add one when a role needs it.
+    // Web's own GitHub login never reaches a sandbox. A role worker's login is its App's token (ensureGitHub).
     async setGitHubAuth() {},
     // Never waits on the CLI: the feed runs in the background and failures are retried by the next tick.
     async setModelAuth(content) {
@@ -416,6 +514,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     },
     // For tests: resolves once queued feeds and reconciles are done.
     settled: () => serial(() => {}),
+    refreshGitHub,
   };
 }
 

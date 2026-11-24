@@ -200,3 +200,67 @@ test("Git environment appends config without mutating or hiding inherited entrie
   assert.throws(() => gitCredentialEnvironment({ GIT_CONFIG_COUNT: "not-a-count" }), error => error.code === "invalid_git_configuration");
   assert.throws(() => gitCredentialEnvironment({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper" }), error => error.code === "invalid_git_configuration");
 });
+
+// A role's bot in an OpenShell sandbox (PI_WEB_GITHUB_BOT): the placeholder file is the only source.
+const PLACEHOLDER = "openshell:resolve:env:v3_OPENSHELL_GITHUB_PLACEHOLDER";
+
+test("in a bot sandbox git gets the placeholder file's value and never a token variable or another file", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-git-helper-"));
+  try {
+    const authPath = path.join(home, "openshell-github-auth.json");
+    // A login left in the default place must not be picked up.
+    fs.writeFileSync(path.join(home, "github-auth.json"), JSON.stringify({ accessToken: "web-login" }));
+    const input = "protocol=https\nhost=github.com\n\n";
+    const env = isolatedEnvironment({ PI_WEB_HOME: home, PI_WEB_GITHUB_BOT: "pi-web-developer", PI_WEB_GITHUB_AUTH_FILE: authPath, PI_WEB_GITHUB_TOKEN: "environment-token" });
+
+    const missing = await runHelper(["get"], input, env);
+    assert.equal(missing.code, 0);
+    assert.equal(missing.stdout, "", "no file yet: no credential, so git fails");
+
+    fs.writeFileSync(authPath, `${JSON.stringify({ accessToken: PLACEHOLDER })}\n`);
+    const served = await runHelper(["get"], input, env);
+    assert.equal(served.stdout, `protocol=https\nhost=github.com\nusername=x-access-token\npassword=${PLACEHOLDER}\n\n`);
+
+    // The file is read on every call: a rewritten placeholder is used by the next git command.
+    fs.writeFileSync(authPath, JSON.stringify({ accessToken: PLACEHOLDER.replace("v3", "v4") }));
+    assert.match((await runHelper(["get"], input, env)).stdout, /password=openshell:resolve:env:v4_/);
+
+    const { PI_WEB_GITHUB_AUTH_FILE: _, ...noFile } = env;
+    assert.equal((await runHelper(["get"], input, noFile)).stdout, "", "no path set: nothing, not the default file");
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the gh wrapper gives gh the bot's placeholder in a bot sandbox and nothing anywhere else", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-gh-wrapper-"));
+  try {
+    const authPath = path.join(home, "openshell-github-auth.json");
+    const fakeGh = path.join(home, "gh");
+    fs.writeFileSync(fakeGh, "#!/bin/sh\necho \"args=$*\"\necho \"GH_TOKEN=${GH_TOKEN-unset}\"\necho \"GITHUB_TOKEN=${GITHUB_TOKEN-unset}\"\nexit 7\n", { mode: 0o755 });
+    const base = { PI_WEB_HOME: home, PI_WEB_GH_BIN: fakeGh, PI_WEB_GITHUB_AUTH_FILE: authPath, GH_TOKEN: "inherited-gh", GITHUB_TOKEN: "inherited-github" };
+    const bot = isolatedEnvironment({ ...base, PI_WEB_GITHUB_BOT: "pi-web-developer" });
+
+    const missing = await runHelper(["gh", "pr", "list"], "", bot);
+    assert.equal(missing.code, 1);
+    assert.equal(missing.stdout, "", "gh is not run without the bot's login, not even with an inherited token");
+    assert.match(missing.stderr, /no GitHub login for pi-web-developer in this sandbox yet/);
+
+    fs.writeFileSync(authPath, JSON.stringify({ accessToken: PLACEHOLDER }));
+    const run = await runHelper(["gh", "pr", "create", "--title", "a b"], "", bot);
+    assert.equal(run.code, 7, "gh's own exit status");
+    assert.equal(run.stdout, `args=pr create --title a b\nGH_TOKEN=${PLACEHOLDER}\nGITHUB_TOKEN=unset\n`);
+
+    // Not a bot sandbox: gh runs as it is. The stored file is web's login there and is not handed to gh.
+    const plain = await runHelper(["gh", "auth", "status"], "", isolatedEnvironment(base));
+    assert.equal(plain.stdout, "args=auth status\nGH_TOKEN=inherited-gh\nGITHUB_TOKEN=inherited-github\n");
+    const { GH_TOKEN: _a, GITHUB_TOKEN: _b, ...bare } = base;
+    assert.match((await runHelper(["gh", "auth", "status"], "", isolatedEnvironment(bare))).stdout, /GH_TOKEN=unset/);
+
+    const absent = await runHelper(["gh", "version"], "", isolatedEnvironment({ ...base, PI_WEB_GH_BIN: path.join(home, "no-gh") }));
+    assert.equal(absent.code, 127);
+    assert.match(absent.stderr, /the GitHub CLI is not in this image/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
