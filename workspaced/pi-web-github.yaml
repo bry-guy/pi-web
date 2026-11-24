@@ -1,0 +1,26 @@
+# Gateway profile for a role's GitHub App installation token, minted and refreshed by workspaced
+# (docs/workspaced.md#github-as-a-roles-bot). One profile; one provider per App (<app>-github).
+# git sends the placeholder as its Basic password, gh as "token <placeholder>", fetch as Bearer.
+id: pi-web-github
+display_name: pi-web role GitHub App token
+description: minted by workspaced for a role's GitHub App; sandboxes hold only a placeholder
+category: source_control
+credentials:
+  - name: installation_token
+    description: GitHub App installation token (one hour), limited to the grant's repositories and permissions
+    env_vars: [OPENSHELL_GITHUB_PLACEHOLDER]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+endpoints:
+  - host: api.github.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+  - host: github.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries: [/usr/local/bin/node]
