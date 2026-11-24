@@ -43,7 +43,7 @@ export function remoteWorkspacesFromEnv(env, deps) {
   const remote = createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, onEvent, ...(fetchImpl ? { fetchImpl } : {}), ...deps });
   // The run door's agents are primes: each run reports into the agent's one conversation.
   const { entries } = runDoorConfig(env);
-  primes = entries ? createPrimes({ entries, remote, dm: (...a) => discord?.runReport(...a) }) : null;
+  primes = entries ? createPrimes({ entries, remote, dm: (...a) => discord?.runReport(...a), wakePath: env.PI_WEB_HOME ? path.join(env.PI_WEB_HOME, "wake-list.json") : null }) : null;
   discord = discordFromEnv(env, {
     post: (id, subpath, body) => (remoteSessions?.owns(id) || remoteSessions?.wasKnown(id) ? remoteSessions.sessionPost(id, subpath, body) : remote.sessionPost(id, subpath, body)),
     titleOf: id => remoteSessions?.sessionTitle(id) || remote.sessionTitle(id),
@@ -54,12 +54,13 @@ export function remoteWorkspacesFromEnv(env, deps) {
   if (primes) remote.refresh().catch(() => {});
   remote.primes = () => primes?.list() || [];
   remote.primeConversation = agent => primes ? primes.openConversation(agent) : Promise.resolve(null);
+  remote.cancelFollowUp = (agent, id) => primes ? primes.cancelFollowUp(agent, id) : Promise.resolve(false);
   // Old runs are deleted once a day, and once shortly after start.
   if (primes) {
     const timers = [setTimeout(primes.sweep, 60_000), setInterval(primes.sweep, 24 * 3600_000)];
     for (const timer of timers) timer.unref?.();
     const stop = remote.stop;
-    remote.stop = () => { stop(); for (const timer of timers) clearTimeout(timer); };
+    remote.stop = () => { stop(); primes.stop(); for (const timer of timers) clearTimeout(timer); };
   }
   if (discord) {
     const stop = remote.stop;
@@ -144,19 +145,19 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   // Agent sessions: sessionId → { agent, kind }. kind "agent": created with `agent: "<name>"` (older files hold
   // the bare name); "run": a run-door run, hidden, reporting into its prime's one "conversation".
   // A run also holds `started` (ISO time), gets `reported: true` and its `outcome` once its report is in the
-  // conversation, and `dmed: true` once DMed.
+  // conversation, and `dmed: true` once DMed. A run a follow-up started holds its note as `followUp`.
   const agentsPath = cachePath ? path.join(path.dirname(cachePath), "agent-sessions.json") : null;
   let agents = {};
   try { agents = agentsPath ? JSON.parse(readFileSync(agentsPath, "utf8")) : {}; } catch { agents = {}; }
   // Runs from before `started` was kept: their 30 days start now.
   const undated = Object.values(agents).filter(f => f?.kind === "run" && !f.started);
   for (const f of undated) f.started = new Date().toISOString();
-  function markAgent(id, name, kind = "agent") {
+  function markAgent(id, name, kind = "agent", followUp = null) {
     if (typeof id !== "string" || !id) return;
     if (name === null) delete agents[id];
     else if (typeof name !== "string" || !name.trim()) return;
     // kind "agent" stays the bare name older builds read; only runs and conversations are objects.
-    else agents[id] = kind === "run" ? { agent: name.trim().slice(0, 100), kind, started: new Date().toISOString() }
+    else agents[id] = kind === "run" ? { agent: name.trim().slice(0, 100), kind, started: new Date().toISOString(), ...(typeof followUp === "string" ? { followUp } : {}) }
       : kind === "conversation" ? { agent: name.trim().slice(0, 100), kind } : name.trim().slice(0, 100);
     saveAgents();
   }
@@ -676,17 +677,22 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
 
+  async function workerPost(name, rest, body) {
+    const res = await call(workerPath(name, rest), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  }
+
   // The run door's session create (run-door.js), as forward does for the browser's.
   async function createSession(name, projectId, body) {
     const res = await call(workerPath(name, `/projects/${encodeURIComponent(projectId)}/sessions`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const out = await res.json().catch(() => ({}));
-    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent, body.kind); subscribe(name); }
+    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent, body.kind, body.followUp); subscribe(name); }
     return { status: res.status, body: out };
   }
 
   return {
     list, waitReady, createSession,
-    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, runIds, unreportedRuns, runsOf, conversationOf, workerGet,
+    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, runIds, unreportedRuns, runsOf, conversationOf, workerGet, workerPost,
     projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };
@@ -757,6 +763,8 @@ export function registerRemoteRoutes(api, remote) {
       return id ? c.json({ id }) : c.json({ error: "no_such_prime" }, 404);
     } catch (e) { return c.json({ error: "prime_unavailable", message: e.message }, 502); }
   });
+  // The owner cancels one of a prime's pending follow-ups (the Activity list).
+  api.delete("/primes/:agent/follow-ups/:id", async c => (await remote.cancelFollowUp?.(c.req.param("agent"), c.req.param("id"))) ? c.json({ ok: true }) : c.json({ error: "no_such_follow_up" }, 404));
   api.post("/projects", async c => {
     const body = await c.req.json().catch(() => ({}));
     if (body.project && !body.source) return remote.createProject(c, body);
