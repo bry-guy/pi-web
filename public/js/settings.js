@@ -410,37 +410,27 @@ class PiSettings extends HTMLElement {
       store.setError(`GitHub disconnect failed: ${err.error || err.message || err}`);
     }
   }
-  providerCard(provider) {
-    const name = provider.id === "openai-codex"
-      ? "OpenAI — ChatGPT"
-      : provider.id === "openai"
-        ? "OpenAI — API"
-        : provider.name;
-    const status = provider.configured
-      ? `Connected${provider.sourceLabel ? ` · ${provider.sourceLabel}` : ""}`
-      : "Not connected";
+  // One row per way of signing in: a provider with a subscription and an API key appears in both groups.
+  providerRow(provider, method, showError) {
+    const subscription = !!method?.subscription;
+    const title = subscription ? SUBSCRIPTION_NAMES[provider.id] || provider.name : provider.name;
+    const active = provider.configured && (!method || (provider.authType ? provider.authType === method.id : !subscription));
+    const fromEnvironment = provider.source === "environment";
     const models = provider.availableModels || 0;
-    const login = provider.source === "environment" ? "" : provider.authMethods?.map(method => {
-      const label = provider.id === "openai-codex" && method.id === "oauth"
-        ? "Sign in with ChatGPT"
-        : provider.id === "anthropic" && method.id === "oauth"
-          ? "Sign in with Anthropic"
-          : method.id === "api_key"
-            ? `Use ${provider.id === "openai" ? "OpenAI" : provider.id === "anthropic" ? "Anthropic" : name} API key`
-            : method.label;
-      const text = provider.configured ? `Reconnect · ${label}` : label;
-      // title: a narrow card cuts the one-line label with an ellipsis.
-      return `<button class="settings-action" data-auth-login="${esc(provider.id)}" data-auth-type="${esc(method.id)}" title="${esc(text)}">${esc(text)}</button>`;
-    }).join("") || "";
-    const logout = provider.canLogout
-      ? `<button class="settings-action quiet" data-auth-logout="${esc(provider.id)}">Disconnect</button>` : "";
-    return `<div class="settings-card provider-card">
-      <div class="provider-card-head">
-        <div><div class="sr-title">${esc(name)}</div><div class="sr-sub">${esc(status)} · ${models} available model${models === 1 ? "" : "s"}</div></div>
-        <span class="status-dot ${provider.configured ? "" : "off"}" aria-label="${provider.configured ? "Connected" : "Not connected"}"></span>
-      </div>
-      ${provider.error ? `<div class="provider-error">${esc(provider.error.message || "Provider status unavailable.")}</div>` : ""}
-      <div class="provider-actions">${login}${logout || (!login ? `<span class="provider-action-note">No browser login available</span>` : "")}</div>
+    const status = active
+      ? `${fromEnvironment ? "From environment" : "Connected"} · ${models} model${models === 1 ? "" : "s"}`
+      : method?.label || "Not connected";
+    const actions = [];
+    if (method && !fromEnvironment && (!active || provider.error)) {
+      const text = active ? "Reconnect" : subscription ? "Sign in" : "Add key";
+      actions.push(`<button class="settings-action" data-auth-login="${esc(provider.id)}" data-auth-type="${esc(method.id)}" title="${text}">${text}</button>`);
+    }
+    if (active && provider.canLogout) actions.push(`<button class="settings-action quiet" data-auth-logout="${esc(provider.id)}">${subscription ? "Sign out" : "Remove key"}</button>`);
+    return `<div class="settings-row provider-row">
+      <span class="status-dot ${active ? "" : "off"}" role="img" aria-label="${active ? "Connected" : "Not connected"}"></span>
+      <div class="sr-main"><div class="sr-title">${esc(title)}</div><div class="sr-sub">${esc(status)}</div>
+        ${showError && provider.error ? `<div class="provider-error">${esc(provider.error.message || "Provider status unavailable.")}</div>` : ""}</div>
+      ${actions.length ? `<div class="provider-actions">${actions.join("")}</div>` : ""}
     </div>`;
   }
   authFlowCard() {
@@ -476,9 +466,23 @@ class PiSettings extends HTMLElement {
   }
   providersPage() {
     const providers = store.state.providers || [];
+    const errorShown = new Set();
+    const rows = subscriptions => providers.flatMap(provider => {
+      const methods = provider.authMethods?.length ? provider.authMethods : [null];
+      return methods.filter(method => !!method?.subscription === subscriptions).map(method => {
+        const showError = !errorShown.has(provider.id);
+        errorShown.add(provider.id);
+        return this.providerRow(provider, method, showError);
+      });
+    });
+    const group = (title, list) => list.length
+      ? `<div class="settings-section-title provider-group-title">${title}</div><div class="settings-card settings-card-spaced">${list.join("")}</div>` : "";
+    const subscriptions = rows(true);
+    const keys = rows(false);
     return `<section class="settings-section">
-        <p class="settings-intro">Model providers Pi can use. Sign in with OAuth or add an API key; signing out removes that login from this server only.</p>
-        <div class="provider-list">${providers.map(provider => this.providerCard(provider)).join("") || `<div class="modal-empty">No provider status available.</div>`}</div>
+        <p class="settings-intro">Model providers Pi can use. Signing out removes that login from this server only.</p>
+        ${group("Subscriptions", subscriptions)}${group("API keys", keys)}
+        ${subscriptions.length || keys.length ? "" : `<div class="modal-empty">No provider status available.</div>`}
       </section>
       ${this.authFlowCard()}`;
   }

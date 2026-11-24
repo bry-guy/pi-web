@@ -3,6 +3,7 @@
 // are derived from those entries (or their known parent while an entry is
 // streaming), so a snapshot and its replay address the same records.
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { exportSyncEnvironment, loadBindings, loadConfig, prepareSessionVisibilityReplacement } from "../config.js";
@@ -43,6 +44,25 @@ function packageFailureMessage(error, configured, failed) {
 
 export function isPackageSetupFailure(error) {
   return /\b(?:npm|pnpm|bun|git)\b[\s\S]*\b(?:failed with (?:code|signal)|ENOENT)\b/i.test(errorDetails(error));
+}
+
+// Subscription providers that ship as Pi extensions. Only their providers are taken, not their tools or commands.
+const PROVIDER_EXTENSIONS = [
+  path.join(path.dirname(createRequire(import.meta.url).resolve("pi-antigravity/package.json")), "src", "index.ts"),
+];
+
+async function registerExtensionProviders(SDKModule, runtime) {
+  const loader = new SDKModule.DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: SDKModule.getAgentDir(),
+    settingsManager: SDKModule.SettingsManager.inMemory(),
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    additionalExtensionPaths: PROVIDER_EXTENSIONS,
+  });
+  await loader.reload();
+  const { errors, runtime: extensionRuntime } = loader.getExtensions();
+  for (const error of errors || []) console.error(`pi-ez-web: provider extension ${error.path} failed to load: ${error.error}`);
+  for (const { name, config } of extensionRuntime.pendingProviderRegistrations) runtime.registerProvider(name, config);
 }
 
 let sdk = null;
@@ -113,8 +133,9 @@ export class RealSupervisor {
     if (this.runtime) return this.runtime;
     if (!this.runtimePromise) {
       const initializing = (async () => {
-        const { ModelRuntime } = await SDK();
-        const runtime = await ModelRuntime.create();
+        const SDKModule = await SDK();
+        const runtime = await SDKModule.ModelRuntime.create();
+        await registerExtensionProviders(SDKModule, runtime).catch(error => console.error("pi-ez-web: extension providers unavailable", publicError(error?.message || String(error))));
         this.runtime = runtime;
         return runtime;
       })();
@@ -1300,7 +1321,7 @@ export class RealSupervisor {
 
   async listProviders() {
     const runtime = await this._modelRuntime();
-    const supported = new Set(["anthropic", "openai-codex", "openai"]);
+    const supported = new Set(["anthropic", "openai-codex", "antigravity", "openai"]);
     const models = await this.listModels();
     const availableByProvider = new Map();
     for (const model of models) {
