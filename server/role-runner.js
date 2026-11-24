@@ -27,7 +27,7 @@ export function createRoleRunner(hub, { ackMs = 20_000, waitMs = 15 * 60_000 } =
         hub.emit(session, "role_run_stop", { request });
         end(reject, new Error(`Aborted: asked pi-web to stop ${role}`));
       };
-      waiting.set(request, answer => {
+      waiting.set(request, Object.assign(answer => {
         if (answer.state === "accepted") {
           clearTimeout(timer);
           timer = setTimeout(() => started ? later("continues in the background: it is still running after 15 minutes") : end(reject, new Error(`pi-web did not start ${role} in time`)), waitMs);
@@ -38,7 +38,7 @@ export function createRoleRunner(hub, { ackMs = 20_000, waitMs = 15 * 60_000 } =
           else onUpdate?.(`${role}: running`);
         } else if (answer.state === "failed") end(reject, new Error(answer.message || `pi-web could not start ${role}`));
         else if (answer.state === "done") end(resolve, { text: String(answer.text || ""), isError: !!answer.isError, status: answer.status || "done", background: false });
-      });
+      }, { session }));
       if (signal?.aborted) return end(reject, new Error(`Aborted before ${role} was started`));
       signal?.addEventListener("abort", abort, { once: true });
       hub.emit(session, "role_run_request", { request, role, msg, name, cwd });
@@ -47,11 +47,16 @@ export function createRoleRunner(hub, { ackMs = 20_000, waitMs = 15 * 60_000 } =
 
   /**
    * Web's answer to a request. A result nobody waits for any more (a background run, one handed over, a worker
-   * restarted since) goes into the session through `note`. False when the answer has nowhere to go.
+   * restarted since) goes into the session through `note`. False when the answer has nowhere to go, or was posted
+   * to another session than the one (`session`) whose call waits for it.
    */
-  async function answer(body, note) {
+  async function answer(body, note, session) {
     const waiter = waiting.get(body?.request);
-    if (waiter) { waiter(body); return true; }
+    if (waiter) {
+      if (waiter.session !== session) return false;
+      waiter(body);
+      return true;
+    }
     if (body?.state !== "done" || typeof body.text !== "string") return false;
     const head = `**${body.role || "role run"}** · ${body.status || "done"}${body.run ? ` · [open the run](/?s=${encodeURIComponent(body.run)})` : ""}`;
     // A note reaches the model as a user message: say whose words these are. The chat shows `head` instead.
@@ -66,7 +71,8 @@ export const roleRunner = createRoleRunner(webHub);
 
 /** Offers the runner to pi-projects on a project worker. A sandbox (a role's own worker) gets none: roles do not nest. */
 export function installRoleRunner(env = process.env) {
-  if (!env.PI_WEB_PROJECT || env.PI_ANTHROPIC_PLACEHOLDER_FILE) return false;
+  // The placeholder file marks sandboxes created before PI_WEB_SANDBOX existed (a sandbox keeps the env it was created with).
+  if (!env.PI_WEB_PROJECT || env.PI_WEB_SANDBOX || env.PI_ANTHROPIC_PLACEHOLDER_FILE) return false;
   globalThis[ROLE_RUNNER] = roleRunner;
   return true;
 }

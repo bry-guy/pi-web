@@ -14,7 +14,7 @@ const MAX_REPLY = 6000; // characters, as pi-projects cuts a laptop run's reply
 const GIVE_UP_MS = 24 * 3600_000;
 
 export function createRoleRuns({ remote, path = null, log = console.log, now = Date.now }) {
-  // Runs started and not yet delivered: run session id → { parent, request, role, at }. Kept on disk, so a run
+  // Runs started and not yet delivered: run session id → { parent, request, role, at, result? }. Kept on disk, so a run
   // that ends while web is down is delivered when web next connects to its worker.
   let open = {};
   try { open = path ? JSON.parse(readFileSync(path, "utf8")) : {}; } catch { open = {}; }
@@ -49,6 +49,7 @@ export function createRoleRuns({ remote, path = null, log = console.log, now = D
     if (![request, role, msg].every(v => typeof v === "string" && v)) return;
     // First, so the caller knows web heard it; creating a worker can take minutes.
     await answer(session, { request, state: "accepted" });
+    let run = null;
     try {
       const entry = await target(session, role);
       const model = (await remote.sessionGet(session, "/meta")).body?.model || null;
@@ -56,7 +57,7 @@ export function createRoleRuns({ remote, path = null, log = console.log, now = D
       // The run door's own handler does the rest (wake or create the worker, hidden run session, model, brief).
       // The token only lets this one call through the door's check.
       const token = randomBytes(24).toString("hex");
-      const door = createRunDoor({ entries: [{ agent: role, ...entry, model, hash: createHash("sha256").update(token).digest() }], remote, log });
+      const door = createRunDoor({ entries: [{ agent: role, ...entry, provider: "openshell", model, hash: createHash("sha256").update(token).digest() }], remote, log });
       const res = await door.fetch(new Request("http://role-runs/run", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: brief }));
       const out = await res.json().catch(() => ({}));
       if (res.status !== 202 || !out.session) throw new Error(out.message || out.error || `status ${res.status}`);
@@ -69,14 +70,17 @@ export function createRoleRuns({ remote, path = null, log = console.log, now = D
       save();
       // The door titles a run by its time; a role run is known by its task.
       if (typeof name === "string" && name.trim()) await remote.sessionPost(out.session, "/name", { name: name.trim().slice(0, 120) }).catch(() => {});
-      await answer(session, { request, state: "started", run: out.session });
-      // Its turn may have ended before it was recorded here.
-      await check(out.session);
+      run = out.session;
     } catch (e) {
       stopped.delete(request);
       log(`pi-ez-web: role run ${role} for session ${session} was not started: ${e.message}`);
       await answer(session, { request, state: "failed", message: `Can't start ${role}: ${e.message}` });
+      return;
     }
+    // Outside the try: the run is live, so a lost "started" must not read as "Can't start" (a retry would run it twice).
+    await answer(session, { request, state: "started", run }).catch(e => log(`pi-ez-web: role run ${run} (${role}) started, but its caller was not told: ${e.message}`));
+    // Its turn may have ended before it was recorded here.
+    await check(run);
   }
 
   async function stop(request) {
@@ -87,21 +91,26 @@ export function createRoleRuns({ remote, path = null, log = console.log, now = D
     await remote.sessionPost(run, "/stop", {});
   }
 
-  async function deliver(run, { reason, error }, transcript = null) {
+  async function deliver(run, { reason, error } = {}, transcript = null) {
     const o = open[run];
     if (!o || delivering.has(run)) return;
     delivering.add(run);
     try {
-      let reply = "";
-      if (reason === "done") {
-        const t = transcript || await remote.sessionGet(run, "/transcript");
-        // An unreadable transcript is not an empty run: try again at the next connect.
-        if (t.status !== 200 || !Array.isArray(t.body?.records)) throw new Error(`its transcript could not be read (${t.body?.error || t.status})`);
-        reply = finalReply(t.body.records);
+      if (!o.result) {
+        let reply = "";
+        if (reason === "done") {
+          const t = transcript || await remote.sessionGet(run, "/transcript");
+          // An unreadable transcript is not an empty run: try again at the next connect.
+          if (t.status !== 200 || !Array.isArray(t.body?.records)) throw new Error(`its transcript could not be read (${t.body?.error || t.status})`);
+          reply = finalReply(t.body.records);
+        }
+        if (reply.length > MAX_REPLY) reply = `…${reply.slice(-MAX_REPLY)}`;
+        const status = reason === "done" ? "done" : reason === "stopped" ? "stopped" : "error";
+        // Kept with the open run, so the calling worker's next connect can retry without the role's worker.
+        o.result = { status, text: `${o.role} run ${status} (run: ${run})${error ? `\nError: ${error}` : ""}\n\n${reply || "(no reply)"}` };
+        save();
       }
-      if (reply.length > MAX_REPLY) reply = `…${reply.slice(-MAX_REPLY)}`;
-      const status = reason === "done" ? "done" : reason === "stopped" ? "stopped" : "error";
-      const text = `${o.role} run ${status} (run: ${run})${error ? `\nError: ${error}` : ""}\n\n${reply || "(no reply)"}`;
+      const { status, text } = o.result;
       const sent = await answer(o.parent, { request: o.request, state: "done", status, isError: status !== "done", text, role: o.role, run });
       if (sent.status >= 300) throw new Error(`the calling session did not take it (${sent.body?.error || sent.status})`);
       forget(run);
@@ -126,9 +135,13 @@ export function createRoleRuns({ remote, path = null, log = console.log, now = D
     await deliver(run, outcome, t);
   }
 
-  // Workers keep no event backlog: runs on a worker that just connected are checked once.
+  // Workers keep no event backlog: runs on a worker that just connected are checked once. So is a result its
+  // caller did not take, when the caller's worker connects.
   async function reconcile(workspace) {
-    for (const run of Object.keys(open)) if (await remote.owner("session", run) === workspace) await check(run);
+    for (const run of Object.keys(open)) {
+      if (await remote.owner("session", run) === workspace) await check(run);
+      else if (open[run]?.result && await remote.owner("session", open[run].parent) === workspace) await deliver(run);
+    }
   }
 
   /** Returns the work it started (for tests); callers need not wait. */
