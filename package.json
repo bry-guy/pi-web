@@ -17,7 +17,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^1.2.0",
+    "@earendil-works/pi-coding-agent": "^1.6.0",
     "@hono/node-server": "^2.1.0",
     "dompurify": "^3.4.13",
     "highlight.js": "^11.12.0",
