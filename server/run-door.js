@@ -137,7 +137,7 @@ function truncate(text) {
 }
 
 /** The last reply of a transcript's last turn, or "". */
-const finalReply = records => {
+export const finalReply = records => {
   const turn = (records || []).slice((records || []).findLastIndex(r => r.role === "user") + 1);
   return turn.findLast(r => r.role === "assistant" && r.text?.trim())?.text.trim() || "";
 };

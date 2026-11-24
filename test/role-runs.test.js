@@ -1,0 +1,179 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createRemoteWorkspaces } from "../server/remote-workspaces.js";
+import { createRoleRuns } from "../server/role-runs.js";
+import { createNotifier } from "../server/discord.js";
+import { EventHub } from "../server/events.js";
+
+const MODEL = "anthropic/claude-opus-5-5";
+const DEV = { name: "dev", role: "app/dev", provider: "openshell", repos: ["project:p-dev"] };
+const DEFAULT = { name: "default", anyProject: true, repos: [], provider: null };
+const caller = (extra = {}) => ({ name: "p", repository: "project:p", grant: "default", state: "running", ...extra });
+
+// A fake workspaced with the calling project's worker (session c1) and, once created, the role's worker (run r1).
+function fake({ workers = [caller()], grants = [DEFAULT, DEV], records = [], streaming = false, answerStatus = 200, allowed = true, home = mkdtempSync(path.join(tmpdir(), "pi-web-role-runs-")) } = {}) {
+  const calls = [];
+  const state = { records, streaming, answerStatus };
+  const fetchImpl = async (url, init = {}) => {
+    const p = new URL(url).pathname.replace(/^\/v1/, "");
+    const body = init.body ? JSON.parse(init.body) : null;
+    calls.push([init.method || "GET", p, body]);
+    const json = (b, status = 200) => new Response(JSON.stringify(b), { status });
+    if (p === "/workspaces" && !init.method) return json({ workspaces: workers });
+    if (p === "/grants") return json({ grants });
+    if (p === "/workspaces" && init.method === "POST") {
+      if (!allowed) return json({ error: "grant_not_allowed" }, 403);
+      workers.push({ name: body.project, repository: `project:${body.project}`, grant: body.grant, state: "running" });
+      return json({ name: body.project }, 201);
+    }
+    if (/^\/(github-auth|model-auth)$/.test(p) || p.endsWith("/wake") || p.endsWith("/api/health")) return json({ ok: true });
+    if (p.endsWith("/api/events")) return json({}, 503);
+    if (p === "/workspaces/p/api/state") return json({ projects: [{ id: "pp-p", sessions: [{ id: "c1" }] }] });
+    if (p === "/workspaces/p-dev/api/state") return json({ projects: [{ id: "pp-p-dev", sessions: [{ id: "r1" }] }] });
+    if (p.endsWith("/sessions/c1/meta")) return json({ id: "c1", model: MODEL });
+    if (p.endsWith("/sessions/c1/role-run")) return json(state.answerStatus === 200 ? { ok: true } : { error: "boom" }, state.answerStatus);
+    if (p.endsWith("/api/models")) return json({ models: [{ id: MODEL }] });
+    if (p === "/workspaces/p-dev/api/projects/pp-p-dev/sessions") return json({ id: "r1" });
+    if (/\/sessions\/r1\/(model|message|stop)$/.test(p)) return json({ ok: true });
+    if (p.endsWith("/sessions/r1/transcript")) return json({ sessionId: "r1", streaming: state.streaming, records: state.records });
+    return json({ error: "unexpected" }, 500);
+  };
+  const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, retryMs: 50, modelAuthSyncMs: 0, cachePath: path.join(home, "remote-projects.json") });
+  const file = path.join(home, "role-runs.json");
+  const logs = [];
+  const runs = () => createRoleRuns({ remote, path: file, log: m => logs.push(m) });
+  const answers = () => calls.filter(([m, p]) => m === "POST" && p.endsWith("/sessions/c1/role-run")).map(([, , b]) => b);
+  return { remote, calls, workers, state, file, logs, runs, answers, open: () => JSON.parse(readFileSync(file, "utf8")) };
+}
+const REQUEST = { request: "q1", role: "app/dev", msg: "You are running as role app/dev…\n\nTask:\nship it", name: "dev: ship it", cwd: "." };
+const REPLY = [{ role: "user", text: "ship it" }, { role: "assistant", text: "thinking aloud", toolIds: ["t1"] }, { role: "tool" }, { role: "assistant", text: "Shipped: PR #7." }];
+
+test("a granted role runs hidden on its own worker under the role's grant, and the reply goes back to the caller", async () => {
+  const f = fake({ streaming: true });
+  const runs = f.runs();
+  await runs.event("c1", "role_run_request", REQUEST);
+  assert.deepEqual(f.answers(), [{ request: "q1", state: "accepted" }, { request: "q1", state: "started", run: "r1" }]);
+  assert.deepEqual(f.calls.find(([m, p]) => m === "POST" && p === "/workspaces")[2], { project: "p-dev", grant: "dev" });
+  assert.deepEqual(f.workers.map(w => [w.name, w.grant]), [["p", "default"], ["p-dev", "dev"]], "never the calling worker");
+  const created = f.calls.find(([m, p]) => m === "POST" && p === "/workspaces/p-dev/api/projects/pp-p-dev/sessions")[2];
+  assert.deepEqual([created.agent, created.kind], ["app/dev", "run"]);
+  assert.deepEqual(f.remote.agentOf("r1"), { agent: "app/dev", kind: "run" }, "hidden like a prime's run");
+  assert.deepEqual(f.calls.find(([, p]) => p.endsWith("/sessions/r1/model"))[2], { model: MODEL }, "the calling session's model");
+  assert.deepEqual(f.calls.find(([, p]) => p.endsWith("/sessions/r1/message"))[2], { text: REQUEST.msg });
+  assert.deepEqual(Object.keys(f.open()), ["r1"]);
+
+  // A failed attempt pi retries is not the end; another session's turn end is nobody's run.
+  await runs.event("r1", "turn_end", { reason: "errored", error: "overloaded", willRetry: true });
+  await runs.event("c1", "turn_end", { reason: "done" });
+  assert.equal(f.answers().length, 2);
+
+  f.state.records = REPLY;
+  await runs.event("r1", "turn_end", { reason: "done" });
+  assert.deepEqual(f.answers()[2], { request: "q1", state: "done", status: "done", isError: false, text: "app/dev run done (run: r1)\n\nShipped: PR #7.", role: "app/dev", run: "r1" });
+  assert.equal(f.remote.agentOf("r1").reported, true);
+  assert.deepEqual(f.open(), {});
+  await runs.event("r1", "turn_end", { reason: "done" });
+  assert.equal(f.answers().length, 3, "delivered once");
+});
+
+test("a role run is not DMed at each turn end, and its question is DMed at once", async () => {
+  const f = fake({ streaming: true });
+  await f.runs().event("c1", "role_run_request", REQUEST);
+  const sent = [];
+  const discord = createNotifier({ userId: "u", baseUrl: "http://web", transport: { send: async content => (sent.push(content), { id: String(sent.length) }) }, post: async () => ({ status: 200, body: {} }), agentOf: f.remote.agentOf, log: () => {} });
+  discord.event("r1", "message_start", { role: "assistant" });
+  discord.event("r1", "turn_end", { reason: "done" });
+  discord.event("r1", "extension_ui_request", { method: "confirm", requestId: "x", title: "Push?" });
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /Push\?/);
+});
+
+test("a role the project is not granted, a caller that is no project worker, and a role's own worker are refused; nothing starts", async () => {
+  const refused = async (options, pattern) => {
+    const f = fake(options);
+    await f.runs().event("c1", "role_run_request", REQUEST);
+    assert.equal(f.answers().at(-1).state, "failed");
+    assert.match(f.answers().at(-1).message, pattern);
+    assert.equal(f.calls.some(([m, p]) => m === "POST" && (p === "/workspaces" || p.endsWith("/sessions") || p.endsWith("/message"))), false, "no worker, session or brief");
+  };
+  await refused({ grants: [DEFAULT] }, /^Can't start app\/dev: app\/dev is not granted to p on pi-web\. Role grants are in/);
+  await refused({ grants: [DEFAULT, { ...DEV, repos: ["project:other-dev"] }] }, /not granted to p on pi-web/);
+  await refused({ grants: [DEFAULT, { ...DEV, provider: null }] }, /not granted to p on pi-web/);
+  await refused({ grants: [DEFAULT, { ...DEV, role: "app/ops", name: "ops", repos: ["project:p-ops"] }] }, /not granted to p on pi-web \(granted: app\/ops\)/);
+  await refused({ workers: [caller({ repository: "o/app" })] }, /needs a pi project session/);
+  await refused({ workers: [caller({ grant: "dev" })] }, /a role run cannot start another role run/);
+});
+
+test("the project comes from the calling worker, never from the request", async () => {
+  const f = fake({ grants: [DEFAULT, { ...DEV, repos: ["project:other-dev"] }] });
+  await f.runs().event("c1", "role_run_request", { ...REQUEST, project: "other" });
+  assert.equal(f.answers().at(-1).state, "failed");
+});
+
+test("a worker that workspaced will not create is the tool's error", async () => {
+  // workspaced has the final say on which project may hold a grant.
+  const f = fake({ allowed: false });
+  await f.runs().event("c1", "role_run_request", REQUEST);
+  assert.deepEqual(f.answers().at(-1), { request: "q1", state: "failed", message: "Can't start app/dev: could not create the project's worker (grant_not_allowed)" });
+  assert.equal(f.workers.length, 1);
+  assert.equal(f.calls.some(([, p]) => p.endsWith("/sessions")), false);
+});
+
+test("a failed or stopped run answers as an error; a long reply keeps its end", async () => {
+  const f = fake({ streaming: true });
+  const runs = f.runs();
+  await runs.event("c1", "role_run_request", REQUEST);
+  await runs.event("r1", "turn_end", { reason: "errored", error: "529 overloaded" });
+  assert.deepEqual(f.answers().at(-1), { request: "q1", state: "done", status: "error", isError: true, text: "app/dev run error (run: r1)\nError: 529 overloaded\n\n(no reply)", role: "app/dev", run: "r1" });
+
+  // A turn that was over before web recorded the run is still delivered.
+  const quick = fake({ records: REPLY });
+  await quick.runs().event("c1", "role_run_request", REQUEST);
+  assert.deepEqual(quick.answers().map(a => a.state), ["accepted", "started", "done"]);
+
+  const long = fake({ streaming: true });
+  const more = long.runs();
+  await more.event("c1", "role_run_request", REQUEST);
+  long.state.records = [{ role: "user", text: "ship it" }, { role: "assistant", text: `${"x".repeat(7000)} the end` }];
+  await more.event("r1", "turn_end", { reason: "done" });
+  const text = long.answers().at(-1).text;
+  assert.equal(text.length, "app/dev run done (run: r1)\n\n…".length + 6000);
+  assert.ok(text.endsWith(" the end"));
+});
+
+test("a caller that aborts stops the run, and nothing is delivered", async () => {
+  const f = fake({ streaming: true });
+  const runs = f.runs();
+  await runs.event("c1", "role_run_request", REQUEST);
+  await runs.event("c1", "role_run_stop", { request: "q1" });
+  assert.ok(f.calls.some(([m, p]) => m === "POST" && p.endsWith("/sessions/r1/stop")));
+  await runs.event("r1", "turn_end", { reason: "stopped" });
+  assert.equal(f.answers().length, 2);
+  assert.deepEqual(f.open(), {});
+  assert.equal(f.remote.agentOf("r1").reported, true);
+});
+
+test("a run that ended while web was down is delivered when web connects to its worker; a failed delivery is kept", async () => {
+  const home = mkdtempSync(path.join(tmpdir(), "pi-web-role-runs-"));
+  writeFileSync(path.join(home, "role-runs.json"), JSON.stringify({ r1: { parent: "c1", request: "q1", role: "app/dev", at: Date.now() } }));
+  const f = fake({ home, workers: [caller(), { name: "p-dev", repository: "project:p-dev", grant: "dev", state: "running" }], records: REPLY, streaming: true, answerStatus: 500 });
+  f.remote.markAgent("r1", "app/dev", "run");
+  const runs = f.runs();
+  await runs.event(null, "worker_connected", { workspace: "p-dev" });
+  assert.equal(f.answers().length, 0, "still running");
+  f.state.streaming = false;
+  await runs.event(null, "worker_connected", { workspace: "p" });
+  assert.equal(f.answers().length, 0, "another worker's connect does not read this run");
+  await runs.event(null, "worker_connected", { workspace: "p-dev" });
+  assert.equal(f.answers().length, 1);
+  assert.deepEqual(Object.keys(f.open()), ["r1"], "the caller did not take it: kept for the next connect");
+  assert.match(f.logs.at(-1), /was not delivered: the calling session did not take it \(boom\)/);
+  f.state.answerStatus = 200;
+  await runs.event(null, "worker_connected", { workspace: "p-dev" });
+  assert.equal(f.answers().at(-1).text, "app/dev run done (run: r1)\n\nShipped: PR #7.");
+  assert.deepEqual(f.open(), {});
+});

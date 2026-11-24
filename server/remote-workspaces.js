@@ -12,6 +12,7 @@ import path from "node:path";
 import { chatTransfer } from "./chat-transfer.js";
 import { discordFromEnv } from "./discord.js";
 import { createPrimes, runDoorConfig } from "./run-door.js";
+import { createRoleRuns } from "./role-runs.js";
 import { remoteConversationPreview, remoteConversationsForProject, syncedProjects as syncedProjectsFromServer } from "./pi-sync.js";
 
 // workspaced's CHATS_WORKSPACE: the worker without a repository.
@@ -37,10 +38,12 @@ export function remoteWorkspacesFromEnv(env, deps) {
   }
   const modelAuthPath = path.join(env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"), "auth.json");
   const cachePath = env.PI_WEB_HOME ? path.join(env.PI_WEB_HOME, "remote-projects.json") : null;
-  let discord = null, primes = null;
+  let discord = null, primes = null, roleRuns = null;
   const remoteSessions = deps.remoteSessions || null;
-  const onEvent = (...a) => { discord?.event(...a); primes?.event(...a); };
+  const onEvent = (...a) => { discord?.event(...a); primes?.event(...a); roleRuns?.event(...a); };
   const remote = createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, onEvent, ...(fetchImpl ? { fetchImpl } : {}), ...deps });
+  // role_agent calls from project sessions: the role runs hidden on its own worker and answers the caller.
+  roleRuns = createRoleRuns({ remote, path: cachePath ? path.join(path.dirname(cachePath), "role-runs.json") : null });
   // The run door's agents are primes: each run reports into the agent's one conversation.
   const { entries } = runDoorConfig(env);
   primes = entries ? createPrimes({ entries, remote, dm: (...a) => discord?.runReport(...a) }) : null;
