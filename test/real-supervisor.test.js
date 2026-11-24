@@ -586,6 +586,40 @@ test("configured extensions load commands and session_start tools", () => {
   }
 });
 
+test("only a prime's session gets the follow-up tools, and still has them after a restart", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-follow-up-"));
+  try {
+    const cwd = path.join(tmp, "cwd");
+    fs.mkdirSync(path.join(tmp, "web"), { recursive: true });
+    fs.mkdirSync(cwd, { recursive: true });
+    const script = `
+      import { EventHub } from './server/events.js';
+      import { RealSupervisor } from './server/supervisor/real.js';
+      const tools = async (supervisor, id) => { await supervisor.commands(id); return supervisor.live.get(id).session.getAllTools().map(tool => tool.name); };
+      const first = new RealSupervisor(new EventHub());
+      const prime = await first.createSession({ cwd: process.env.TEST_CWD, name: "labrat", prime: true });
+      const plain = await first.createSession({ cwd: process.env.TEST_CWD });
+      const out = { prime: await tools(first, prime.id), plain: await tools(first, plain.id), records: await first.transcript(prime.id) };
+      const second = new RealSupervisor(new EventHub());
+      console.log(JSON.stringify({ ...out, restarted: await tools(second, prime.id) }));
+    `;
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: path.resolve("."),
+      env: { ...process.env, PI_WEB_HOME: path.join(tmp, "web"), PI_CODING_AGENT_DIR: path.join(tmp, "pi"), TEST_CWD: cwd, OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "" },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    const result = JSON.parse(output.trim().split("\n").at(-1));
+    const followUps = ["follow_up", "list_follow_ups", "cancel_follow_up"];
+    assert.deepEqual(result.prime.filter(name => followUps.includes(name)), followUps);
+    assert.deepEqual(result.restarted.filter(name => followUps.includes(name)), followUps);
+    assert.deepEqual(result.plain.filter(name => followUps.includes(name)), []);
+    assert.deepEqual(result.records, [], "the mark is not part of the transcript");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("the registered real bash tool refreshes mappings after reattachment", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-project-environment-real-"));
   try {
