@@ -143,6 +143,25 @@ export async function newPiProject() {
   }
 }
 
+// A prime's conversation; the first open creates it (and wakes or creates its worker).
+async function openPrime(agent) {
+  const prime = (store.state.primes || []).find(p => p.agent === agent);
+  if (!prime) return;
+  if (prime.conversation && selectSessionById(prime.conversation, { showOperation: true })) return;
+  try {
+    const { id } = await api.primeConversation(agent);
+    await refreshState();
+    if (!selectSessionById(id)) selectSession(`pp-${prime.project}`, id);
+  } catch (err) {
+    store.setError(`Could not open ${agent}: ${err.error || err.message || err}`);
+  }
+}
+
+const runWhen = iso => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+};
+
 function wakeEarly(project) {
   if (project?.workspace && project.workspaceState === "sleeping") void api.wakeWorkspace(project.workspace);
 }
@@ -485,6 +504,8 @@ class PiSidebar extends HTMLElement {
       selectSession(t.dataset.pid, t.dataset.id, { showOperation: true });
     } else if (act === "chat-row") selectChat(t.dataset.id);
     else if (act === "remote-row") selectRemoteSession(t.dataset.id);
+    else if (act === "prime-row") void openPrime(t.dataset.agent);
+    else if (act === "prime-run") selectSessionById(t.dataset.id, { showOperation: true });
   }
 
   clearSearch() {
@@ -547,6 +568,10 @@ class PiSidebar extends HTMLElement {
           <div class="rail-search-wrap">${icon("search")}<input class="rail-search" type="search" placeholder="Filter chats and sessions" aria-label="Filter chats and sessions"><button class="rail-search-clear" data-act="clear-search" title="Clear filter" aria-label="Clear filter" hidden>${icon("close")}</button></div>
         </div>
         <div class="rail-scroll">
+          <div class="primes-section" hidden>
+            <div class="sec-head"><div class="sec-label">Primes</div></div>
+            <div class="primes-list"></div>
+          </div>
           <div class="devices-section" hidden>
             <div class="sec-head"><div class="sec-label">Devices</div></div>
             <div class="devices-list"></div>
@@ -628,6 +653,34 @@ class PiSidebar extends HTMLElement {
           </div></div>`);
       }
     }
+    // Primes: a row opens the conversation; its caret shows the Activity list (hidden runs, newest first).
+    const primeRows = [];
+    for (const p of s.primes || []) {
+      if (q && !fuzzyMatch(p.agent, q)) continue;
+      const treeId = `prime:${p.agent}`;
+      const open = !!s.openTree[treeId];
+      const sel = s.view === "chat" && !!p.conversation && s.sessionId === p.conversation && !s.chatId;
+      primeRows.push(`<div class="row-wrap" style="margin-top:1px">
+        <div class="row mono ${sel ? "active" : ""}" role="button" tabindex="0" aria-expanded="${open}" data-act="prime-row" data-agent="${esc(p.agent)}" title="Open the conversation with ${esc(p.agent)}">
+          <span class="caret" data-act="toggle-tree" data-tree-id="${esc(treeId)}" role="button" tabindex="0" aria-label="${open ? "Hide" : "Show"} activity of ${esc(p.agent)}">${icon("chevronRight")}</span>
+          <span class="lbl">${esc(p.agent)}</span>
+          <span class="count" title="${p.runs.length} runs">${p.runs.length}</span>
+        </div></div>`);
+      if (!open) continue;
+      if (!p.runs.length) primeRows.push(`<div class="row-wrap nested" style="margin-left:20px"><div class="row prime-activity-empty"><span class="lbl">No runs yet</span></div></div>`);
+      for (const r of p.runs) {
+        const state = r.running ? "running" : r.failed ? "failed" : "ended";
+        const active = s.view === "chat" && s.sessionId === r.id && !s.chatId;
+        primeRows.push(`<div class="row-wrap nested" style="margin-left:20px">
+          <div class="row ${active ? "active " : ""}${r.running ? "streaming " : ""}" role="button" tabindex="0" data-act="prime-run" data-id="${esc(r.id)}" data-state="${state}">
+            <span class="lbl">${esc(r.name || `Run ${runWhen(r.started)}`)}</span><span class="live-dot" aria-label="Running"></span><span class="when" title="${esc(r.started || "")}">${state} · ${esc(runWhen(r.started))}</span>
+          </div></div>`);
+      }
+    }
+    const primeSection = this.querySelector(".primes-section");
+    if (primeSection) primeSection.hidden = primeRows.length === 0;
+    const primeList = this.querySelector(".primes-list");
+    if (primeList) setHTML(primeList, primeRows.join(""));
     const devSection = this.querySelector(".devices-section");
     if (devSection) devSection.hidden = devRows.length === 0;
     const devList = this.querySelector(".devices-list");
