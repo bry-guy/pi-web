@@ -10,7 +10,7 @@ import { exportSyncEnvironment, loadBindings, loadConfig, prepareSessionVisibili
 import { commandInfo, parseSlashCommand } from "../commands.js";
 import { activityFromEntry, activityFromToolResult, normalizeActivity } from "../activity.js";
 import { SubagentActivityStore } from "../subagent-activity.js";
-import { PiConfiguration, WEB_SUBAGENT_EXTENSION, publicError } from "../pi-configuration.js";
+import { FOLLOW_UP_EXTENSION, PiConfiguration, WEB_SUBAGENT_EXTENSION, publicError } from "../pi-configuration.js";
 import { GitHubClient } from "../github.js";
 import { findProjectByWorkspace } from "../lifecycle.js";
 import { gitCredentialEnvironment } from "../git-credentials.js";
@@ -274,7 +274,9 @@ export class RealSupervisor {
       const agentDir = SDKModule.getAgentDir();
       exportSyncEnvironment();
       const syncExtensionPath = await activePiSyncExtensionPath();
-      const extensionPaths = [WEB_SUBAGENT_EXTENSION, ...(syncExtensionPath ? [syncExtensionPath] : [])];
+      // A prime's session (marked when web created it) also gets the follow-up tools.
+      const prime = (sessionManager.getEntries?.() || []).some(entry => entry.type === "custom" && entry.customType === PRIME_SESSION);
+      const extensionPaths = [WEB_SUBAGENT_EXTENSION, ...(prime ? [FOLLOW_UP_EXTENSION] : []), ...(syncExtensionPath ? [syncExtensionPath] : [])];
       const resolved = await this.piConfiguration.resolve();
       const configuredPackages = Array.isArray(resolved.settings?.packages) ? resolved.settings.packages : [];
       const loadResources = async (loadPackages, packageSources, resolveOnly = false) => {
@@ -672,10 +674,12 @@ export class RealSupervisor {
     return this.live.get(id)?.session?.sessionFile || this.paths.get(id) || this.info.get(id)?.path || null;
   }
 
-  async createSession({ cwd, name }) {
+  async createSession({ cwd, name, prime = false }) {
     const { SessionManager } = await SDK();
     const manager = SessionManager.create(cwd);
     if (name) manager.appendSessionInfo(name);
+    // Kept in the session's own file, so the mark survives a worker restart and goes when the session is deleted.
+    if (prime) manager.appendCustomEntry(PRIME_SESSION, {});
     const file = persistManager(manager);
     const id = manager.getSessionId();
     this.paths.set(id, file);
@@ -1702,6 +1706,7 @@ function toolStartRecord(evt) {
 }
 
 const PRIME_REPORT = "pi-web:prime-report";
+const PRIME_SESSION = "pi-web:prime-session";
 function reportRecord(entry) {
   return { id: entry.id, role: "report", text: reportText(contentText(entry.content), entry.details), at: entryTime(entry) };
 }

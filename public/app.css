@@ -1003,6 +1003,9 @@ body.modal-open .scrollable { overflow: hidden; }
 }
 .row:hover .row-close, .row .row-close:focus-visible { opacity: 1; pointer-events: auto; }
 .row .row-close:hover, .row .row-close:focus-visible { color: var(--red); }
+/* A pending follow-up opens nothing: cancelling is its only action, so the x is always there. */
+.row.prime-follow-up { cursor: default; }
+.row.prime-follow-up .row-close { opacity: 1; pointer-events: auto; }
 /* The project row's + starts a new session; always visible, like Chats' +. */
 .row .row-new {
   border: 0; background: transparent; cursor: pointer; flex: 0 0 auto; line-height: 1;

@@ -1,3 +1,5 @@
+import { acknowledgeFollowUps, followUpRequests } from "../follow-ups.js";
+
 export function register(api, deps) {
   const { hub, err, sup, extensionUi } = deps;
 
@@ -91,6 +93,15 @@ export function register(api, deps) {
       if (String(e?.message || "").startsWith("unknown session")) return err(c, 404, "no_such_session");
       throw e;
     }
+  });
+
+  // A prime's follow-up requests on this worker's disk (follow-ups.js). Web pulls them, then acknowledges with its list.
+  api.get("/follow-ups", c => c.json({ requests: followUpRequests() }));
+  api.post("/follow-ups/ack", async c => {
+    const body = await c.req.json().catch(() => null);
+    if (!Array.isArray(body?.ids) || !Array.isArray(body.pending)) return err(c, 400, "invalid_request");
+    acknowledgeFollowUps(body.ids, body.pending);
+    return c.json({ ok: true });
   });
 
   api.post("/sessions/:id/queue/clear", async c => c.json(await sup.clearQueue(c.req.param("id"))));
