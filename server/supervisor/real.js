@@ -1256,6 +1256,28 @@ export class RealSupervisor {
     } catch { return null; }
   }
 
+  async deleteSession(id) {
+    const refuseBusy = () => { if (this.isStreaming(id) || this.pendingPrompts.has(id)) throw Object.assign(new Error("session_streaming"), { code: "session_streaming" }); };
+    refuseBusy();
+    if (!await this._discover(id)) throw new Error("unknown session " + id);
+    // A message may have arrived during the await.
+    refuseBusy();
+    const file = this.paths.get(id) || this.info.get(id)?.path;
+    const st = this.live.get(id);
+    if (st) {
+      await this._disposeLiveState(st, "quit");
+      this.live.delete(id);
+    }
+    if (file) {
+      await fs.promises.rm(file, { force: true });
+      // Its subagent transcripts (<session stem>/tasks).
+      if (file.endsWith(".jsonl")) await fs.promises.rm(file.slice(0, -6), { recursive: true, force: true });
+    }
+    this.paths.delete(id);
+    this.info.delete(id);
+    this.opened?.delete(id);
+  }
+
   async rehome(id, newCwd) {
     const st = this.live.get(id);
     if (st) {

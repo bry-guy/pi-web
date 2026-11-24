@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createRemoteWorkspaces } from "../server/remote-workspaces.js";
+import { Hono } from "hono";
+import { createRemoteWorkspaces, registerRemoteRoutes } from "../server/remote-workspaces.js";
 import { createPrimes, createRunDoor, runDoorConfig, runDoorFromEnv } from "../server/run-door.js";
 import { EventHub } from "../server/events.js";
 
@@ -133,7 +134,9 @@ test("a run creates the worker with the entry's grant, marks an agent session, s
     ["/workspaces/ws-labrat/api/sessions/s1/model", { model: "anthropic/claude-opus-5-5" }],
     ["/workspaces/ws-labrat/api/sessions/s1/message", { text: brief }],
   ]);
-  assert.deepEqual(fake.remote.agentOf("s1"), { agent: "labrat", kind: "run" });
+  const { started, ...flag } = fake.remote.agentOf("s1");
+  assert.deepEqual(flag, { agent: "labrat", kind: "run" });
+  assert.ok(Date.now() - Date.parse(started) < 60_000, "a run records when it started");
 });
 
 test("an existing worker on the same grant is woken and reused; no public URL, no url", async () => {
@@ -155,13 +158,21 @@ test("the main app has no /run; the door listens on its own port", async () => {
     const res = await app.request(`http://pi-web.test${p}`, { method: "POST", headers: { authorization: "Bearer tok-labrat" }, body: "brief" });
     assert.equal(res.status, 404, p);
   }
+  // The front end learns the primes from /api/state: every run-door agent, no conversation or runs yet.
+  const state = await (await app.request("http://pi-web.test/api/state")).json();
+  assert.deepEqual(state.primes, [
+    { agent: "other", project: "elsewhere", conversation: null, runs: [] },
+    { agent: "labrat", project: "labrat", conversation: null, runs: [] },
+  ]);
+  const opened = await app.request("http://pi-web.test/api/primes/nobody/conversation", { method: "POST" });
+  assert.equal(opened.status, 404);
   let res;
   for (let i = 0; i < 50 && !res; i++) res = await fetch(`http://127.0.0.1:${port}/run`, { method: "POST", body: "x" }).catch(() => new Promise(r => setTimeout(r, 20)));
   assert.equal(res.status, 401);
 });
 
 // A project worker that keeps sessions: create, meta, transcript, model, restore, note.
-function primeWorkspaced(cachePath) {
+function primeWorkspaced(cachePath, { state = "running", log } = {}) {
   const calls = [];
   const faults = { note: 0 }; // a status the note route fails with, when set
   const sessions = new Map(); // id → { name, model, closed }
@@ -172,8 +183,8 @@ function primeWorkspaced(cachePath) {
     const body = init.body ? JSON.parse(init.body) : null;
     calls.push([method, p, body]);
     const json = (b, status = 200) => new Response(JSON.stringify(b), { status });
-    if (p === "/workspaces") return json({ workspaces: [{ name: "ws-labrat", repository: "project:labrat", grant: "labrat", state: "running" }] });
-    if (p === "/state") return json({ projects: [{ id: "pp-labrat", sessions: [...sessions.keys()].map(id => ({ id, children: [] })) }] });
+    if (p === "/workspaces") return json({ workspaces: [{ name: "ws-labrat", repository: "project:labrat", grant: "labrat", state }] });
+    if (p === "/state") return json({ projects: [{ id: "pp-labrat", sessions: [...sessions].map(([id, s]) => ({ id, title: s.name, streaming: !!s.streaming, children: [] })) }] });
     if (p.endsWith("/wake") || p === "/health") return json({ ok: true });
     if (p === "/events") return json({}, 503);
     if (p === "/models") return json({ models: [{ id: "anthropic/claude-haiku-5-5" }, { id: "anthropic/claude-opus-5-5" }] });
@@ -187,9 +198,10 @@ function primeWorkspaced(cachePath) {
     if (rest === "transcript") return json({ streaming: !!s.streaming, records: s.records || [{ role: "user", text: "brief" }, { role: "assistant", text: "looking" }, { role: "assistant", text: `All quiet (${id}).` }] });
     if (rest === "model") s.model = body.model;
     if (rest === "restore") s.closed = false;
+    if (rest === "delete") { if (s.streaming) return json({ error: "session_streaming" }, 409); sessions.delete(id); }
     return json({ ok: true });
   };
-  const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, cachePath, retryMs: 50, modelAuthSyncMs: 0 });
+  const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, cachePath, retryMs: 50, modelAuthSyncMs: 0, ...(log ? { log } : {}) });
   return { remote, calls, sessions, faults };
 }
 
@@ -210,7 +222,6 @@ test("a prime's runs are hidden runs reporting into one conversation, created on
     assert.equal((await app.request(run("tok-labrat"))).status, 202);
     assert.equal(fake.sessions.get("s1").model, "anthropic/claude-haiku-5-5", "the token's model is the default");
     await primes.event("s1", "turn_end", { reason: "errored", willRetry: true });
-    await primes.event("s1", "turn_end", { reason: "stopped" });
     await Promise.all([primes.event("s1", "turn_end", { reason: "done" }), primes.event("s1", "turn_end", { reason: "done" })]);
     await primes.event("s1", "turn_end", { reason: "done" });
     assert.deepEqual(creates().at(-1), { name: "labrat", agent: "labrat", kind: "conversation" });
@@ -342,5 +353,181 @@ test("a long report is cut by UTF-8 bytes under the note cap, never inside a cha
     assert.ok(note.text.endsWith("\n\n…(truncated, open the run)"));
     assert.ok(!note.text.includes("\uFFFD"));
     assert.equal(fake.remote.agentOf("k1").reported, true);
+  } finally { fake.remote.stop(); }
+});
+
+const primeDir = files => {
+  const dir = mkdtempSync(path.join(tmpdir(), "primes-"));
+  for (const [name, content] of Object.entries(files)) writeFileSync(path.join(dir, name), JSON.stringify(content));
+  return path.join(dir, "remote-projects.json");
+};
+const labrat = () => runDoorConfig({ PI_WEB_RUN_PORT: "4000", PI_WEB_RUN_TOKENS: JSON.stringify([{ ...ENTRIES[1], model: "anthropic/claude-haiku-5-5" }]) }).entries;
+
+test("a prime's conversation opens lazily from the sidebar, and its runs are listed newest first", async () => {
+  const fake = primeWorkspaced(primeDir({ "agent-sessions.json": {
+    a: { agent: "labrat", kind: "run", started: "2026-11-20T08:00:00.000Z", reported: true, outcome: "done" },
+    b: { agent: "labrat", kind: "run", started: "2026-11-21T08:00:00.000Z", reported: true, outcome: "errored" },
+    c: { agent: "labrat", kind: "run", started: "2026-11-22T08:00:00.000Z" },
+    d: { agent: "labrat", kind: "run", started: "2026-11-19T08:00:00.000Z" },
+    x: { agent: "other", kind: "run", started: "2026-11-22T08:00:00.000Z" },
+    legacy: "labrat",
+  } }));
+  const primes = createPrimes({ entries: labrat(), remote: fake.remote, log: () => {} });
+  try {
+    for (const [id, s] of [["a", {}], ["b", {}], ["c", { streaming: true }], ["d", {}]]) fake.sessions.set(id, { name: `labrat: ${id}`, ...s });
+    assert.deepEqual(primes.list(), [{ agent: "labrat", project: "labrat", conversation: null, runs: [
+      { id: "c", name: null, started: "2026-11-22T08:00:00.000Z", running: true, failed: false },
+      { id: "b", name: null, started: "2026-11-21T08:00:00.000Z", running: false, failed: true },
+      { id: "a", name: null, started: "2026-11-20T08:00:00.000Z", running: false, failed: false },
+      { id: "d", name: null, started: "2026-11-19T08:00:00.000Z", running: true, failed: false },
+    ] }], "before any worker snapshot: no names, an unreported run counts as running");
+    await fake.remote.refresh();
+    const runs = primes.list()[0].runs;
+    assert.deepEqual(runs.map(r => [r.id, r.name, r.running, r.failed]), [
+      ["c", "labrat: c", true, false], ["b", "labrat: b", false, true], ["a", "labrat: a", false, false], ["d", "labrat: d", false, false],
+    ], "an unreported run whose turn is over is ended");
+
+    // Opened from the sidebar: created once on the prime's worker with the token's model, then reused.
+    const app = new Hono();
+    registerRemoteRoutes(app, Object.assign(fake.remote, { primeConversation: primes.openConversation }));
+    const res = await app.request("/primes/labrat/conversation", { method: "POST" });
+    const { id } = await res.json();
+    assert.equal(res.status, 200);
+    assert.deepEqual(fake.remote.agentOf(id), { agent: "labrat", kind: "conversation" });
+    assert.equal(fake.sessions.get(id).model, "anthropic/claude-haiku-5-5");
+    assert.deepEqual(await (await app.request("/primes/labrat/conversation", { method: "POST" })).json(), { id });
+    assert.equal(fake.calls.filter(c => c[1] === "/projects/pp-labrat/sessions").length, 1);
+    assert.equal(primes.list()[0].conversation, id);
+    assert.equal((await app.request("/primes/nobody/conversation", { method: "POST" })).status, 404);
+  } finally { fake.remote.stop(); }
+});
+
+test("retention deletes reported runs older than 30 days on awake workers, and nothing else", async () => {
+  const flags = {
+    oldDone: { agent: "labrat", kind: "run", started: "2026-10-01T00:00:00.000Z", reported: true, outcome: "done" },
+    oldFailed: { agent: "labrat", kind: "run", started: "2026-10-02T00:00:00.000Z", reported: true, outcome: "errored" },
+    oldUnreported: { agent: "labrat", kind: "run", started: "2026-10-03T00:00:00.000Z" },
+    oldRunning: { agent: "labrat", kind: "run", started: "2026-10-04T00:00:00.000Z" },
+    recent: { agent: "labrat", kind: "run", started: "2026-11-01T00:00:00.000Z", reported: true, outcome: "done" },
+    conv: { agent: "labrat", kind: "conversation" },
+    legacy: "labrat",
+  };
+  const snapshot = { "ws-labrat": [{ id: "pp-labrat", sessions: Object.keys(flags).map(id => ({ id, children: [] })) }] };
+  const now = () => new Date("2026-11-22T08:00:00Z");
+
+  // Asleep: nothing is read, woken or deleted; the next sweep tries again.
+  const asleep = primeWorkspaced(primeDir({ "agent-sessions.json": flags, "remote-projects.json": snapshot }), { state: "sleeping" });
+  try {
+    await createPrimes({ entries: labrat(), remote: asleep.remote, log: () => {}, now }).sweep();
+    assert.deepEqual(asleep.calls.filter(c => c[0] === "POST"), []);
+    assert.deepEqual(asleep.remote.runIds().sort(), ["oldDone", "oldFailed", "oldRunning", "oldUnreported", "recent"]);
+  } finally { asleep.remote.stop(); }
+
+  const awakePath = primeDir({ "agent-sessions.json": flags, "remote-projects.json": snapshot });
+  const awake = primeWorkspaced(awakePath);
+  try {
+    for (const id of Object.keys(flags)) awake.sessions.set(id, { name: id, streaming: id === "oldRunning" });
+    await createPrimes({ entries: labrat(), remote: awake.remote, log: () => {}, now }).sweep();
+    assert.deepEqual(awake.calls.filter(c => c[1].endsWith("/delete")).map(c => c[1]), ["/sessions/oldDone/delete", "/sessions/oldFailed/delete"]);
+    assert.deepEqual([...awake.sessions.keys()].sort(), ["conv", "legacy", "oldRunning", "oldUnreported", "recent"]);
+    assert.deepEqual(awake.remote.runIds().sort(), ["oldRunning", "oldUnreported", "recent"]);
+    assert.equal(awake.remote.agentOf("conv").kind, "conversation");
+    assert.equal(awake.remote.agentOf("legacy").kind, "agent");
+    // Survives a restart: the deleted runs are gone from agent-sessions.json too.
+    const again = primeWorkspaced(awakePath);
+    assert.deepEqual(again.remote.runIds().sort(), ["oldRunning", "oldUnreported", "recent"]);
+    again.remote.stop();
+  } finally { awake.remote.stop(); }
+});
+
+test("retention: a worker without the delete route keeps its runs hidden; a vanished run is dropped; reconcile deletes too", async () => {
+  const old = { agent: "labrat", kind: "run", started: "2026-10-01T00:00:00.000Z", reported: true, outcome: "done" };
+  const snapshot = { "ws-labrat": [{ id: "pp-labrat", sessions: ["noRoute", "gone", "viaReconcile"].map(id => ({ id, children: [] })) }] };
+  const now = () => new Date("2026-11-22T08:00:00Z");
+  const fake = primeWorkspaced(primeDir({ "agent-sessions.json": { noRoute: old, gone: old }, "remote-projects.json": snapshot }));
+  try {
+    fake.sessions.set("noRoute", { name: "noRoute" });
+    const plain = fake.remote.sessionPost;
+    // An older image answers 404 with no session error for a route it does not have.
+    fake.remote.sessionPost = (id, rest, body) => id === "noRoute" ? Promise.resolve({ status: 404, body: {} }) : plain(id, rest, body);
+    const primes = createPrimes({ entries: labrat(), remote: fake.remote, log: () => {}, now });
+    await primes.sweep();
+    assert.deepEqual(fake.remote.runIds(), ["noRoute"], "the vanished run is dropped, the other stays hidden");
+    fake.remote.sessionPost = plain;
+    // A worker asleep at every sweep: its old runs go when it connects.
+    fake.sessions.set("viaReconcile", { name: "viaReconcile" });
+    fake.remote.markAgent("viaReconcile", "labrat", "run");
+    fake.remote.markReported("viaReconcile", "reported", "done");
+    fake.remote.agentOf("viaReconcile").started = "2026-10-02T00:00:00.000Z";
+    fake.remote.markAgent("conv", "labrat", "conversation");
+    fake.sessions.set("conv", { name: "conv" });
+    await primes.event(null, "worker_connected", { workspace: "ws-labrat" });
+    assert.deepEqual(fake.calls.filter(c => c[1] === "/sessions/viaReconcile/delete" || c[1] === "/sessions/conv/delete").map(c => c[1]), ["/sessions/viaReconcile/delete"]);
+    assert.deepEqual(fake.remote.runIds(), []);
+    assert.ok(fake.sessions.has("conv"));
+  } finally { fake.remote.stop(); }
+});
+
+test("web's public API refuses to delete a session and forwards nothing", async () => {
+  const forwarded = [];
+  const api = new Hono();
+  registerRemoteRoutes(api, { owner: async () => "ws-labrat", forward: c => { forwarded.push(c.req.path); return c.json({ ok: true }); }, wake() {} });
+  const res = await api.request("/sessions/conv/delete", { method: "POST" });
+  assert.equal(res.status, 403);
+  assert.deepEqual(forwarded, []);
+  assert.equal((await api.request("/sessions/conv/close", { method: "POST" })).status, 200, "other session routes still forward");
+});
+
+test("part 1 gaps: a stopped run and a run with no reply are reported", async () => {
+  const fake = primeWorkspaced(primeDir({}));
+  const dms = [];
+  const primes = createPrimes({ entries: labrat(), remote: fake.remote, dm: (...a) => dms.push(a), log: () => {}, now: () => new Date("2026-11-22T08:00:00Z") });
+  const notes = () => fake.calls.filter(c => c[1].endsWith("/note")).map(c => [c[2].details.run, c[2].details.outcome, c[2].text.split("\n\n")[1]]);
+  const add = (id, s) => { fake.sessions.set(id, { name: `labrat: ${id}`, ...s }); fake.remote.markAgent(id, "labrat", "run"); };
+  try {
+    add("stopped", { records: [{ role: "user", text: "brief" }, { role: "assistant", text: "partial" }] });
+    await primes.event("stopped", "turn_end", { reason: "stopped" });
+    // Web was down when this run ended right after its brief.
+    add("silent", { records: [{ role: "user", text: "brief" }] });
+    await primes.event(null, "worker_connected", { workspace: "ws-labrat" });
+    assert.deepEqual(notes(), [["stopped", "errored", "Failed: stopped before it finished"], ["silent", "done", "Finished with no reply."]]);
+    assert.deepEqual(dms.map(d => [d[0], d[1].reason]), [["stopped", "errored"], ["silent", "done"]]);
+    assert.deepEqual(fake.remote.unreportedRuns(), []);
+    assert.equal(primes.list()[0].runs.find(r => r.id === "stopped").failed, true);
+  } finally { fake.remote.stop(); }
+});
+
+test("a failed write of agent-sessions.json is logged and retried", async () => {
+  const cachePath = primeDir({});
+  const file = path.join(path.dirname(cachePath), "agent-sessions.json");
+  mkdirSync(`${file}.tmp`); // the write's temporary file cannot be created
+  const logs = [];
+  const fake = primeWorkspaced(cachePath, { log: l => logs.push(l) });
+  try {
+    fake.remote.markAgent("r1", "labrat", "run");
+    assert.equal(logs.filter(l => l.includes("could not save agent-sessions.json")).length, 1);
+    assert.equal(existsSync(file), false);
+    rmSync(`${file}.tmp`, { recursive: true });
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).r1.kind, "run");
+  } finally { fake.remote.stop(); }
+});
+
+test("a write of agent-sessions.json that keeps failing stops retrying", async () => {
+  const cachePath = primeDir({});
+  const file = path.join(path.dirname(cachePath), "agent-sessions.json");
+  mkdirSync(`${file}.tmp`);
+  const logs = [];
+  const fake = primeWorkspaced(cachePath, { log: l => logs.push(l) });
+  try {
+    fake.remote.markAgent("r1", "labrat", "run");
+    // retryMs 50: retries after 50, 100 and 200 ms, then none.
+    await new Promise(r => setTimeout(r, 700));
+    const failed = logs.filter(l => l.includes("could not save agent-sessions.json"));
+    assert.equal(failed.length, 4);
+    assert.match(failed.at(-1), /giving up until the next change/);
+    rmSync(`${file}.tmp`, { recursive: true });
+    fake.remote.markAgent("r2", "labrat", "run");
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort(), ["r1", "r2"], "the next change saves the whole map");
   } finally { fake.remote.stop(); }
 });

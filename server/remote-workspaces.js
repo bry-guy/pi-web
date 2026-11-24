@@ -52,6 +52,15 @@ export function remoteWorkspacesFromEnv(env, deps) {
   remote.notifyDiscordEvent = evt => discord?.event(evt);
   // Connecting to the workers' events checks for runs that ended while web was down.
   if (primes) remote.refresh().catch(() => {});
+  remote.primes = () => primes?.list() || [];
+  remote.primeConversation = agent => primes ? primes.openConversation(agent) : Promise.resolve(null);
+  // Old runs are deleted once a day, and once shortly after start.
+  if (primes) {
+    const timers = [setTimeout(primes.sweep, 60_000), setInterval(primes.sweep, 24 * 3600_000)];
+    for (const timer of timers) timer.unref?.();
+    const stop = remote.stop;
+    remote.stop = () => { stop(); for (const timer of timers) clearTimeout(timer); };
+  }
   if (discord) {
     const stop = remote.stop;
     remote.stop = () => { stop(); discord.stop(); };
@@ -134,33 +143,56 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
 
   // Agent sessions: sessionId → { agent, kind }. kind "agent": created with `agent: "<name>"` (older files hold
   // the bare name); "run": a run-door run, hidden, reporting into its prime's one "conversation".
-  // A run gets `reported: true` once its report is in the conversation, `dmed: true` once DMed.
+  // A run also holds `started` (ISO time), gets `reported: true` and its `outcome` once its report is in the
+  // conversation, and `dmed: true` once DMed.
   const agentsPath = cachePath ? path.join(path.dirname(cachePath), "agent-sessions.json") : null;
   let agents = {};
   try { agents = agentsPath ? JSON.parse(readFileSync(agentsPath, "utf8")) : {}; } catch { agents = {}; }
+  // Runs from before `started` was kept: their 30 days start now.
+  const undated = Object.values(agents).filter(f => f?.kind === "run" && !f.started);
+  for (const f of undated) f.started = new Date().toISOString();
   function markAgent(id, name, kind = "agent") {
     if (typeof id !== "string" || !id) return;
     if (name === null) delete agents[id];
     else if (typeof name !== "string" || !name.trim()) return;
     // kind "agent" stays the bare name older builds read; only runs and conversations are objects.
-    else agents[id] = ["run", "conversation"].includes(kind) ? { agent: name.trim().slice(0, 100), kind } : name.trim().slice(0, 100);
+    else agents[id] = kind === "run" ? { agent: name.trim().slice(0, 100), kind, started: new Date().toISOString() }
+      : kind === "conversation" ? { agent: name.trim().slice(0, 100), kind } : name.trim().slice(0, 100);
     saveAgents();
   }
-  // `reported`: the report is in the conversation; `dmed`: it was DMed.
-  function markReported(id, key = "reported") {
+  // `reported`: the report is in the conversation (with the run's `outcome`); `dmed`: it was DMed.
+  function markReported(id, key = "reported", outcome = null) {
     if (agents[id]?.kind !== "run") return;
     agents[id][key] = true;
+    if (outcome) agents[id].outcome = outcome;
     saveAgents();
   }
-  function saveAgents() {
+  // A failed write is retried a few times, each later: a lost flag would re-report a run or list it as a visible
+  // session. After that the next change saves the whole map again.
+  let saveRetry = null;
+  function saveAgents(attempt = 0) {
     if (!agentsPath) return;
     try {
       writeFileSync(`${agentsPath}.tmp`, JSON.stringify(agents), { mode: 0o600 });
       renameSync(`${agentsPath}.tmp`, agentsPath);
-    } catch { /* the Discord notices for this run fall back to the 5-minute rule */ }
+    } catch (e) {
+      const retry = attempt < 3;
+      log(`pi-ez-web: could not save agent-sessions.json (${e.message}); ${retry ? "retrying" : "giving up until the next change"}`);
+      if (!retry) return;
+      saveRetry ??= setTimeout(() => { saveRetry = null; saveAgents(attempt + 1); }, retryMs * 2 ** attempt);
+      saveRetry.unref?.();
+    }
   }
+  if (undated.length) saveAgents();
   const agentOf = id => typeof agents[id] === "string" ? { agent: agents[id], kind: "agent" } : agents[id] || null;
-  const unreportedRuns = () => Object.keys(agents).filter(id => agents[id]?.kind === "run" && !agents[id].reported);
+  const runIds = () => Object.keys(agents).filter(id => agents[id]?.kind === "run");
+  const unreportedRuns = () => runIds().filter(id => !agents[id].reported);
+  // A prime's runs for its Activity list, newest first. Name and running state come from the last worker snapshot.
+  const runsOf = agent => runIds().filter(id => agents[id].agent === agent).map(id => {
+    const f = agents[id], node = sessionNode(id);
+    const running = !f.reported && (node ? !!node.streaming : true);
+    return { id, name: node?.title || null, started: f.started || null, running, failed: !!f.outcome && f.outcome !== "done" };
+  }).sort((a, b) => String(b.started).localeCompare(String(a.started)));
   const conversationOf = agent => Object.keys(agents).find(id => agents[id]?.kind === "conversation" && agents[id].agent === agent) || null;
   const flagged = nodes => nodes?.map(n => {
     const flag = agentOf(n.id);
@@ -168,11 +200,12 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   });
   const agentIn = text => { try { return JSON.parse(text || "{}")?.agent; } catch { return null; } };
 
-  function sessionTitle(id) {
+  function sessionNode(id) {
     const find = nodes => { for (const s of nodes || []) { if (s.id === id) return s; const hit = find(s.children); if (hit) return hit; } return null; };
-    for (const projects of Object.values(snapshots)) for (const p of projects) { const hit = find(p.sessions); if (hit) return hit.title || null; }
-    return chatSnapshot.find(s => s.id === id)?.title || null;
+    for (const projects of Object.values(snapshots)) for (const p of projects) { const hit = find(p.sessions); if (hit) return hit; }
+    return chatSnapshot.find(s => s.id === id) || null;
   }
+  const sessionTitle = id => sessionNode(id)?.title || null;
 
   const call = (path, init = {}) => fetchImpl(`${url}/v1${path}`, { ...init, headers: { ...auth, ...(init.headers || {}) } });
   const workerPath = (name, rest) => `/workspaces/${encodeURIComponent(name)}/api${rest}`;
@@ -653,7 +686,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
 
   return {
     list, waitReady, createSession,
-    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, unreportedRuns, conversationOf, workerGet,
+    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, runIds, unreportedRuns, runsOf, conversationOf, workerGet,
     projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };
@@ -666,6 +699,8 @@ export function registerRemoteRoutes(api, remote) {
     const { status, body } = await remote.remove(c.req.param("name"), { purge: c.req.query("purge") === "1" });
     return c.json(body, status);
   });
+  // Only web's retention sweep deletes a worker's session (run-door.js calls the worker directly).
+  api.post("/sessions/:id/delete", c => c.json({ error: "forbidden" }, 403));
   for (const [kind, pattern] of [["project", "/projects/:id/*"], ["session", "/sessions/:id/*"]]) {
     api.use(pattern, async c => {
       const name = await remote.owner(kind, c.req.param("id"));
@@ -715,6 +750,13 @@ export function registerRemoteRoutes(api, remote) {
     return c.json(out, status);
   });
   api.post("/chats", c => remote.createChat(c));
+  // A prime's conversation, created on its worker the first time it is opened.
+  api.post("/primes/:agent/conversation", async c => {
+    try {
+      const id = await remote.primeConversation?.(c.req.param("agent"));
+      return id ? c.json({ id }) : c.json({ error: "no_such_prime" }, 404);
+    } catch (e) { return c.json({ error: "prime_unavailable", message: e.message }, 502); }
+  });
   api.post("/projects", async c => {
     const body = await c.req.json().catch(() => ({}));
     if (body.project && !body.source) return remote.createProject(c, body);

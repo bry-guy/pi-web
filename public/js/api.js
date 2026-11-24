@@ -54,6 +54,7 @@ export const api = {
   providerLogout: providerId => fetch(`/api/providers/${encodeURIComponent(providerId)}/logout`, { method: "POST" }).then(j),
   fetchProject: (id, operationId = null, sessionId = null) => fetch(`/api/projects/${encodeURIComponent(id)}/fetch`, { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify({ ...(operationId ? { operationId } : {}), ...(sessionId ? { sessionId } : {}) }) }).then(j),
   newChat: () => fetch("/api/chats", { method: "POST" }).then(j),
+  primeConversation: agent => fetch(`/api/primes/${encodeURIComponent(agent)}/conversation`, { method: "POST" }).then(j),
   newProject: value => {
     const body = typeof value === "string" ? { repoPath: value } : (value || {});
     return fetch("/api/projects", { method: "POST", headers: JH, body: JSON.stringify(body) }).then(j);
@@ -179,6 +180,7 @@ function applyState(s) {
     chats: s.chats,
     endedChats: s.endedChats || [],
     remoteSessions: s.remoteSessions || [],
+    primes: s.primes || [],
     buildId: s.buildId || null,
     startedAt: s.startedAt || null,
     reconnecting: false,

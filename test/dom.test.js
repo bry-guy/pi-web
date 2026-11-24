@@ -1730,6 +1730,63 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     const report = root.querySelector("pi-thread .block.report");
     assert.match(report.textContent, /All quiet\./);
     assert.equal(report.querySelector("a").getAttribute("href"), "/?s=run1");
+
+    // The Primes section lists each prime; its caret shows the Activity list; a run opens in the session view.
+    const section = () => root.querySelector(".primes-section");
+    assert.equal(section().hidden, true, "no primes, no section");
+    store.set({ primes: [{ agent: "labrat", project: "labrat", conversation: null, runs: [
+      { id: "run2", name: null, started: "2026-11-23T08:00:00.000Z", running: true, failed: false },
+      { id: "run1", name: "labrat: 2026-11-22 08:00", started: "2026-11-22T08:00:00.000Z", running: false, failed: true },
+    ] }] });
+    assert.equal(section().hidden, false);
+    const primeRow = section().querySelector("[data-act='prime-row'][data-agent='labrat']");
+    assert.equal(primeRow.querySelector(".count").textContent, "2");
+    assert.equal(section().querySelector("[data-act='prime-run']"), null, "activity starts collapsed");
+    primeRow.querySelector("[data-act='toggle-tree']").click();
+    const runs = [...section().querySelectorAll("[data-act='prime-run']")];
+    assert.deepEqual(runs.map(r => [r.dataset.id, r.dataset.state]), [["run2", "running"], ["run1", "failed"]]);
+    assert.match(runs[0].querySelector(".lbl").textContent, /^Run /, "a run with no name yet is named by its start");
+    assert.match(runs[1].textContent, /labrat: 2026-11-22 08:00[\s\S]*failed ·/);
+    runs[1].click();
+    assert.equal(store.state.sessionId, "run1");
+    assert.ok(section().querySelector("[data-act='prime-run'][data-id='run1']").classList.contains("active"));
+    // No conversation yet: the first open creates it.
+    const bootFetch = globalThis.fetch;
+    const opened = [];
+    globalThis.fetch = async (input, options) => {
+      if (String(input) === "/api/primes/labrat/conversation") { opened.push(options?.method); return new Response(JSON.stringify({ id: "conv1" }), { status: 200, headers: { "content-type": "application/json" } }); }
+      return bootFetch(input, options);
+    };
+    try {
+      section().querySelector("[data-act='prime-row']").click();
+      for (let i = 0; i < 50 && store.state.sessionId !== "conv1"; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    } finally { globalThis.fetch = bootFetch; }
+    assert.deepEqual(opened, ["POST"]);
+    assert.equal(store.state.sessionId, "conv1");
+    // A closed run is not in state: it is restored, then opened.
+    store.set({ primes: [{ agent: "labrat", project: "labrat", conversation: "conv1", runs: [
+      { id: "run3", name: "labrat: closed", started: "2026-11-21T08:00:00.000Z", running: false, failed: false },
+    ] }] });
+    const restored = [];
+    globalThis.fetch = async (input, options) => {
+      if (String(input) === "/api/sessions/run3/restore") {
+        restored.push(options?.method);
+        state.projects.find(p => p.id === "p1").sessions.push({ id: "run3", title: "labrat: closed", agent: "labrat", agentKind: "run", contextId: "ctx-main", branch: "main", when: "now", streaming: false, children: [] });
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return bootFetch(input, options);
+    };
+    try {
+      section().querySelector("[data-act='prime-run'][data-id='run3']").click();
+      for (let i = 0; i < 50 && store.state.sessionId !== "run3"; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    } finally {
+      globalThis.fetch = bootFetch;
+      const live = state.projects.find(p => p.id === "p1").sessions;
+      live.splice(live.findIndex(n => n.id === "run3"), 1);
+    }
+    assert.deepEqual(restored, ["POST"]);
+    assert.equal(store.state.sessionId, "run3");
+    store.set({ primes: [] });
     p1.sessions.splice(-3);
   }
 
