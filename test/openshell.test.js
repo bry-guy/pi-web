@@ -115,6 +115,15 @@ test("grants: provider openshell takes an egress list; other grants keep the lab
   assert.throws(bad({ provider: "openshell", serviceAccount: "sa" }), /serviceAccount is not supported/);
 });
 
+test("grants: a role grant is an OpenShell sandbox locked to its projects", () => {
+  const role = g => parseGrants(JSON.stringify({ default: { anyProject: true }, dev: { repos: ["project:p-dev"], provider: "openshell", role: "app/dev", ...g } })).dev;
+  assert.equal(role({}).role, "app/dev");
+  assert.equal(GRANTS.sandboxed.role, undefined);
+  assert.throws(() => role({ provider: undefined }), /role needs provider openshell/, "never a worker that holds web's logins");
+  assert.throws(() => role({ anyProject: true }), /role cannot be combined with anyProject/);
+  for (const bad of ["dev", "app/dev/x", "App/Dev", 7]) assert.throws(() => role({ role: bad }), /role must be <repo>\/<role>/, String(bad));
+});
+
 test("openshell is configured only by its gateway endpoint", () => {
   assert.equal(openshellConfig({}), null);
   assert.deepEqual({ ...CONFIG, image: undefined }, { endpoint: "http://127.0.0.1:8080", gateway: null, configHome: null, tlsDir: null, workspace: "default", bin: "/opt/openshell", namespace: "openshell", serviceDomain: "openshell.localhost", image: undefined, storage: "20Gi", storageClassName: null });
@@ -491,7 +500,7 @@ test("grants: OpenShell grants take providers, environment and packages; others 
   assert.throws(bad({ environment: { A: "1" } }), /g\.environment needs provider openshell/);
   assert.throws(bad({ packages: ["npm:x"] }), /g\.packages needs provider openshell/);
   assert.throws(bad({ provider: "openshell", environment: { OPENSHELL_X: "1" } }), /OPENSHELL_X is reserved/);
-  for (const k of ["HOME", "PI_WEB_PACKAGES", "PI_ANTHROPIC_PLACEHOLDER_FILE", "HOST", "PI_WEB_PROJECT"]) assert.throws(bad({ provider: "openshell", environment: { [k]: "1" } }), /is reserved/, k);
+  for (const k of ["HOME", "PI_WEB_PACKAGES", "PI_ANTHROPIC_PLACEHOLDER_FILE", "PI_WEB_SANDBOX", "HOST", "PI_WEB_PROJECT"]) assert.throws(bad({ provider: "openshell", environment: { [k]: "1" } }), /is reserved/, k);
   assert.throws(bad({ provider: "openshell", environment: { A: 1 } }), /string value/);
   assert.throws(bad({ provider: "openshell", providers: ["pi-web-anthropic"] }), /attached by workspaced/);
   assert.throws(bad({ provider: "openshell", providers: ["a b"] }), /gateway provider names/);
@@ -596,6 +605,7 @@ test("first start: no login yet means no model provider, unless an earlier works
   await provider.create({ name: "agent", repository: "project:agent", grant: GRANTS.sandboxed });
   const args = cli.calls.find(a => a[0] === "sandbox" && a[1] === "create");
   assert.ok(!args.includes("--provider") && !args.some(a => a.startsWith("PI_ANTHROPIC_PLACEHOLDER_FILE=")));
+  assert.ok(args.includes("PI_WEB_SANDBOX=1"), "marked as a sandbox even without a model login");
   assert.equal(cli.policies[0].network_policies.anthropic, undefined);
   assert.ok(logs.includes("workspaced: ws-agent starts without a model login (pi-web has not shared one with this workspaced yet)"));
 

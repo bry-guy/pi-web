@@ -99,6 +99,8 @@ export function sandboxPolicy(grant, { model = false } = {}) {
 export function createArgs({ name, repository, grant, config, policyFile, model = false }) {
   const env = [
     ...workerEnv({ name, repository }), { name: "HOST", value: "127.0.0.1" },
+    // Every sandbox, with or without a model: the worker offers no role runner inside one (server/role-runner.js).
+    { name: "PI_WEB_SANDBOX", value: "1" },
     ...(model ? [{ name: "PI_ANTHROPIC_PLACEHOLDER_FILE", value: PLACEHOLDER_FILE }] : []),
     ...(grant?.packages?.length ? [{ name: "PI_WEB_PACKAGES", value: JSON.stringify(grant.packages) }] : []),
     ...Object.entries(grant?.environment || {}).map(([n, value]) => ({ name: n, value })),

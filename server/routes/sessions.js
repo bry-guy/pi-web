@@ -1,5 +1,5 @@
 export function register(api, deps) {
-  const { hub, err, sup, extensionUi } = deps;
+  const { hub, err, sup, extensionUi, roleRunner } = deps;
 
 
   api.get("/sessions/:id/commands", async c => {
@@ -87,6 +87,21 @@ export function register(api, deps) {
     try {
       await sup.note(c.req.param("id"), text, body.details && typeof body.details === "object" ? body.details : undefined);
       return c.json({ ok: true });
+    } catch (e) {
+      if (String(e?.message || "").startsWith("unknown session")) return err(c, 404, "no_such_session");
+      throw e;
+    }
+  });
+
+  // Web's answer to a role_agent call made in this session (role-runner.js). Trusted like /note and /message.
+  api.post("/sessions/:id/role-run", async c => {
+    const raw = await c.req.text();
+    if (Buffer.byteLength(raw) > 256 * 1024) return err(c, 413, "note_too_large");
+    let body = null;
+    try { body = JSON.parse(raw); } catch { /* refused below */ }
+    if (typeof body?.request !== "string" || typeof body.state !== "string") return err(c, 400, "invalid_request");
+    try {
+      return await roleRunner.answer(body, (text, details) => sup.note(c.req.param("id"), text, details), c.req.param("id")) ? c.json({ ok: true }) : err(c, 404, "no_such_request");
     } catch (e) {
       if (String(e?.message || "").startsWith("unknown session")) return err(c, 404, "no_such_session");
       throw e;
