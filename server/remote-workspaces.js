@@ -55,7 +55,12 @@ export function remoteWorkspacesFromEnv(env, deps) {
   remote.primes = () => primes?.list() || [];
   remote.primeConversation = agent => primes ? primes.openConversation(agent) : Promise.resolve(null);
   // Old runs are deleted once a day, and once shortly after start.
-  if (primes) for (const timer of [setTimeout(primes.sweep, 60_000), setInterval(primes.sweep, 24 * 3600_000)]) timer.unref?.();
+  if (primes) {
+    const timers = [setTimeout(primes.sweep, 60_000), setInterval(primes.sweep, 24 * 3600_000)];
+    for (const timer of timers) timer.unref?.();
+    const stop = remote.stop;
+    remote.stop = () => { stop(); for (const timer of timers) clearTimeout(timer); };
+  }
   if (discord) {
     const stop = remote.stop;
     remote.stop = () => { stop(); discord.stop(); };
