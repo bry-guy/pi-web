@@ -169,6 +169,13 @@ async function openRun(id) {
   }
 }
 
+// The owner cancels one of a prime's pending follow-ups from its Activity list.
+async function cancelFollowUp(agent, id) {
+  try { await api.cancelFollowUp(agent, id); }
+  catch (err) { store.setError(`Could not cancel the follow-up: ${err.error || err.message || err}`); }
+  await refreshState();
+}
+
 const runWhen = iso => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -465,6 +472,7 @@ class PiSidebar extends HTMLElement {
       return;
     }
     if (act === "clear-search") { this.clearSearch(); return; }
+    if (act === "cancel-follow-up") { e.stopPropagation(); void cancelFollowUp(t.dataset.agent, t.dataset.id); return; }
     if (act === "close-row") {
       e.stopPropagation();
       if (t.dataset.kind === "remote") {
@@ -665,7 +673,7 @@ class PiSidebar extends HTMLElement {
           </div></div>`);
       }
     }
-    // Primes: a row opens the conversation; its caret shows the Activity list (hidden runs, newest first).
+    // Primes: a row opens the conversation; its caret shows the Activity list (pending follow-ups, then hidden runs, newest first).
     const primeRows = [];
     for (const p of s.primes || []) {
       if (q && !fuzzyMatch(p.agent, q)) continue;
@@ -679,6 +687,13 @@ class PiSidebar extends HTMLElement {
           <span class="count" title="${p.runs.length} runs">${p.runs.length}</span>
         </div></div>`);
       if (!open) continue;
+      for (const f of p.followUps || []) {
+        primeRows.push(`<div class="row-wrap nested" style="margin-left:20px">
+          <div class="row prime-follow-up" data-state="pending" title="${esc(f.note)}">
+            <span class="lbl">${esc(f.note)}</span><span class="when" title="${esc(f.due)}">follow-up · ${esc(runWhen(f.due))}</span>
+            <button class="row-close" data-act="cancel-follow-up" data-agent="${esc(p.agent)}" data-id="${esc(f.id)}" title="Cancel this follow-up" aria-label="Cancel the follow-up due ${esc(runWhen(f.due))}">${icon("close")}</button>
+          </div></div>`);
+      }
       if (!p.runs.length) primeRows.push(`<div class="row-wrap nested" style="margin-left:20px"><div class="row prime-activity-empty"><span class="lbl">No runs yet</span></div></div>`);
       for (const r of p.runs) {
         const state = r.running ? "running" : r.failed ? "failed" : "ended";

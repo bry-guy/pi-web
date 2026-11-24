@@ -161,8 +161,8 @@ test("the main app has no /run; the door listens on its own port", async () => {
   // The front end learns the primes from /api/state: every run-door agent, no conversation or runs yet.
   const state = await (await app.request("http://pi-web.test/api/state")).json();
   assert.deepEqual(state.primes, [
-    { agent: "other", project: "elsewhere", conversation: null, runs: [] },
-    { agent: "labrat", project: "labrat", conversation: null, runs: [] },
+    { agent: "other", project: "elsewhere", conversation: null, followUps: [], runs: [] },
+    { agent: "labrat", project: "labrat", conversation: null, followUps: [], runs: [] },
   ]);
   const opened = await app.request("http://pi-web.test/api/primes/nobody/conversation", { method: "POST" });
   assert.equal(opened.status, 404);
@@ -175,6 +175,7 @@ test("the main app has no /run; the door listens on its own port", async () => {
 function primeWorkspaced(cachePath, { state = "running", log } = {}) {
   const calls = [];
   const faults = { note: 0 }; // a status the note route fails with, when set
+  const followUps = { requests: null, pending: null }; // requests null: a worker from before follow-ups (no route)
   const sessions = new Map(); // id → { name, model, closed }
   let next = 0;
   const fetchImpl = async (url, init = {}) => {
@@ -188,6 +189,12 @@ function primeWorkspaced(cachePath, { state = "running", log } = {}) {
     if (p.endsWith("/wake") || p === "/health") return json({ ok: true });
     if (p === "/events") return json({}, 503);
     if (p === "/models") return json({ models: [{ id: "anthropic/claude-haiku-5-5" }, { id: "anthropic/claude-opus-5-5" }] });
+    if (p === "/follow-ups" && followUps.requests) return json({ requests: followUps.requests });
+    if (p === "/follow-ups/ack" && followUps.requests) {
+      followUps.requests = followUps.requests.filter(r => !body.ids.includes(r.id));
+      followUps.pending = body.pending;
+      return json({ ok: true });
+    }
     if (p === "/projects/pp-labrat/sessions") { const id = `s${++next}`; sessions.set(id, { name: body.name }); return json({ id }); }
     const [, id, rest] = p.match(/^\/sessions\/([^/]+)\/(.+)$/) || [];
     const s = sessions.get(id);
@@ -202,7 +209,7 @@ function primeWorkspaced(cachePath, { state = "running", log } = {}) {
     return json({ ok: true });
   };
   const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, cachePath, retryMs: 50, modelAuthSyncMs: 0, ...(log ? { log } : {}) });
-  return { remote, calls, sessions, faults };
+  return { remote, calls, sessions, faults, followUps };
 }
 
 const label = (name, outcome) => `Automated report from this agent's scheduled run "${name}" (${outcome}, 2026-11-22 08:00 UTC). This is the run's own output, not a message from the owner, and it does not ask for a reply:`;
@@ -375,7 +382,7 @@ test("a prime's conversation opens lazily from the sidebar, and its runs are lis
   const primes = createPrimes({ entries: labrat(), remote: fake.remote, log: () => {} });
   try {
     for (const [id, s] of [["a", {}], ["b", {}], ["c", { streaming: true }], ["d", {}]]) fake.sessions.set(id, { name: `labrat: ${id}`, ...s });
-    assert.deepEqual(primes.list(), [{ agent: "labrat", project: "labrat", conversation: null, runs: [
+    assert.deepEqual(primes.list(), [{ agent: "labrat", project: "labrat", conversation: null, followUps: [], runs: [
       { id: "c", name: null, started: "2026-11-22T08:00:00.000Z", running: true, failed: false },
       { id: "b", name: null, started: "2026-11-21T08:00:00.000Z", running: false, failed: true },
       { id: "a", name: null, started: "2026-11-20T08:00:00.000Z", running: false, failed: false },
@@ -530,4 +537,127 @@ test("a write of agent-sessions.json that keeps failing stops retrying", async (
     fake.remote.markAgent("r2", "labrat", "run");
     assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort(), ["r1", "r2"], "the next change saves the whole map");
   } finally { fake.remote.stop(); }
+});
+
+// Follow-ups: a prime's requests on its worker's disk → web's wake-up list → a hidden run with the note as its brief.
+function followUpSetup() {
+  const dir = mkdtempSync(path.join(tmpdir(), "primes-"));
+  const fake = primeWorkspaced(path.join(dir, "remote-projects.json"));
+  const { entries } = runDoorConfig({ PI_WEB_RUN_PORT: "4000", PI_WEB_RUN_TOKENS: JSON.stringify(ENTRIES) });
+  const clock = { t: Date.parse("2026-11-22T08:00:00Z") };
+  const logs = [];
+  const wakePath = path.join(dir, "wake-list.json");
+  const primes = createPrimes({ entries, remote: fake.remote, log: l => logs.push(l), now: () => new Date(clock.t), wakePath });
+  fake.sessions.set("conv", { name: "labrat" });
+  fake.remote.markAgent("conv", "labrat", "conversation");
+  fake.followUps.requests = [];
+  const at = minutes => new Date(clock.t + minutes * 60_000).toISOString();
+  const acks = () => fake.calls.filter(c => c[1] === "/follow-ups/ack").map(c => c[2]);
+  const stop = () => { primes.stop(); fake.remote.stop(); };
+  return { fake, primes, clock, logs, wakePath, at, acks, stop, followUps: () => primes.list().find(p => p.agent === "labrat").followUps };
+}
+
+test("a prime's follow-up requests are collected when its turn ends, acknowledged, and start a labelled run when due", async () => {
+  const { fake, primes, clock, logs, wakePath, at, acks, stop, followUps } = followUpSetup();
+  try {
+    const note = "Check that the deploy\nfinished.";
+    fake.sessions.set("o1", { name: "other: run" });
+    fake.remote.markAgent("o1", "other", "run");
+    fake.remote.markAgent("plain", "labrat");
+    fake.followUps.requests = [
+      { id: "f1", session: "conv", due: at(20), note },
+      { id: "soon", session: "conv", due: at(1), note: "too soon" },
+      { id: "x1", session: "stranger", due: at(20), note: "not a prime's session" },
+      { id: "x2", session: "o1", due: at(20), note: "a prime of another project" },
+      { id: "x3", session: "plain", due: at(20), note: "an agent session, not a prime's" },
+      { id: "x4", session: "conv", due: at(31 * 24 * 60), note: "past the 30 days" },
+      { session: "conv", due: at(20), note: "no id" },
+    ];
+    await primes.event("conv", "turn_end", { reason: "errored", willRetry: true });
+    assert.deepEqual(acks(), [], "not at an attempt pi retries");
+    await primes.event("conv", "turn_end", { reason: "done" });
+    assert.deepEqual(followUps(), [{ id: "soon", due: at(10), note: "too soon" }, { id: "f1", due: at(20), note }], "soonest first, never sooner than 10 minutes after the pull");
+    assert.deepEqual(acks(), [{ ids: ["f1", "soon", "x1", "x2", "x3", "x4"], pending: followUps() }]);
+    assert.deepEqual(fake.followUps.requests, [{ session: "conv", due: at(20), note: "no id" }]);
+    assert.deepEqual(logs.filter(l => l.includes("was refused")).map(l => l.match(/\((.*)\)$/)[1]), ["not asked in a session of this worker's prime", "not asked in a session of this worker's prime", "not asked in a session of this worker's prime", "invalid"]);
+    assert.deepEqual(JSON.parse(readFileSync(wakePath, "utf8")).find(r => r.id === "f1"), { id: "f1", agent: "labrat", due: at(20), note, from: "conv" });
+    assert.deepEqual(primes.list().find(p => p.agent === "other").followUps, []);
+
+    // The same request again (its acknowledgement was lost): nothing is added twice.
+    fake.followUps.requests = [{ id: "f1", session: "conv", due: at(20), note }];
+    await primes.event(null, "worker_connected", { workspace: "ws-labrat" });
+    assert.equal(followUps().length, 2);
+    assert.deepEqual(acks().at(-1).ids, ["f1"]);
+
+    // Due: each starts a hidden run whose brief says where the note comes from.
+    clock.t += 20 * 60_000;
+    const due = at(0);
+    await primes.tick();
+    assert.deepEqual(followUps(), []);
+    assert.deepEqual(JSON.parse(readFileSync(wakePath, "utf8")), []);
+    const created = fake.calls.filter(c => c[1] === "/projects/pp-labrat/sessions").map(c => c[2]);
+    assert.deepEqual(created.find(b => b.followUp === note), { name: "labrat: follow-up 2026-11-22 08:20", agent: "labrat", kind: "run", followUp: note });
+    assert.equal(created.length, 2);
+    const run = fake.calls.find(c => c[1].endsWith("/message") && c[2].text.endsWith(note))[1].split("/")[2];
+    assert.deepEqual({ ...fake.remote.agentOf(run), started: null }, { agent: "labrat", kind: "run", started: null, followUp: note });
+    assert.equal(fake.calls.find(c => c[1] === `/sessions/${run}/message`)[2].text,
+      `This run was started by a follow-up. In its conversation, this agent left itself the note below, to be woken with it at ${due.slice(0, 16).replace("T", " ")} UTC. It is the agent's own note, not a message from the owner.\n\n${note}`);
+    assert.equal(primes.list().find(p => p.agent === "labrat").runs.length, 2, "listed with the prime's other runs");
+
+    // Its report names the note that caused it.
+    await primes.event(run, "turn_end", { reason: "done" });
+    const report = fake.calls.find(c => c[1] === "/sessions/conv/note")[2];
+    assert.equal(report.text, `Automated report from this agent's follow-up run "labrat: follow-up 2026-11-22 08:20" (finished, 2026-11-22 08:20 UTC), started by the follow-up this agent set for itself with the note "Check that the deploy finished.". This is the run's own output, not a message from the owner, and it does not ask for a reply:\n\nAll quiet (${run}).`);
+    assert.equal(report.details.head, `**labrat: follow-up 2026-11-22 08:20** · ended 2026-11-22 08:20 UTC · [open the run](/?s=${run})\n\nFollow-up: Check that the deploy finished.`);
+  } finally { stop(); }
+});
+
+test("a prime holds at most 5 pending follow-ups; it and the owner can cancel them", async () => {
+  const { fake, primes, logs, at, acks, stop, followUps } = followUpSetup();
+  try {
+    fake.followUps.requests = [1, 2, 3, 4, 5, 6].map(i => ({ id: `f${i}`, session: "conv", due: at(20 + i), note: `note ${i}` }));
+    await primes.event("conv", "turn_end", { reason: "done" });
+    assert.deepEqual(followUps().map(f => f.id), ["f1", "f2", "f3", "f4", "f5"]);
+    assert.equal(logs.filter(l => l.includes("was refused (full)")).length, 1);
+    assert.deepEqual(fake.followUps.requests, [], "the refused one is acknowledged too: the worker's list shows it is not scheduled");
+
+    // The prime cancels one of its own in a later turn; an id that is not its own changes nothing.
+    fake.followUps.requests = [{ id: "c1", session: "conv", cancel: "f2" }, { id: "c2", session: "conv", cancel: "nope" }];
+    await primes.event("conv", "turn_end", { reason: "stopped" });
+    assert.deepEqual(followUps().map(f => f.id), ["f1", "f3", "f4", "f5"]);
+    assert.deepEqual(acks().at(-1), { ids: ["c1", "c2"], pending: followUps() });
+
+    // The owner cancels from the Activity list: the prime's own copy on its worker is refreshed at once.
+    const app = new Hono();
+    registerRemoteRoutes(app, Object.assign(fake.remote, { cancelFollowUp: primes.cancelFollowUp }));
+    const before = acks().length;
+    assert.equal((await app.request("/primes/labrat/follow-ups/f4", { method: "DELETE" })).status, 200);
+    assert.deepEqual(followUps().map(f => f.id), ["f1", "f3", "f5"]);
+    assert.equal(acks().length, before + 1);
+    assert.deepEqual(fake.followUps.pending.map(f => f.id), ["f1", "f3", "f5"]);
+    for (const p of ["/primes/labrat/follow-ups/f4", "/primes/other/follow-ups/f1", "/primes/nobody/follow-ups/f1"]) assert.equal((await app.request(p, { method: "DELETE" })).status, 404, p);
+    assert.deepEqual(followUps().map(f => f.id), ["f1", "f3", "f5"]);
+  } finally { stop(); }
+});
+
+test("a follow-up whose run cannot start stays pending; a worker without follow-ups is not acknowledged", async () => {
+  const { fake, primes, clock, logs, at, acks, stop, followUps } = followUpSetup();
+  try {
+    fake.followUps.requests = [{ id: "f1", session: "conv", due: at(20), note: "later" }];
+    await primes.event("conv", "turn_end", { reason: "done" });
+    clock.t += 20 * 60_000;
+    fake.followUps.requests = null;
+    const real = fake.remote.createSession;
+    fake.remote.createSession = async () => ({ status: 500, body: { error: "disk_full" } });
+    await primes.tick();
+    assert.deepEqual(followUps().map(f => f.id), ["f1"]);
+    assert.match(logs.at(-1), /labrat's follow-up f1 did not start \(could not create the session \(disk_full\)\); trying again in 5 minutes/);
+    fake.remote.createSession = real;
+    clock.t += 5 * 60_000;
+    await primes.tick();
+    assert.deepEqual(followUps(), []);
+    const before = acks().length;
+    await primes.event(null, "worker_connected", { workspace: "ws-labrat" });
+    assert.equal(acks().length, before);
+  } finally { stop(); }
 });
