@@ -25,6 +25,9 @@ export function openChatsMenu() {
 
 // What pi-sync last reported for a session open on this server ("up to date", "in use on …"), if anything.
 const syncOf = id => syncSummary(store.state.extensionStatuses?.[id]?.["pi-sync"])?.message || "";
+// Sessions pi-projects' role_agent started: its "<role>: <task>" name, or the role prompt as title before names existed.
+// shortcut: matched by title since pi-sync records no role marker; a run renamed by hand counts as yours.
+const isRoleRun = title => /^(?:You are running as role |Foreground Role Agent Mode$|[a-z0-9]+(?:-[a-z0-9]+)+: )/.test(title || "");
 const shortSha = sha => (sha ? String(sha).slice(0, 8) : "");
 
 /** True when every word of `filter` appears in one of `labels`, ignoring case. */
@@ -46,6 +49,8 @@ class PiProjectMenu extends HTMLElement {
     this.addEventListener("input", e => {
       if (e.target.matches(".session-filter")) { this.menu().filter = e.target.value; this.render(); }
     });
+    // toggle doesn't bubble; capture keeps the role-runs group open across re-renders.
+    this.addEventListener("toggle", e => { if (e.target.matches?.("[data-role-runs]") && this.menu()) this.menu().roleRunsOpen = e.target.open; }, true);
     this.addEventListener("keydown", e => {
       // Esc clears a filter first; an empty one lets Esc close the menu as before.
       if (e.key === "Escape" && e.target.matches(".session-filter") && e.target.value) { e.preventDefault(); this.menu().filter = ""; this.render(); }
@@ -349,8 +354,13 @@ class PiProjectMenu extends HTMLElement {
     const shown = filter ? flat.filter(n => sessionMatches([n.title, ...meta(n).filter(v => v && (v === n.where || v === n.branch))], filter)) : flat;
     const search = total > FILTER_ABOVE ? `<div class="rail-search-wrap session-filter-wrap">${icon("search")}<input class="rail-search session-filter" type="search" placeholder="Filter sessions" aria-label="Filter sessions" value="${esc(menu.filter || "")}"><button class="rail-search-clear" data-act="clear-filter" title="Clear filter" aria-label="Clear filter" ${menu.filter ? "" : "hidden"}>${icon("close")}</button></div>` : "";
     const empty = total ? "No sessions match the filter." : menu.synced === null ? "Loading sessions…" : "No sessions yet.";
+    const entries = list => list.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" ${head(n)}><span class="history-main"><strong>${esc(n.title)}</strong><small>${esc(meta(n).filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("");
+    const runs = shown.filter(n => isRoleRun(n.title));
+    const mine = shown.filter(n => !isRoleRun(n.title));
+    const runGroup = runs.length
+      ? `<details class="role-runs" data-role-runs ${menu.roleRunsOpen ? "open" : ""}><summary>Role runs <span>${runs.length}</span></summary><div class="history-list">${entries(runs)}</div></details>` : "";
     return `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Sessions</span><span>${filter ? `${shown.length} / ${total}` : total}</span></div>${search}
-      ${shown.length ? `<div class="history-list">${shown.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" ${head(n)}><span class="history-main"><strong>${esc(n.title)}</strong><small>${esc(meta(n).filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("")}</div>`
+      ${shown.length ? `${mine.length ? `<div class="history-list">${entries(mine)}</div>` : ""}${runGroup}`
         : `<div class="session-history-empty">${empty}</div>`}</section>`;
   }
 
