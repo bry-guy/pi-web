@@ -6,6 +6,7 @@ import { createLifecycle, PASSIVE, upstreamFetch, upstreamOf } from "./lifecycle
 import { CHATS_WORKSPACE, slugFromRepository, validName } from "./manifests.js";
 import { grantAllows, grantError, parseGrants, resolveGrant, withGrantCheck } from "./grants.js";
 import { createScoreSource, scoreFromFile, withScore } from "./score.js";
+import { githubAppMinter } from "./github-app.js";
 import { openshellConfig, openshellProvider, withOpenShell } from "./openshell.js";
 
 // Hop-by-hop and length/encoding headers; fetch() re-frames bodies itself.
@@ -239,7 +240,9 @@ export async function workspacedFromEnv(env = process.env, { token = env.WORKSPA
   const raw = await providerFromEnv(grants, env, local);
   // Sandboxes for grants with provider "openshell", only when its gateway is configured.
   const config = openshellConfig(env);
-  const openshell = config && openshellProvider({ kube: (await import("./kube.js")).kubeFromEnv(env), config });
+  // GitHub App keys for grants with `github`: one mounted Secret per App under this directory.
+  const mintGitHubToken = env.WORKSPACED_GITHUB_APPS_DIR ? githubAppMinter({ dir: env.WORKSPACED_GITHUB_APPS_DIR }) : null;
+  const openshell = config && openshellProvider({ kube: (await import("./kube.js")).kubeFromEnv(env), config, grants, mintGitHubToken });
   const provider = withScore(withGrantCheck(withOpenShell(raw, openshell), grants), scores, grants);
   const idleMinutes = Number(env.WORKSPACED_IDLE_MINUTES ?? 0);
   const maxAwake = Number(env.WORKSPACED_MAX_AWAKE ?? 3);

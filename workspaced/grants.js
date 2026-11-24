@@ -44,6 +44,35 @@ function parseSandboxFields(name, g) {
   return { providers: [...new Set(providers)], environment: { ...environment }, packages: [...new Set(packages)] };
 }
 
+// GitHub as a role's bot (docs/workspaced.md#github-as-a-roles-bot): workspaced mints the App's installation token
+// for exactly these repositories and permissions and keeps it in the gateway provider <app>-github.
+//   "github": { "app": "pi-web-developer", "repos": ["bry-guy/pi-web"], "permissions": { "contents": "write" } }
+KNOWN_KEYS.add("github");
+OPENSHELL_ONLY.push("github");
+export const githubProvider = app => `${app}-github`;
+// What the sandbox's git and gh read instead of a token variable; workspaced sets the first.
+const GITHUB_ENV = ["PI_WEB_GITHUB_BOT", "PI_WEB_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"];
+const GITHUB_REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
+
+function parseGitHub(name, g) {
+  const gh = g.github;
+  if (!gh || typeof gh !== "object" || Array.isArray(gh)) fail(`${name}.github must be {app, repos, permissions}`);
+  const unknown = Object.keys(gh).filter(k => !["app", "repos", "permissions"].includes(k));
+  if (unknown.length) fail(`${name}.github has unknown fields ${unknown.join(", ")}`);
+  // A role's credentials must never be open to every project.
+  if (g.anyProject) fail(`${name}.github cannot be combined with anyProject`);
+  // Also a Secret name (<app>-github-app) and a path segment.
+  if (typeof gh.app !== "string" || !K8S_NAME.test(gh.app) || gh.app.length > 40) fail(`${name}.github.app must be the GitHub App's short name (lower case, as in its Secret <app>-github-app)`);
+  if (!Array.isArray(gh.repos) || !gh.repos.length || !gh.repos.every(r => typeof r === "string" && GITHUB_REPO.test(r))) fail(`${name}.github.repos must list owner/name repositories`);
+  if (new Set(gh.repos.map(r => r.split("/")[0].toLowerCase())).size > 1) fail(`${name}.github.repos must belong to one owner (one installation)`);
+  const permissions = gh.permissions;
+  if (!permissions || typeof permissions !== "object" || Array.isArray(permissions) || !Object.keys(permissions).length
+    || !Object.entries(permissions).every(([k, v]) => /^[a-z_]+$/.test(k) && (v === "read" || v === "write"))) fail(`${name}.github.permissions must map GitHub permission names to "read" or "write"`);
+  if ((g.providers ?? []).includes(githubProvider(gh.app))) fail(`${name}.providers: ${githubProvider(gh.app)} is attached by workspaced; remove it`);
+  for (const k of GITHUB_ENV) if (g.environment && k in g.environment) fail(`${name}.environment.${k} is reserved with github`);
+  return { app: gh.app, repos: [...new Set(gh.repos)], permissions: { ...permissions } };
+}
+
 // An OpenShell grant's egress: default deny, plus these endpoints.
 function parseEgressRules(name, rules) {
   if (!Array.isArray(rules)) fail(`${name}.egress must be a list of {host, port} for provider openshell`);
@@ -94,6 +123,12 @@ export function parseGrants(text, { log = console.log } = {}) {
       ...(g.provider === "openshell" ? parseSandboxFields(name, g) : {}),
       description: typeof g.description === "string" ? g.description : "",
     };
+    if (g.github != null) {
+      grants[name].github = parseGitHub(name, g);
+      // One gateway provider per App holds one token, so one scope.
+      const other = Object.values(grants).find(o => o.name !== name && o.github?.app === g.github.app);
+      if (other) fail(`${name}.github.app ${g.github.app} is already used by grant ${other.name}`);
+    }
   }
   if (!grants[DEFAULT_GRANT]) fail(`a "${DEFAULT_GRANT}" grant is required`);
   return grants;

@@ -21,6 +21,7 @@ web can also run it inside itself: with `PI_WEB_WORKSPACED_URL=local`, web build
 | `WORKSPACED_MAX_AWAKE` | `3` | At most this many workers run at once. Waking another puts the least recently used idle one to sleep (never a pinned or busy one). `0` disables. Sleeping keeps the volume; background processes stop unless the project is pinned *Keep awake* |
 | `WORKSPACED_IDLE_MINUTES` | `0` (off) | Optionally also sleep any worker after this long without use |
 | `WORKSPACED_GRANTS` | `{"default":{"anyProject":true}}` | Grant shapes as JSON, see below |
+| `WORKSPACED_GITHUB_APPS_DIR` | unset | Directory holding one mounted Secret per GitHub App (`<app>-github-app/app-id`, `private-key`), for grants with `github`. Unset: such a grant's worker cannot be created or woken |
 | `WORKSPACED_ROOT` | `~/.pi-workspaced` | local: where workers' state lives |
 | `WORKSPACED_NAMESPACE` | `pi-workspaced` | kubernetes: home namespace for workers |
 | `WORKSPACE_IMAGE` | `ghcr.io/bry-guy/pi-ez-web:latest` | kubernetes: worker image. Pin a digest |
@@ -105,6 +106,7 @@ What it gets: the variables of `workerEnv` (paths, port, project; the same `HOME
 | `providers` | Gateway provider names, each attached with `--provider`. You create them on the gateway. `pi-web-anthropic` is workspaced's own and may not be listed |
 | `environment` | Plain, non-secret variables (`--env`). Names starting with `OPENSHELL_` (the CLI's) and the ones workspaced sets are refused |
 | `packages` | pi package sources the worker loads on top of its config (a sandbox worker has no dotfiles profile). Any `npm:` source adds a `registry.npmjs.org` rule |
+| `github` | A GitHub App whose bot the worker acts as: see [GitHub as a role's bot](#github-as-a-roles-bot) |
 
 An OpenShell grant may not set `namespace`, `serviceAccount` or `env`. An unknown field in any grant logs one warning and is ignored.
 
@@ -123,7 +125,38 @@ The deployer adds:
 - NetworkPolicy: egress from workspaced to the gateway's port 8080, and ingress to the gateway from workspaced (the spike's policy admits only its own namespace).
 - Gateway chart value `server.drivers.kubernetes.allowDriverConfig`, and the worker image pull secret in that namespace. (The plaintext spike also set `server.auth.allowUnauthenticatedUsers`; the mTLS gateway does not need it.)
 
-Not done yet: a GitHub login and grant Secrets for sandbox workers (`setGitHubAuth` skips them), a test against the real mTLS gateway (the TLS path is tested against a local server only), pins that survive a workspaced restart, resource limits, and usage figures.
+Not done yet: grant Secrets for sandbox workers, a test of the GitHub login below against a real gateway, a test against the real mTLS gateway (the TLS path is tested against a local server only), pins that survive a workspaced restart, resource limits, and usage figures.
+
+### GitHub as a role's bot
+
+A grant with `github` gives its sandbox worker GitHub access as a GitHub App's bot. The pi-web GitHub login (`PUT /v1/github-auth`) never reaches a sandbox; this is the only GitHub login one can have. **Not yet run against a real gateway or GitHub.**
+
+```json
+"pi-web-developer": { "repos": ["project:pi-web-ecosystem-pi-web-developer"], "provider": "openshell",
+  "github": { "app": "pi-web-developer", "repos": ["bry-guy/pi-web", "bry-guy/pi-sync"],
+              "permissions": { "contents": "write", "pull_requests": "write" } } }
+```
+
+| Field | Meaning |
+|---|---|
+| `app` | The App's short name. Its key is the Secret `<app>-github-app` (keys `app-id`, `private-key`), mounted as a directory at `$WORKSPACED_GITHUB_APPS_DIR/<app>-github-app/`. Its gateway provider is `<app>-github`, which workspaced creates; listing it in `providers` is refused |
+| `repos` | `owner/name` repositories of one owner. The token works for these only |
+| `permissions` | GitHub permission names with `read` or `write`. The token carries these only; one the App lacks makes GitHub refuse the token (422) |
+
+Refused with `anyProject`, and two grants may not name the same `app` (one provider holds one token).
+
+workspaced holds the key and mints (`workspaced/github-app.js`): an RS256 App JWT, the installation of the first repository, then an installation token (one hour) for the grant's repositories and permissions. The key files are read at each mint, so a rotated Secret needs no restart. It stores the token in the gateway provider (profile `workspaced/pi-web-github.yaml`, imported on first use; the token reaches the CLI only through its environment):
+
+- before a sandbox with the grant is created, woken, restarted or reset, and
+- every 5 minutes for each App with a running sandbox,
+
+in both cases only when the token this process stored has under 30 minutes left. An App without a running or starting worker gets no token.
+
+The sandbox gets `--provider <app>-github`, rules for `api.github.com:443` and `github.com:443` (`read-write`: every method but DELETE, so deleting a remote branch fails), `PI_WEB_GITHUB_AUTH_FILE=/data/pi-ez-agent/openshell-github-auth.json` and `PI_WEB_GITHUB_BOT=<app>`. As with the model login, a `sandbox exec` writes the sandbox's current placeholder to that file as `{"accessToken": …}` after create and wake and on every 5-minute pass. The image's git credential helper (`server/git-credential-helper.js`) reads the file on every call and gives git the placeholder as its password; `/usr/local/bin/gh` is the same script in `gh` mode, which puts it in `GH_TOKEN` and runs `/usr/bin/gh`. The gateway swaps the placeholder for the token on the way out. With `PI_WEB_GITHUB_BOT` set both use that file and nothing else: token variables are ignored, and with no file git gets no credential and gh exits 1. Without it (every other worker) the wrapper runs gh untouched.
+
+Failure is closed. If the key cannot be read, GitHub refuses, or the gateway does not store the token, then create, wake, restart and reset answer `502 github_token_unavailable` with the reason (never the key or a token) and nothing is created or started. A failing 5-minute refresh is logged and tried again on the next pass; if it keeps failing, the token expires at GitHub and git and gh get 401.
+
+Commits are authored by whoever the grant's `environment` names (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`); pushes and pull requests are the bot's.
 
 ## API
 
