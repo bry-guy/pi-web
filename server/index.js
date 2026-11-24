@@ -15,6 +15,7 @@ import { createSupervisor } from "./supervisor/index.js";
 import { publicError } from "./pi-configuration.js";
 import { writeLog } from "./logging.js";
 import { BUILD_ID } from "./version.js";
+import { installRoleRunner } from "./role-runner.js";
 
 // An OpenShell sandbox worker's Claude login: the access "token" is a marker the openshell-oauth extension swaps
 // for the gateway's placeholder, and the gateway swaps for the real token. Nothing real is stored in the sandbox.
@@ -156,6 +157,7 @@ export function createApp({ uiOnly = uiOnlyEnabled() } = {}) {
     copyModelAuth();
     if ((process.env.PI_WEB_MODE || "real") !== "mock") linkJitiCache();
     sup = createSupervisor(hub);
+    installRoleRunner();
     const realMode = (process.env.PI_WEB_MODE || "real") !== "mock";
     // Mock mode has no SDK sessions, so no extension UI to bind.
     const extensionUi = realMode ? sup.extensionUi : null;
