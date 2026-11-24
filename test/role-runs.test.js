@@ -64,7 +64,9 @@ test("a granted role runs hidden on its own worker under the role's grant, and t
   assert.deepEqual(f.workers.map(w => [w.name, w.grant]), [["p", "default"], ["p-dev", "dev"]], "never the calling worker");
   const created = f.calls.find(([m, p]) => m === "POST" && p === "/workspaces/p-dev/api/projects/pp-p-dev/sessions")[2];
   assert.deepEqual([created.agent, created.kind], ["app/dev", "run"]);
-  assert.deepEqual(f.remote.agentOf("r1"), { agent: "app/dev", kind: "run" }, "hidden like a prime's run");
+  const { started, ...flags } = f.remote.agentOf("r1");
+  assert.deepEqual(flags, { agent: "app/dev", kind: "run" }, "hidden like a prime's run");
+  assert.ok(Date.parse(started), "with a start time, as every run has");
   assert.deepEqual(f.calls.find(([, p]) => p.endsWith("/sessions/r1/model"))[2], { model: MODEL }, "the calling session's model");
   assert.deepEqual(f.calls.find(([, p]) => p.endsWith("/sessions/r1/message"))[2], { text: REQUEST.msg });
   assert.deepEqual(Object.keys(f.open()), ["r1"]);
