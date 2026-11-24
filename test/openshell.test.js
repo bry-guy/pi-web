@@ -764,7 +764,7 @@ const ROLE_GRANTS = parseGrants(JSON.stringify({
   default: { anyProject: true },
   dev: { repos: ["project:web-dev"], provider: "openshell", github: GH },
 }));
-const roleSandbox = (phase = "Ready") => sandbox("web-dev", phase, { "pi-ez-grant": "dev" });
+const roleSandbox = (phase = "Ready") => sandbox("web-dev", phase, { "pi-ez-grant": "dev", "pi-ez-github-app": "pi-web-developer" });
 // A minter that hands out the given tokens in turn, each good for an hour of the test's clock.
 function fakeMinter(clock, tokens = [GH_TOKEN_A, GH_TOKEN_B]) {
   const asked = [];
@@ -800,11 +800,22 @@ test("grants: github names one App, its repositories and permissions; open, shar
     [dev({ ...GH, repos: ["bry-guy/pi-web", "other/pi-web"] }), /must belong to one owner/],
     [dev({ ...GH, permissions: {} }), /dev\.github\.permissions must map/],
     [dev({ ...GH, permissions: { contents: "admin" } }), /dev\.github\.permissions must map/],
+    // Only what a developer role needs, and nothing that changes the URL the token is minted at.
+    [dev({ ...GH, permissions: { contents: "write", administration: "write" } }), /dev\.github\.permissions must map contents, pull_requests, issues, metadata, actions, checks, statuses, workflows to/],
+    [dev({ ...GH, repos: ["bry-guy/.."] }), /dev\.github\.repos must list owner\/name/],
+    [dev({ ...GH, repos: ["bry-guy/pi-web", "bry-guy/."] }), /dev\.github\.repos must list owner\/name/],
     [dev(GH, { providers: ["pi-web-developer-github"] }), /pi-web-developer-github is attached by workspaced/],
     [dev(GH, { environment: { GH_TOKEN: "x" } }), /dev\.environment\.GH_TOKEN is reserved with github/],
     [dev(GH, { environment: { PI_WEB_GITHUB_AUTH_FILE: "/x" } }), /PI_WEB_GITHUB_AUTH_FILE is reserved/],
     [JSON.stringify({ default: { anyProject: true }, a: { repos: ["project:a"], provider: "openshell", github: GH }, b: { repos: ["project:b"], provider: "openshell", github: { ...GH, repos: ["bry-guy/pi-sync"] } } }), /b\.github\.app pi-web-developer is already used by grant a/],
+    // The App's provider by hand, in a grant that has no github field of its own: before or after the grant that has it.
+    [dev(GH).replace('"default":{"anyProject":true}', '"default":{"anyProject":true},"agent":{"anyProject":true,"provider":"openshell","providers":["pi-web-developer-github"]}'), /agent\.providers: pi-web-developer-github is attached by workspaced through a grant's github field/],
+    [dev(GH).replace(/\}$/, ',"z":{"repos":["project:z"],"provider":"openshell","providers":["labrat-kube","Pi-Web-Developer-GitHub"]}}'), /z\.providers: Pi-Web-Developer-GitHub is attached by workspaced/],
   ]) assert.throws(() => parseGrants(text), message);
+  // A provider made by hand is still a grant's to list, whatever its name, while no grant's App owns it.
+  assert.deepEqual(parseGrants(dev(GH).replace(/\}$/, ',"labrat":{"anyProject":true,"provider":"openshell","providers":["labrat-github"]}}')).labrat.providers, ["labrat-github"]);
+  for (const permission of ["contents", "pull_requests", "issues", "metadata", "actions", "checks", "statuses", "workflows"]) parseGrants(dev({ ...GH, permissions: { [permission]: "read" } }));
+  parseGrants(dev({ ...GH, repos: ["bry-guy/.github", "bry-guy/a..b"] }));
 });
 
 test("a role worker is created with its App's token on the gateway and only a placeholder inside", async () => {
@@ -824,6 +835,7 @@ test("a role worker is created with its App's token on the gateway and only a pl
 
   const args = cli.calls.find(a => a[0] === "sandbox" && a[1] === "create");
   assert.deepEqual(args.flatMap((a, i) => a === "--provider" ? [args[i + 1]] : []), ["pi-web-developer-github"]);
+  assert.ok(args.join(" ").includes("--annotation pi-ez-github-app=pi-web-developer"), "recorded on the sandbox: what a later wake checks");
   const env = args.flatMap((a, i) => a === "--env" ? [args[i + 1]] : []);
   assert.deepEqual(env.filter(e => /GITHUB|GH_/.test(e)), ["PI_WEB_GITHUB_AUTH_FILE=/data/pi-ez-agent/openshell-github-auth.json", "PI_WEB_GITHUB_BOT=pi-web-developer"]);
   assert.deepEqual(cli.policies[0].network_policies.github.endpoints.map(e => `${e.host}:${e.port} ${e.access} ${e.enforcement}`), ["api.github.com:443 read-write enforce", "github.com:443 read-write enforce"]);
@@ -846,13 +858,17 @@ test("no token, no role worker: a failed mint or store fails create and wake bef
   assert.deepEqual(verbsOf(cli).filter(v => v !== "sandbox list"), []);
   assert.deepEqual(kube.calls, [], "no disk either");
 
-  // The gateway refusing the token is the same failure, with the token cut from the message.
+  // The gateway refusing the token is the same failure. The answer is fixed text; what the CLI said goes to the log,
+  // without the token or a piece of one.
   const refusing = async (bin, args, opts) => {
-    if (args[0] === "provider" && args[1] === "create") throw Object.assign(new Error("Command failed"), { stderr: `Error: rejected credential ${opts.env.OPENSHELL_GITHUB_PLACEHOLDER}\n` });
+    const token = opts.env.OPENSHELL_GITHUB_PLACEHOLDER;
+    if (args[0] === "provider" && args[1] === "create") throw Object.assign(new Error("Command failed"), { stderr: `Error: rejected credential ${token} (${token.slice(0, 12)}…)\n` });
     return cli.exec(bin, args, opts);
   };
   const second = roleProvider(cli, { exec: refusing });
-  await assert.rejects(second.provider.scale("web-dev", 1), e => refused(e) && /the gateway did not store its token \(openshell provider create failed: Error: rejected credential \[redacted\]\)/.test(e.message));
+  await assert.rejects(second.provider.scale("web-dev", 1), e => refused(e) && e.message === "GitHub App pi-web-developer: the gateway did not store its token (the reason is in the workspaced log)");
+  assert.deepEqual(second.logs, ["workspaced: OpenShell did not store the GitHub token for pi-web-developer: openshell provider create failed: Error: rejected credential [redacted] ([redacted]…)"]);
+  assert.ok(!second.logs.some(l => l.includes(GH_TOKEN_A.slice(0, 12))));
   assert.ok(!verbsOf(cli).includes("sandbox start"));
 
   // No keys mounted at all.
@@ -863,6 +879,32 @@ test("no token, no role worker: a failed mint or store fails create and wake bef
   await keyless.setGitHubAuth({ accessToken: "gho_FAKEwebLogin" });
   assert.equal(cli.calls.length, before);
   noTokenIn(cli, [...logs, ...second.logs]);
+});
+
+test("a sandbox whose GitHub provider no longer matches its grant is not started", async () => {
+  const mismatch = e => e.status === 409 && e.code === "github_login_mismatch";
+  // Created before its grant had `github`: no provider attached, so it would start without the role's login.
+  const cli = fakeCli([sandbox("web-dev", "Stopped", { "pi-ez-grant": "dev" })]);
+  const { provider, minter } = roleProvider(cli);
+  await assert.rejects(provider.scale("web-dev", 1), e => mismatch(e) && /ws-web-dev was created without a GitHub login and its grant now gives pi-web-developer's; remove the project and add it again/.test(e.message));
+  await assert.rejects(provider.restart("web-dev"), mismatch);
+  await assert.rejects(provider.reset("web-dev"), mismatch);
+  assert.deepEqual(verbsOf(cli).filter(v => v !== "sandbox list"), [], "nothing stopped, started or stored");
+  assert.deepEqual(minter.asked, []);
+  // Left running from before the change, it gets no token minted for it either.
+  cli.sandboxes[0].phase = "Ready";
+  await provider.refreshGitHub();
+  assert.deepEqual(minter.asked, []);
+  assert.ok(!verbsOf(cli).includes("sandbox exec"));
+  // It may still be put to sleep.
+  await provider.scale("web-dev", 0);
+  assert.equal(cli.sandboxes[0].phase, "Stopped");
+
+  // The other way round: its grant no longer has the App it was created with (here: another grant's).
+  const moved = fakeCli([sandbox("agent", "Stopped", { "pi-ez-grant": "default", "pi-ez-github-app": "pi-web-developer" })]);
+  const other = roleProvider(moved);
+  await assert.rejects(other.provider.scale("agent", 1), e => mismatch(e) && /created with the GitHub login of pi-web-developer and its grant now gives none/.test(e.message));
+  assert.ok(!verbsOf(moved).includes("sandbox start"));
 });
 
 test("waking a role worker reuses a token with more than 30 minutes left, replaces an older one without waiting, and rewrites its file", async () => {
@@ -963,6 +1005,14 @@ test("workspaced answers 502 github_token_unavailable when a role worker cannot 
       assert.equal(woke.status, 502, route);
       assert.equal((await woke.json()).error, "github_token_unavailable", route);
     }
+    assert.ok(!verbsOf(cli).includes("sandbox start"));
+    // A sandbox made before its grant had `github` is refused the same way, with its own code.
+    minter.failWith(null);
+    delete cli.sandboxes[0].annotations["pi-ez-github-app"];
+    await routed.refreshSandboxes();
+    const old = await app.request("/v1/workspaces/web-dev/wake", json({}));
+    assert.equal(old.status, 409);
+    assert.equal((await old.json()).error, "github_login_mismatch");
     assert.ok(!verbsOf(cli).includes("sandbox start"));
   } finally { lifecycle.stop(); }
 });

@@ -23,6 +23,8 @@ const NAME_LABEL = "pi-ez-workspace";
 const REPO_ANNOTATION = "pi-ez-repository";
 const GRANT_ANNOTATION = "pi-ez-grant";
 const IMAGE_ANNOTATION = "pi-ez-image";
+// The App whose provider (<app>-github) the sandbox was created with. A sandbox's providers are fixed at create.
+const GITHUB_ANNOTATION = "pi-ez-github-app";
 // Model login (docs/workspaced.md#model-login): the gateway provider MODEL_PROVIDER holds the Claude access
 // token; a sandbox sees only a placeholder in this variable, which the worker's shim sends as the bearer.
 const PLACEHOLDER_VAR = "OPENSHELL_ANTHROPIC_PLACEHOLDER";
@@ -124,6 +126,7 @@ export function createArgs({ name, repository, grant, config, policyFile, model 
     "--label", `${MANAGED_LABEL}=${MANAGED_BY}`, "--label", `${NAME_LABEL}=${name}`,
     "--annotation", `${GRANT_ANNOTATION}=${grant?.name || DEFAULT_GRANT}`, "--annotation", `${IMAGE_ANNOTATION}=${config.image}`,
     ...(repository ? ["--annotation", `${REPO_ANNOTATION}=${repository}`] : []),
+    ...(github ? ["--annotation", `${GITHUB_ANNOTATION}=${github.app}`] : []),
     ...env.flatMap(e => ["--env", `${e.name}=${e.value}`]),
     "--driver-config-json", JSON.stringify(driver),
     "--", "node", "/app/server/index.js",
@@ -171,6 +174,7 @@ function toWorkspace(s) {
     repository: s.annotations?.[REPO_ANNOTATION] || null,
     grant: s.annotations?.[GRANT_ANNOTATION] || DEFAULT_GRANT,
     image: s.annotations?.[IMAGE_ANNOTATION] || null,
+    ...(s.annotations?.[GITHUB_ANNOTATION] ? { github: s.annotations[GITHUB_ANNOTATION] } : {}),
     phase: s.phase,
     ready: s.phase === "Ready",
     state,
@@ -346,13 +350,24 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
         if (await succeeds(["provider", "get", name])) await updateProvider(name, GITHUB_VAR, token, wait).catch(e => { if (!storedUnconfirmed(e)) throw e; });
         else await createProvider(name, GITHUB_PROFILE, GITHUB_PROFILE_FILE, GITHUB_VAR, token);
       } catch (e) {
-        throw githubError(`GitHub App ${github.app}: the gateway did not store its token (${e.message})`);
+        // The CLI's text stays in the log: run() cuts the exact token from it, and anything token-shaped goes here.
+        log(`workspaced: OpenShell did not store the GitHub token for ${github.app}: ${e.message.replace(/gh[a-z]_\w+/g, "[redacted]")}`);
+        throw githubError(`GitHub App ${github.app}: the gateway did not store its token (the reason is in the workspaced log)`);
       }
       state.expiresAt = expiresAt;
       log(`workspaced: OpenShell gateway has a GitHub token for ${github.app}, valid until ${new Date(expiresAt).toISOString()}`);
       return true;
     };
     return (state.queue = state.queue.then(step, step));
+  }
+  // The role's App for a sandbox about to start. Refuses one whose grant gained, lost or changed `github` after it was
+  // created: it would start without the role's login, or keep one its grant no longer gives.
+  function githubFor(w) {
+    const github = githubOf(w.grant);
+    if ((w.github || null) !== (github?.app || null)) {
+      throw httpError(`ws-${w.name} was created ${w.github ? `with the GitHub login of ${w.github}` : "without a GitHub login"} and its grant now ${github ? `gives ${github.app}'s` : "gives none"}; remove the project and add it again`, 409, "github_login_mismatch");
+    }
+    return github;
   }
   const githubAuthArgs = name => ["sandbox", "exec", "-n", `ws-${name}`, "--no-login-shell", "--timeout", "60", "--", "sh", "-c", WRITE_GITHUB_AUTH];
   // As settle, for the file git and gh read. Until it is written they have no login and fail.
@@ -370,7 +385,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
   function refreshGitHub() {
     return refreshingGitHub ||= (async () => {
       try {
-        const running = (await list()).filter(w => w.state === "running" && githubOf(w.grant));
+        const running = (await list()).filter(w => w.state === "running" && w.github && githubOf(w.grant)?.app === w.github);
         for (const github of new Map(running.map(w => [githubOf(w.grant).app, githubOf(w.grant)])).values()) {
           await ensureGitHub(github, { wait: true }).catch(e => log(`workspaced: GitHub token refresh failed (retried in ${Math.round(reconcileMs / 60_000)} min): ${e.message}`));
         }
@@ -447,14 +462,14 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
       if (model) await within(settle(name), settleWaitMs);
       if (grant?.github) await within(settleGitHub(name), settleWaitMs);
       // What the gateway will list, until it does.
-      return toWorkspace({ phase: "Provisioning", labels: { [NAME_LABEL]: name }, annotations: { [GRANT_ANNOTATION]: grant?.name || DEFAULT_GRANT, [IMAGE_ANNOTATION]: config.image, ...(repository ? { [REPO_ANNOTATION]: repository } : {}) } });
+      return toWorkspace({ phase: "Provisioning", labels: { [NAME_LABEL]: name }, annotations: { [GRANT_ANNOTATION]: grant?.name || DEFAULT_GRANT, [IMAGE_ANNOTATION]: config.image, ...(repository ? { [REPO_ANNOTATION]: repository } : {}), ...(grant?.github ? { [GITHUB_ANNOTATION]: grant.github.app } : {}) } });
     },
     async scale(name, replicas) {
       const w = await mustFind(name);
       if (replicas === 0 && w.state !== "sleeping") await run(["sandbox", "stop", `ws-${name}`]);
       if (replicas > 0 && w.state === "sleeping") {
         // First, so a wake that cannot get the role's GitHub token fails before anything waits or starts.
-        const github = githubOf(w.grant);
+        const github = githubFor(w);
         if (github) await ensureGitHub(github);
         await feedFirst(name);
         await run(["sandbox", "start", `ws-${name}`]);
@@ -465,7 +480,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     },
     // New pod, same disk: stop, then start once it has stopped.
     async restart(name) {
-      const github = hasGitHub ? githubOf((await mustFind(name)).grant) : null;
+      const github = hasGitHub ? githubFor(await mustFind(name)) : null;
       if (github) await ensureGitHub(github);
       await run(["sandbox", "stop", `ws-${name}`]);
       await stopped(name);
@@ -476,7 +491,7 @@ export function openshellProvider({ kube, config, exec = promisify(execFile), wa
     // Wipe the disk: stop, drop and recreate the PVC, start. Stays awake, as the kubernetes provider's reset.
     async reset(name) {
       const w = await mustFind(name);
-      const github = githubOf(w.grant);
+      const github = githubFor(w);
       if (github) await ensureGitHub(github);
       await run(["sandbox", "stop", `ws-${name}`]);
       await stopped(name);

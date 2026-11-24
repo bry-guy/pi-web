@@ -57,7 +57,10 @@ function parseSandboxFields(name, g) {
 export const githubProvider = app => `${app}-github`;
 // What the sandbox's git and gh read instead of a token variable; workspaced sets the first.
 const GITHUB_ENV = ["PI_WEB_GITHUB_BOT", "PI_WEB_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"];
-const GITHUB_REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
+// Not "." or ".." as the name: in a URL path they would address another API route.
+const GITHUB_REPO = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
+// What a developer role needs. Anything else (administration, secrets, members, …) is not a grant's to ask for.
+const GITHUB_PERMISSIONS = new Set(["contents", "pull_requests", "issues", "metadata", "actions", "checks", "statuses", "workflows"]);
 
 function parseGitHub(name, g) {
   const gh = g.github;
@@ -72,8 +75,7 @@ function parseGitHub(name, g) {
   if (new Set(gh.repos.map(r => r.split("/")[0].toLowerCase())).size > 1) fail(`${name}.github.repos must belong to one owner (one installation)`);
   const permissions = gh.permissions;
   if (!permissions || typeof permissions !== "object" || Array.isArray(permissions) || !Object.keys(permissions).length
-    || !Object.entries(permissions).every(([k, v]) => /^[a-z_]+$/.test(k) && (v === "read" || v === "write"))) fail(`${name}.github.permissions must map GitHub permission names to "read" or "write"`);
-  if ((g.providers ?? []).includes(githubProvider(gh.app))) fail(`${name}.providers: ${githubProvider(gh.app)} is attached by workspaced; remove it`);
+    || !Object.entries(permissions).every(([k, v]) => GITHUB_PERMISSIONS.has(k) && (v === "read" || v === "write"))) fail(`${name}.github.permissions must map ${[...GITHUB_PERMISSIONS].join(", ")} to "read" or "write"`);
   for (const k of GITHUB_ENV) if (g.environment && k in g.environment) fail(`${name}.environment.${k} is reserved with github`);
   return { app: gh.app, repos: [...new Set(gh.repos)], permissions: { ...permissions } };
 }
@@ -134,6 +136,13 @@ export function parseGrants(text, { log = console.log } = {}) {
       const other = Object.values(grants).find(o => o.name !== name && o.github?.app === g.github.app);
       if (other) fail(`${name}.github.app ${g.github.app} is already used by grant ${other.name}`);
     }
+  }
+  // An App's provider holds its token, so the `github` field is the only way to it: listed by hand, any grant
+  // (even an anyProject one) would get the token without that field's checks.
+  const appProviders = new Set(Object.values(grants).filter(g => g.github).map(g => githubProvider(g.github.app)));
+  for (const g of Object.values(grants)) {
+    const listed = g.providers?.find(p => appProviders.has(p.toLowerCase()));
+    if (listed) fail(`${g.name}.providers: ${listed} is attached by workspaced through a grant's github field; remove it`);
   }
   if (!grants[DEFAULT_GRANT]) fail(`a "${DEFAULT_GRANT}" grant is required`);
   return grants;
