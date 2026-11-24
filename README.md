@@ -57,7 +57,7 @@ git clone https://github.com/bry-guy/pi-web.git && cd pi-web
 docker compose up --build -d
 ```
 
-Open <http://127.0.0.1:3141>. In **Settings**, sign in to a model provider, then add a project from a public Git URL and start a chat.
+Open <http://127.0.0.1:3141>. In **Settings**, sign in to a model provider, then use **Projects → Git URL** to clone a public repository and start a chat.
 
 **2. Separate workspaced.** Moves the workers to a workspaced container of their own.
 
