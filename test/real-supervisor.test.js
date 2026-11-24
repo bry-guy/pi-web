@@ -159,6 +159,14 @@ test("model-less session attachment resolves the configured default before creat
   assert.deepEqual(attached, ["session-1", "/tmp", "openai-codex/gpt-5.6-luna"]);
 });
 
+test("delete refuses a session whose prompt arrived while it was being looked up", async () => {
+  const supervisor = new RealSupervisor({});
+  supervisor.paths.set("session-1", "/tmp/pi-web-no-such-session-1.jsonl");
+  supervisor._discover = async id => { supervisor.pendingPrompts.set(id, 1); return true; };
+  await assert.rejects(supervisor.deleteSession("session-1"), { code: "session_streaming" });
+  assert.ok(supervisor.paths.has("session-1"), "nothing was removed");
+});
+
 test("overlapping prompt admission is rejected before SDK streaming begins", async () => {
   let settle;
   const supervisor = new RealSupervisor({});
