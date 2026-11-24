@@ -1745,6 +1745,29 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     } finally { globalThis.fetch = bootFetch; }
     assert.deepEqual(opened, ["POST"]);
     assert.equal(store.state.sessionId, "conv1");
+    // A closed run is not in state: it is restored, then opened.
+    store.set({ primes: [{ agent: "labrat", project: "labrat", conversation: "conv1", runs: [
+      { id: "run3", name: "labrat: closed", started: "2026-11-21T08:00:00.000Z", running: false, failed: false },
+    ] }] });
+    const restored = [];
+    globalThis.fetch = async (input, options) => {
+      if (String(input) === "/api/sessions/run3/restore") {
+        restored.push(options?.method);
+        state.projects.find(p => p.id === "p1").sessions.push({ id: "run3", title: "labrat: closed", agent: "labrat", agentKind: "run", contextId: "ctx-main", branch: "main", when: "now", streaming: false, children: [] });
+        return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return bootFetch(input, options);
+    };
+    try {
+      section().querySelector("[data-act='prime-run'][data-id='run3']").click();
+      for (let i = 0; i < 50 && store.state.sessionId !== "run3"; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    } finally {
+      globalThis.fetch = bootFetch;
+      const live = state.projects.find(p => p.id === "p1").sessions;
+      live.splice(live.findIndex(n => n.id === "run3"), 1);
+    }
+    assert.deepEqual(restored, ["POST"]);
+    assert.equal(store.state.sessionId, "run3");
     store.set({ primes: [] });
     p1.sessions.splice(-3);
   }
