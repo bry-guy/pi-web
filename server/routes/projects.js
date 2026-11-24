@@ -207,7 +207,8 @@ export function register(api, deps) {
       const reporter = createOperationReporter({ id: operationRequestId(c, body), kind: "create-session", title: "Create session" });
       reporter.log({ type: "request", phase: "request", message: `POST /api/projects/${folder.name}/sessions` });
       // A prime's run or conversation (run-door.js): the folder tells every session to keep notes.md.
-      if (body.agent && ["run", "conversation"].includes(body.kind)) ensurePrimeAgentsFile(folder.path);
+      const prime = !!body.agent && ["run", "conversation"].includes(body.kind);
+      if (prime) ensurePrimeAgentsFile(folder.path);
       const base = { projectId: folderId(folder.name), contextId: "folder", branch: null, workspacePath: folder.path, setup: null, setupNeeded: false };
       if (body.mode === "synced") {
         const opened = await openSynced(c, body.syncSessionId, folder.path, reporter);
@@ -215,7 +216,7 @@ export function register(api, deps) {
         hub.emit(opened.sessionId, "session_created", { session: { id: opened.sessionId, projectId: base.projectId, contextId: "folder", branch: null } });
         return c.json({ id: opened.sessionId, ...base, operation: reporter.finish({ httpStatus: 200, message: "Opened synchronized conversation in the project folder." }) });
       }
-      const { id: sessionId } = await sup.createSession({ cwd: folder.path, name });
+      const { id: sessionId } = await sup.createSession({ cwd: folder.path, name, prime });
       hub.emit(sessionId, "session_created", { session: { id: sessionId, projectId: base.projectId, contextId: "folder", branch: null } });
       return c.json({ id: sessionId, ...base, operation: reporter.finish({ httpStatus: 200, message: `Created session ${sessionId} in the project folder.` }) });
     }

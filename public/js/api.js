@@ -55,6 +55,7 @@ export const api = {
   fetchProject: (id, operationId = null, sessionId = null) => fetch(`/api/projects/${encodeURIComponent(id)}/fetch`, { method: "POST", headers: { ...JH, ...(operationId ? { "x-pi-operation-id": operationId } : {}) }, body: JSON.stringify({ ...(operationId ? { operationId } : {}), ...(sessionId ? { sessionId } : {}) }) }).then(j),
   newChat: () => fetch("/api/chats", { method: "POST" }).then(j),
   primeConversation: agent => fetch(`/api/primes/${encodeURIComponent(agent)}/conversation`, { method: "POST" }).then(j),
+  cancelFollowUp: (agent, id) => fetch(`/api/primes/${encodeURIComponent(agent)}/follow-ups/${encodeURIComponent(id)}`, { method: "DELETE" }).then(j),
   newProject: value => {
     const body = typeof value === "string" ? { repoPath: value } : (value || {});
     return fetch("/api/projects", { method: "POST", headers: JH, body: JSON.stringify(body) }).then(j);
