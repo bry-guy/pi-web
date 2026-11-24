@@ -27,6 +27,7 @@ export const WEB_SUBAGENT_EXTENSION = path.join(
   "extensions",
   "subagent-telemetry.js",
 );
+export const FOLLOW_UP_EXTENSION = path.join(path.dirname(WEB_SUBAGENT_EXTENSION), "follow-up.js");
 
 function isObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);

@@ -161,8 +161,8 @@ test("the main app has no /run; the door listens on its own port", async () => {
   // The front end learns the primes from /api/state: every run-door agent, no conversation or runs yet.
   const state = await (await app.request("http://pi-web.test/api/state")).json();
   assert.deepEqual(state.primes, [
-    { agent: "other", project: "elsewhere", conversation: null, runs: [] },
-    { agent: "labrat", project: "labrat", conversation: null, runs: [] },
+    { agent: "other", project: "elsewhere", conversation: null, followUps: [], runs: [] },
+    { agent: "labrat", project: "labrat", conversation: null, followUps: [], runs: [] },
   ]);
   const opened = await app.request("http://pi-web.test/api/primes/nobody/conversation", { method: "POST" });
   assert.equal(opened.status, 404);
@@ -175,6 +175,7 @@ test("the main app has no /run; the door listens on its own port", async () => {
 function primeWorkspaced(cachePath, { state = "running", log } = {}) {
   const calls = [];
   const faults = { note: 0 }; // a status the note route fails with, when set
+  const followUps = { requests: null, pending: null }; // requests null: a worker from before follow-ups (no route)
   const sessions = new Map(); // id → { name, model, closed }
   let next = 0;
   const fetchImpl = async (url, init = {}) => {
@@ -188,6 +189,12 @@ function primeWorkspaced(cachePath, { state = "running", log } = {}) {
     if (p.endsWith("/wake") || p === "/health") return json({ ok: true });
     if (p === "/events") return json({}, 503);
     if (p === "/models") return json({ models: [{ id: "anthropic/claude-haiku-5-5" }, { id: "anthropic/claude-opus-5-5" }] });
+    if (p === "/follow-ups" && followUps.requests) return json({ requests: followUps.requests });
+    if (p === "/follow-ups/ack" && followUps.requests) {
+      followUps.requests = followUps.requests.filter(r => !body.ids.includes(r.id));
+      followUps.pending = body.pending;
+      return json({ ok: true });
+    }
     if (p === "/projects/pp-labrat/sessions") { const id = `s${++next}`; sessions.set(id, { name: body.name }); return json({ id }); }
     const [, id, rest] = p.match(/^\/sessions\/([^/]+)\/(.+)$/) || [];
     const s = sessions.get(id);
@@ -202,7 +209,7 @@ function primeWorkspaced(cachePath, { state = "running", log } = {}) {
     return json({ ok: true });
   };
   const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, cachePath, retryMs: 50, modelAuthSyncMs: 0, ...(log ? { log } : {}) });
-  return { remote, calls, sessions, faults };
+  return { remote, calls, sessions, faults, followUps };
 }
 
 const label = (name, outcome) => `Automated report from this agent's scheduled run "${name}" (${outcome}, 2026-11-22 08:00 UTC). This is the run's own output, not a message from the owner, and it does not ask for a reply:`;
@@ -375,7 +382,7 @@ test("a prime's conversation opens lazily from the sidebar, and its runs are lis
   const primes = createPrimes({ entries: labrat(), remote: fake.remote, log: () => {} });
   try {
     for (const [id, s] of [["a", {}], ["b", {}], ["c", { streaming: true }], ["d", {}]]) fake.sessions.set(id, { name: `labrat: ${id}`, ...s });
-    assert.deepEqual(primes.list(), [{ agent: "labrat", project: "labrat", conversation: null, runs: [
+    assert.deepEqual(primes.list(), [{ agent: "labrat", project: "labrat", conversation: null, followUps: [], runs: [
       { id: "c", name: null, started: "2026-11-22T08:00:00.000Z", running: true, failed: false },
       { id: "b", name: null, started: "2026-11-21T08:00:00.000Z", running: false, failed: true },
       { id: "a", name: null, started: "2026-11-20T08:00:00.000Z", running: false, failed: false },
