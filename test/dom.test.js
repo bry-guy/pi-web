@@ -1236,6 +1236,22 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.ok(store.state.projectMenu, "Back from a repository returns to its project");
   assert.match(menuText(), /Plan the week/);
 
+  // Role runs fold into one collapsed row below the user's own sessions, and stay open across re-renders once opened.
+  store.set({ projectMenu: { projectId: "group:eco", synced: [
+    { sessionId: "rr1", title: "pi-web-developer: Fix the review findings", repo: null, device: "laptop", when: "1m" },
+    { sessionId: "rr2", title: "You are running as role pi-web/pi-web-developer for project eco", repo: null, device: "laptop", when: "2m" },
+    { sessionId: "mine", title: "primes-impl", repo: null, device: "laptop", when: "3m" },
+  ] } });
+  const runGroup = () => root.querySelector("pi-project-menu details[data-role-runs]");
+  assert.equal(runGroup().querySelector("summary").textContent, "Role runs 2");
+  assert.equal(runGroup().open, false);
+  assert.deepEqual([...runGroup().querySelectorAll(".history-entry-head strong")].map(node => node.textContent).sort(), ["You are running as role pi-web/pi-web-developer for project eco", "pi-web-developer: Fix the review findings"]);
+  assert.ok(!runGroup().querySelector("[data-sync-id='mine']"), "a renamed run is the user's");
+  runGroup().open = true;
+  runGroup().dispatchEvent(new dom.window.Event("toggle"));
+  store.notify("state");
+  assert.equal(runGroup().open, true);
+
   // The Sessions filter: above 8 sessions; every word must match a row's title, device or branch.
   const { sessionMatches } = await import("../public/js/project-menu.js");
   assert.ok(sessionMatches(["Fix the Bug", "laptop"], "bug LAP"));
