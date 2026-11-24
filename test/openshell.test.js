@@ -500,7 +500,7 @@ test("grants: OpenShell grants take providers, environment and packages; others 
   assert.throws(bad({ environment: { A: "1" } }), /g\.environment needs provider openshell/);
   assert.throws(bad({ packages: ["npm:x"] }), /g\.packages needs provider openshell/);
   assert.throws(bad({ provider: "openshell", environment: { OPENSHELL_X: "1" } }), /OPENSHELL_X is reserved/);
-  for (const k of ["HOME", "PI_WEB_PACKAGES", "PI_ANTHROPIC_PLACEHOLDER_FILE", "HOST", "PI_WEB_PROJECT"]) assert.throws(bad({ provider: "openshell", environment: { [k]: "1" } }), /is reserved/, k);
+  for (const k of ["HOME", "PI_WEB_PACKAGES", "PI_ANTHROPIC_PLACEHOLDER_FILE", "PI_WEB_SANDBOX", "HOST", "PI_WEB_PROJECT"]) assert.throws(bad({ provider: "openshell", environment: { [k]: "1" } }), /is reserved/, k);
   assert.throws(bad({ provider: "openshell", environment: { A: 1 } }), /string value/);
   assert.throws(bad({ provider: "openshell", providers: ["pi-web-anthropic"] }), /attached by workspaced/);
   assert.throws(bad({ provider: "openshell", providers: ["a b"] }), /gateway provider names/);
@@ -605,6 +605,7 @@ test("first start: no login yet means no model provider, unless an earlier works
   await provider.create({ name: "agent", repository: "project:agent", grant: GRANTS.sandboxed });
   const args = cli.calls.find(a => a[0] === "sandbox" && a[1] === "create");
   assert.ok(!args.includes("--provider") && !args.some(a => a.startsWith("PI_ANTHROPIC_PLACEHOLDER_FILE=")));
+  assert.ok(args.includes("PI_WEB_SANDBOX=1"), "marked as a sandbox even without a model login");
   assert.equal(cli.policies[0].network_policies.anthropic, undefined);
   assert.ok(logs.includes("workspaced: ws-agent starts without a model login (pi-web has not shared one with this workspaced yet)"));
 

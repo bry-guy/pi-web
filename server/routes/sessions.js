@@ -101,7 +101,7 @@ export function register(api, deps) {
     try { body = JSON.parse(raw); } catch { /* refused below */ }
     if (typeof body?.request !== "string" || typeof body.state !== "string") return err(c, 400, "invalid_request");
     try {
-      return await roleRunner.answer(body, (text, details) => sup.note(c.req.param("id"), text, details)) ? c.json({ ok: true }) : err(c, 404, "no_such_request");
+      return await roleRunner.answer(body, (text, details) => sup.note(c.req.param("id"), text, details), c.req.param("id")) ? c.json({ ok: true }) : err(c, 404, "no_such_request");
     } catch (e) {
       if (String(e?.message || "").startsWith("unknown session")) return err(c, 404, "no_such_session");
       throw e;
