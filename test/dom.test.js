@@ -34,7 +34,7 @@ const state = {
   chats: [],
   sync: { configured: false, serverUrl: "", allConversations: false },
   providers: [
-    { id: "anthropic", name: "Anthropic", configured: true, sourceLabel: "OAuth", availableModels: 2, authMethods: [{ id: "oauth", label: "Anthropic OAuth" }], canLogout: true },
+    { id: "anthropic", name: "Anthropic", configured: true, source: "stored", authType: "oauth", sourceLabel: "OAuth", availableModels: 2, authMethods: [{ id: "oauth", label: "Anthropic OAuth", subscription: true }, { id: "api_key", label: "Anthropic API key" }], canLogout: true },
     { id: "openai", name: "OpenAI", configured: false, availableModels: 0, authMethods: [{ id: "api_key", label: "OpenAI API key" }], canLogout: false },
   ],
   repositorySources: { default: "github", sources: [{ id: "github", enabled: true, configured: false, authenticated: false, owner: "bry-guy" }, { id: "git-url", enabled: true }] },
@@ -746,6 +746,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.set({ settingsCategory: "providers" });
   assert.match(root.querySelector("pi-settings").textContent, /Anthropic/);
   for (const button of root.querySelectorAll("pi-settings .provider-actions [data-auth-login]")) assert.equal(button.title, button.textContent, "a login button's full label survives an ellipsis");
+  const providerRows = [...root.querySelectorAll("pi-settings .provider-row")].map(row => [row.querySelector(".sr-title").textContent, row.querySelector(".provider-actions")?.textContent.trim()]);
+  assert.deepEqual(providerRows, [["Claude", "Sign out"], ["Anthropic", "Add key"], ["OpenAI", "Add key"]], "a subscription and an API key for one provider are separate rows, each with one action");
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Default model/, "only the active category renders");
   store.set({ settingsCategory: "pi" });
   assert.doesNotMatch(root.querySelector("pi-settings").textContent, /Pi profile & extensions/);
@@ -1233,6 +1235,22 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   root.querySelector("pi-project-menu [data-act='close-project-menu']").click();
   assert.ok(store.state.projectMenu, "Back from a repository returns to its project");
   assert.match(menuText(), /Plan the week/);
+
+  // Role runs fold into one collapsed row below the user's own sessions, and stay open across re-renders once opened.
+  store.set({ projectMenu: { projectId: "group:eco", synced: [
+    { sessionId: "rr1", title: "pi-web-developer: Fix the review findings", repo: null, device: "laptop", when: "1m" },
+    { sessionId: "rr2", title: "You are running as role pi-web/pi-web-developer for project eco", repo: null, device: "laptop", when: "2m" },
+    { sessionId: "mine", title: "primes-impl", repo: null, device: "laptop", when: "3m" },
+  ] } });
+  const runGroup = () => root.querySelector("pi-project-menu details[data-role-runs]");
+  assert.equal(runGroup().querySelector("summary").textContent, "Role runs 2");
+  assert.equal(runGroup().open, false);
+  assert.deepEqual([...runGroup().querySelectorAll(".history-entry-head strong")].map(node => node.textContent).sort(), ["You are running as role pi-web/pi-web-developer for project eco", "pi-web-developer: Fix the review findings"]);
+  assert.ok(!runGroup().querySelector("[data-sync-id='mine']"), "a renamed run is the user's");
+  runGroup().open = true;
+  runGroup().dispatchEvent(new dom.window.Event("toggle"));
+  store.notify("state");
+  assert.equal(runGroup().open, true);
 
   // The Sessions filter: above 8 sessions; every word must match a row's title, device or branch.
   const { sessionMatches } = await import("../public/js/project-menu.js");

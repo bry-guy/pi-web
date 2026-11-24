@@ -844,3 +844,26 @@ test("a prime report is a custom message with no model turn, shown in the transc
   assert.deepEqual((await supervisor.transcript("conv")).filter(r => r.role !== "user"), [record]);
   supervisor.live.delete("conv");
 });
+
+test("Antigravity is offered as a subscription provider", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-antigravity-"));
+  try {
+    const script = `
+      import { EventHub } from './server/events.js';
+      import { RealSupervisor } from './server/supervisor/real.js';
+      const providers = await new RealSupervisor(new EventHub()).listProviders();
+      console.log(JSON.stringify(providers.find(provider => provider.id === "antigravity") || null));
+    `;
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: path.resolve("."),
+      env: { ...process.env, PI_WEB_HOME: path.join(tmp, "web"), PI_CODING_AGENT_DIR: path.join(tmp, "pi") },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    const antigravity = JSON.parse(output.trim().split("\n").at(-1));
+    assert.equal(antigravity?.configured, false);
+    assert.deepEqual(antigravity.authMethods.map(method => [method.id, method.subscription]), [["oauth", true]]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

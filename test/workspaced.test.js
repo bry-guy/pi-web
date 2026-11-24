@@ -191,17 +191,20 @@ test("model logins go to a read-only Secret that workers link auth.json to", asy
   assert.ok(kube.calls.some(([m, p]) => m === "PUT" && p.endsWith("/pi-ez-model-auth")));
 });
 
-test("workers replace auth.json with a link to the shared model login", async () => {
-  const { linkModelAuth } = await import("../server/index.js");
+test("workers replace auth.json with a writable copy of the shared model login", async () => {
+  const { copyModelAuth } = await import("../server/index.js");
   const dir = mkdtempSync(path.join(tmpdir(), "model-auth-"));
   const target = path.join(dir, "shared.json");
   writeFileSync(target, '{"a":1}');
-  writeFileSync(path.join(dir, "auth.json"), "{}");
+  symlinkSync(target, path.join(dir, "auth.json"));
   const env = { PI_WEB_MODEL_AUTH_FILE: target, PI_CODING_AGENT_DIR: dir };
-  linkModelAuth(env);
-  linkModelAuth(env);
-  assert.equal(readlinkSync(path.join(dir, "auth.json")), target);
+  copyModelAuth(env, { watch: false });
+  assert.ok(lstatSync(path.join(dir, "auth.json")).isFile(), "an older link is replaced");
   assert.equal(readFileSync(path.join(dir, "auth.json"), "utf8"), '{"a":1}');
+  writeFileSync(target, '{"a":2}');
+  copyModelAuth(env, { watch: false });
+  assert.equal(readFileSync(path.join(dir, "auth.json"), "utf8"), '{"a":2}');
+  assert.equal(readFileSync(target, "utf8"), '{"a":2}', "the shared login is untouched");
 });
 
 test("web refreshes OAuth at 30 minutes and republishes model logins only on change", async () => {
@@ -898,13 +901,13 @@ test("a pi project's worker is named after it and serves PI_PROJECTS_DIR from it
 });
 
 test("an OpenShell sandbox worker gets a marker login file in place of the link, and the shim swaps the marker for the placeholder", async () => {
-  const { linkModelAuth, SANDBOX_MODEL_AUTH } = await import("../server/index.js");
+  const { copyModelAuth, SANDBOX_MODEL_AUTH } = await import("../server/index.js");
   const dir = mkdtempSync(path.join(tmpdir(), "sandbox-auth-"));
   const shared = path.join(dir, "shared.json");
   writeFileSync(shared, '{"real":1}');
   symlinkSync(shared, path.join(dir, "auth.json"));
   const placeholderFile = path.join(dir, "openshell-placeholder");
-  linkModelAuth({ PI_WEB_MODEL_AUTH_FILE: shared, PI_CODING_AGENT_DIR: dir, PI_ANTHROPIC_PLACEHOLDER_FILE: placeholderFile });
+  copyModelAuth({ PI_WEB_MODEL_AUTH_FILE: shared, PI_CODING_AGENT_DIR: dir, PI_ANTHROPIC_PLACEHOLDER_FILE: placeholderFile });
   assert.ok(lstatSync(path.join(dir, "auth.json")).isFile());
   assert.deepEqual(JSON.parse(readFileSync(path.join(dir, "auth.json"), "utf8")), SANDBOX_MODEL_AUTH);
   assert.equal(readFileSync(shared, "utf8"), '{"real":1}', "the link target is untouched");
