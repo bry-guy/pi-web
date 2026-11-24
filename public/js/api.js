@@ -516,6 +516,12 @@ function applyUiEvent(evt) {
   if (evt.type === "remote_sessions") {
     const prevOnline = !!store.remoteSession();
     const next = Array.isArray(evt.sessions) ? evt.sessions : [];
+    // A host that drops mid-turn never sends turn_end, so its turn would look like it runs forever.
+    const nextIds = new Set(next.map(item => item.id));
+    for (const prev of store.state.remoteSessions || []) {
+      const t = store.state.transcripts[prev.id];
+      if (t && !nextIds.has(prev.id)) t.streaming = false;
+    }
     const activeRemoteId = store.state.remoteSessionId;
     const activeNext = activeRemoteId ? next.find(item => item.id === activeRemoteId) : null;
     store.set({
