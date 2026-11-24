@@ -43,6 +43,10 @@ test("production image installs the Pi SDK and browser Markdown libraries as run
   assert.match(dockerfile, /pi-ez-web-git-credential-helper/);
   assert.match(dockerfile, /server\/git-credential-helper\.js "\$@"/);
   assert.match(dockerfile, /git config --system credential\.https:\/\/github\.com\.helper \/usr\/local\/bin\/pi-ez-web-git-credential-helper/);
+  // gh holds no login of its own: the real binary sits behind a wrapper that only acts in a role's sandbox.
+  assert.match(dockerfile, /gh_2\.97\.0_linux_amd64\.tar\.gz'; \\\n\s+echo "[0-9a-f]{64}  \$tmp\/gh\.tar\.gz" \| sha256sum -c -/);
+  assert.match(dockerfile, /install -m 0755 "\$tmp\/gh_2\.97\.0_linux_amd64\/bin\/gh" \/usr\/bin\/gh/);
+  assert.match(dockerfile, /server\/git-credential-helper\.js gh "\$@"\\n' > \/usr\/local\/bin\/gh/);
   assert.equal(pkg.dependencies["@1password/sdk"], undefined);
   assert.equal(lock.packages[""].dependencies["@1password/sdk"], undefined);
   assert.equal(lock.packages["node_modules/@1password/sdk"], undefined);

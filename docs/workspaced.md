@@ -122,6 +122,7 @@ Sleep is `sandbox stop` (the disk stays), wake is `sandbox start`, restart is bo
 The deployer adds:
 
 - The `openshell-client-tls` Secret (copied into workspaced's namespace) mounted at `$XDG_CONFIG_HOME/openshell/gateways/$OPENSHELL_GATEWAY/mtls/`, with `OPENSHELL_GATEWAY` and `XDG_CONFIG_HOME` set to match. Mount the Secret as a directory (not `subPath`), or rotations never reach the pod.
+- For each GitHub App a grant names: the Secret `<app>-github-app` (keys `app-id`, `private-key`) in workspaced's namespace, mounted read-only as a directory at `$WORKSPACED_GITHUB_APPS_DIR/<app>-github-app/` (in `deploy/k8s/workspaced/workspaced.yaml`: `pi-web-developer-github-app`, optional, so workspaced starts without it), and egress from workspaced to `api.github.com:443`.
 - RBAC for workspaced's ServiceAccount in `OPENSHELL_NAMESPACE`: get, create, delete on `persistentvolumeclaims`.
 - NetworkPolicy: egress from workspaced to the gateway's port 8080, and ingress to the gateway from workspaced (the spike's policy admits only its own namespace).
 - Gateway chart value `server.drivers.kubernetes.allowDriverConfig`, and the worker image pull secret in that namespace. (The plaintext spike also set `server.auth.allowUnauthenticatedUsers`; the mTLS gateway does not need it.)
