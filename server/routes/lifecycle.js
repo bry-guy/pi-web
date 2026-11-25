@@ -25,5 +25,18 @@ export function register(api, deps) {
     }
   });
 
+  // Deletes an ended session's file: web's retention sweep for a prime's old runs (run-door.js). Never a running one.
+  api.post("/sessions/:id/delete", async c => {
+    const id = c.req.param("id");
+    try { await sup.deleteSession(id); }
+    catch (e) {
+      if (e.code === "session_streaming") return err(c, 409, e.code);
+      if (String(e?.message || "").startsWith("unknown session")) return err(c, 404, "no_such_session");
+      throw e;
+    }
+    hub.emit(id, "session_closed", { sessionId: id });
+    return c.json({ ok: true });
+  });
+
   api.post("/sessions/:id/restore", async c => c.json({ ok: true, ...await restoreSession(sup, hub, c.req.param("id")) }));
 }

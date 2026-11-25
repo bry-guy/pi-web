@@ -10,7 +10,7 @@ import YAML from "yaml";
 import { DEFAULT_GRANT, grantError, MODEL_PROVIDER } from "./grants.js";
 import { DATA, MANAGED_BY, pvcManifest, WORKSPACE_PORT, workerEnv } from "./manifests.js";
 
-// Workers as NVIDIA OpenShell sandboxes (CLI 0.1.7), driven through the `openshell` CLI. A sandbox
+// Workers as NVIDIA OpenShell sandboxes (CLI 0.1.10), driven through the `openshell` CLI. A sandbox
 // named ws-<name> runs the worker image with the PVC ws-<name> at /data, exposes the worker port
 // through the gateway, and gets a policy built from its grant. The gateway's sandbox list (labels and
 // annotations) is the record; workspaced keeps no database. See docs/workspaced.md#openshell.
@@ -88,6 +88,8 @@ export function sandboxPolicy(grant, { model = false } = {}) {
 export function createArgs({ name, repository, grant, config, policyFile, model = false }) {
   const env = [
     ...workerEnv({ name, repository }), { name: "HOST", value: "127.0.0.1" },
+    // Every sandbox, with or without a model: the worker offers no role runner inside one (server/role-runner.js).
+    { name: "PI_WEB_SANDBOX", value: "1" },
     ...(model ? [{ name: "PI_ANTHROPIC_PLACEHOLDER_FILE", value: PLACEHOLDER_FILE }] : []),
     ...(grant?.packages?.length ? [{ name: "PI_WEB_PACKAGES", value: JSON.stringify(grant.packages) }] : []),
     ...Object.entries(grant?.environment || {}).map(([n, value]) => ({ name: n, value })),

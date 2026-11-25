@@ -102,7 +102,7 @@ test("self-hosting examples keep state persistent and secrets out of defaults", 
   assert.doesNotMatch(JSON.stringify(config), /token|secret|password|credential/i);
 
   for (const text of [readme, deployment, configuration]) {
-    assert.doesNotMatch(text.replace(/https:\/\/github\.com\/bry-guy\/(pi-ez-web|pi-sync)|ghcr\.io\/bry-guy\/pi-ez-web/g, ""), /Node(?:\.js)? 20|temporary askpass|preview deployment|bry-guy|fnox|OP_SERVICE_ACCOUNT_TOKEN/i);
+    assert.doesNotMatch(text.replace(/https:\/\/github\.com\/bry-guy\/(pi-ez-web|pi-web|pi-sync)|ghcr\.io\/bry-guy\/pi-ez-web/g, ""), /Node(?:\.js)? 20|temporary askpass|preview deployment|bry-guy|fnox|OP_SERVICE_ACCOUNT_TOKEN/i);
   }
   assert.match(readme, /docker compose up --build -d/);
   assert.match(readme, /Projects → Git URL/);

@@ -57,24 +57,28 @@ async function readCapped(stream) {
 }
 
 const fail = (status, error, message) => Object.assign(new Error(message), { status, error });
+// Same shape as the browser's own calls; only a JSON answer is needed back.
+const asJson = { json: (body, status = 200) => ({ status, body }) };
+
+/** The prime's project worker under its grant: woken, or created. */
+async function ensureWorker(remote, entry) {
+  const existing = (await remote.list()).find(w => w.repository === `project:${entry.project}`);
+  if (existing && (existing.grant || "default") !== entry.grant) throw fail(409, "grant_mismatch", `project ${entry.project} runs under another grant`);
+  // A role's worker must be a sandbox: one of that name from before its grant was one is refused, never woken.
+  if (existing && entry.provider && existing.provider !== entry.provider) throw fail(409, "provider_mismatch", `project ${entry.project} exists and is not an ${entry.provider} sandbox; remove that project first`);
+  if (existing) {
+    await remote.workspaceAction(existing.name, "wake");
+    await remote.waitReady(existing.name);
+    return existing.name;
+  }
+  const { status, body } = await remote.createProject(asJson, { project: entry.project, grant: entry.grant });
+  if (status >= 300) throw fail(502, "run_failed", `could not create the project's worker (${body.error || status})`);
+  return body.workspace;
+}
 
 export function createRunDoor({ entries, remote, publicUrl = "", log = console.log, readyTimeoutMs = 180_000, now = () => new Date() }) {
   const app = new Hono();
-  // Same shape as the browser's own calls; only a JSON answer is needed back.
-  const asJson = { json: (body, status = 200) => ({ status, body }) };
-
-  async function worker(entry) {
-    const existing = (await remote.list()).find(w => w.repository === `project:${entry.project}`);
-    if (existing && (existing.grant || "default") !== entry.grant) throw fail(409, "grant_mismatch", `project ${entry.project} runs under another grant`);
-    if (existing) {
-      await remote.workspaceAction(existing.name, "wake");
-      await remote.waitReady(existing.name);
-      return existing.name;
-    }
-    const { status, body } = await remote.createProject(asJson, { project: entry.project, grant: entry.grant });
-    if (status >= 300) throw fail(502, "run_failed", `could not create the project's worker (${body.error || status})`);
-    return body.workspace;
-  }
+  const worker = entry => ensureWorker(remote, entry);
 
   // A worker that just started may still be fetching its project folder or finishing its wake.
   async function createSession(name, entry, title) {
@@ -124,7 +128,9 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
   return app;
 }
 
-const PRIME_TURN_ENDS = new Set(["done", "errored"]);
+const PRIME_TURN_ENDS = new Set(["done", "errored", "stopped"]);
+const STOPPED = { reason: "errored", error: "stopped before it finished" };
+const RUN_RETENTION_MS = 30 * 24 * 3600_000;
 const MAX_REPORT = 120 * 1024; // UTF-8 bytes; under the worker's 256 KB /note cap even if JSON escaping doubles it
 
 /** `text` cut to MAX_REPORT UTF-8 bytes, never inside a character. */
@@ -137,7 +143,7 @@ function truncate(text) {
 }
 
 /** The last reply of a transcript's last turn, or "". */
-const finalReply = records => {
+export const finalReply = records => {
   const turn = (records || []).slice((records || []).findLastIndex(r => r.role === "user") + 1);
   return turn.findLast(r => r.role === "assistant" && r.text?.trim())?.text.trim() || "";
 };
@@ -155,6 +161,7 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
     return flag?.kind === "run" ? entries.find(e => e.agent === flag.agent) || null : null;
   };
 
+  // runId: the run reporting (the conversation goes on its worker); null when the owner opens the prime first.
   async function ensure(entry, runId) {
     const known = remote.conversationOf(entry.agent);
     if (known) {
@@ -167,9 +174,9 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
       if (meta.status !== 404) throw new Error(`conversation ${known} unavailable (${meta.body.error || meta.status})`);
     }
     // None yet, or its worker no longer knows it (a reset disk): a new one replaces it.
-    const name = await remote.owner("session", runId);
+    const name = runId ? await remote.owner("session", runId) : await ensureWorker(remote, entry);
     if (!name) throw new Error(`no worker for run ${runId}`);
-    const model = (await remote.sessionGet(runId, "/meta")).body?.model || entry.model;
+    const model = (runId && (await remote.sessionGet(runId, "/meta")).body?.model) || entry.model;
     const created = await remote.createSession(name, `pp-${entry.project}`, { name: entry.agent, agent: entry.agent, kind: "conversation" });
     if (created.status >= 300 || !created.body.id) throw new Error(`could not create the conversation (${created.body.error || created.status})`);
     if (known) remote.markAgent(known, null);
@@ -184,9 +191,41 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
   /** The conversation a run reports into (created if needed), or null for a session that is not a prime's run. */
   function conversationFor(runId) {
     const entry = entryOf(runId);
-    if (!entry) return Promise.resolve(null);
+    return entry ? conversationOf(entry, runId) : Promise.resolve(null);
+  }
+  function conversationOf(entry, runId = null) {
     if (!pending.has(entry.agent)) pending.set(entry.agent, ensure(entry, runId).finally(() => pending.delete(entry.agent)));
     return pending.get(entry.agent);
+  }
+  /** The prime's conversation for the sidebar (created, with its worker, if needed), or null for an unknown agent. */
+  function openConversation(agent) {
+    const entry = entries.find(e => e.agent === agent);
+    return entry ? conversationOf(entry) : Promise.resolve(null);
+  }
+
+  /** The sidebar's Primes section: each prime, its conversation (null until there is one) and its runs. */
+  const list = () => entries.map(e => ({ agent: e.agent, project: e.project, conversation: remote.conversationOf(e.agent), runs: remote.runsOf(e.agent) }));
+
+  // Deletes runs older than RUN_RETENTION_MS that are reported (so ended), on awake workers only: a sleeping
+  // worker is skipped until the next sweep. Conversations and agent sessions are never runs, so never deleted.
+  // reconcile() also deletes them, so a worker asleep at every sweep still loses its old runs.
+  const oldRuns = () => {
+    const cutoff = now().getTime() - RUN_RETENTION_MS;
+    return remote.runIds().filter(id => remote.agentOf(id).reported && Date.parse(remote.agentOf(id).started) < cutoff);
+  };
+  async function deleteRun(id) {
+    const res = await remote.sessionPost(id, "/delete", {});
+    // Any other 404 (a worker without the route) keeps the run's flag, or it would list as a visible session.
+    if (res.status < 300 || res.body?.error === "no_such_session") remote.markAgent(id, null);
+    else log(`pi-ez-web: old run ${id} was not deleted (${res.body?.error || res.status})`);
+  }
+  async function sweep() {
+    try {
+      const old = oldRuns();
+      if (!old.length) return;
+      const awake = new Set((await remote.list()).filter(w => (w.state ? w.state === "running" : w.ready)).map(w => w.name));
+      for (const id of old) if (awake.has(await remote.owner("session", id))) await deleteRun(id);
+    } catch (e) { log(`pi-ez-web: deleting old runs failed: ${e.message}`); }
   }
 
   // Posts the report into the conversation and DMs it. Marked reported only once the note is stored; the DM is
@@ -211,7 +250,7 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
       const sent = await remote.sessionPost(id, "/note", { text: `${label}\n\n${body}`, details: { agent: entry.agent, run: runId, outcome: reason, head } });
       if (sent.status >= 300) throw new Error(`the conversation refused it (${sent.body.error || sent.status})`);
       target = id;
-      remote.markReported(runId);
+      remote.markReported(runId, "reported", reason);
     } catch (e) { log(`pi-ez-web: ${entry.agent}'s run ${runId} was not reported: ${e.message}`); }
     if (remote.agentOf(runId)?.dmed) return;
     remote.markReported(runId, "dmed");
@@ -239,14 +278,17 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
       const records = t.body.records;
       const brief = records.findLastIndex(r => r.role === "user");
       const last = brief < 0 ? null : records.slice(brief + 1).findLast(r => ["assistant", "error", "tool"].includes(r.role));
-      if (!last) continue;
+      // A brief with nothing after it, and the turn over: the run ended (or was stopped) with no reply.
+      if (brief < 0) continue;
       log(`pi-ez-web: run ${id} ended while web was not listening; reporting it now`);
       // A turn that ends in a tool call never got its final reply: the worker stopped mid-turn.
-      const outcome = last.role === "error" ? { reason: "errored", error: last.text }
+      const outcome = !last ? { reason: "done" }
+        : last.role === "error" ? { reason: "errored", error: last.text }
         : last.role === "tool" || last.toolIds?.length ? { reason: "errored", error: "interrupted: the worker stopped before the run finished" }
         : { reason: "done" };
       await settle(id, outcome, t);
     }
+    for (const id of oldRuns()) if (await remote.owner("session", id) === workspace) await deleteRun(id);
   }
 
   function event(sessionId, type, data = {}) {
@@ -254,8 +296,8 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
     if (type === "worker_connected") return reconcile(data.workspace).catch(e => log(`pi-ez-web: checking for unreported runs failed: ${e.message}`));
     // Only a turn's final end: a failed attempt pi retries reports through the retry's own end.
     if (type !== "turn_end" || data.willRetry || !PRIME_TURN_ENDS.has(data.reason)) return;
-    return settle(sessionId, data);
+    return settle(sessionId, data.reason === "stopped" ? STOPPED : data);
   }
 
-  return { event, conversationFor };
+  return { event, conversationFor, openConversation, list, sweep };
 }
