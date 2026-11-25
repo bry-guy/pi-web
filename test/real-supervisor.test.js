@@ -597,7 +597,7 @@ test("only a prime's session gets the follow-up tools, and still has them after 
       import { RealSupervisor } from './server/supervisor/real.js';
       const tools = async (supervisor, id) => { await supervisor.commands(id); return supervisor.live.get(id).session.getAllTools().map(tool => tool.name); };
       const first = new RealSupervisor(new EventHub());
-      const prime = await first.createSession({ cwd: process.env.TEST_CWD, name: "labrat", prime: true });
+      const prime = await first.createSession({ cwd: process.env.TEST_CWD, name: "labrat", followUpDepth: 0 });
       const plain = await first.createSession({ cwd: process.env.TEST_CWD });
       const out = { prime: await tools(first, prime.id), plain: await tools(first, plain.id), records: await first.transcript(prime.id) };
       const second = new RealSupervisor(new EventHub());
