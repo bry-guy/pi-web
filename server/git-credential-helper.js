@@ -20,7 +20,8 @@ function storedToken() {
 function effectiveToken() {
   const environmentToken = process.env.PI_WEB_GITHUB_TOKEN;
   if (environmentToken) return validToken(environmentToken);
-  return storedToken();
+  // OpenShell gateway providers (e.g. a role's GitHub App) inject placeholders the supervisor resolves.
+  return storedToken() || validToken(process.env.GITHUB_TOKEN || process.env.GH_TOKEN);
 }
 
 if (process.argv[2] !== "get") process.exit(0);
