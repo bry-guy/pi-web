@@ -60,6 +60,25 @@ test("Git credentials prefer the runtime token and fall back to stored OAuth", a
   }
 });
 
+test("Git credentials fall back to a gateway-injected GITHUB_TOKEN or GH_TOKEN last", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-git-helper-"));
+  try {
+    const input = "protocol=https\nhost=github.com\n\n";
+    const gateway = await runHelper(["get"], input, isolatedEnvironment({ PI_WEB_HOME: home, GITHUB_TOKEN: "github-token", GH_TOKEN: "gh-token" }));
+    assert.match(gateway.stdout, /password=github-token/);
+    const gh = await runHelper(["get"], input, isolatedEnvironment({ PI_WEB_HOME: home, GH_TOKEN: "gh-token" }));
+    assert.match(gh.stdout, /password=gh-token/);
+
+    fs.writeFileSync(path.join(home, "github-auth.json"), JSON.stringify({ accessToken: "stored-token" }));
+    const stored = await runHelper(["get"], input, isolatedEnvironment({ PI_WEB_HOME: home, GITHUB_TOKEN: "github-token" }));
+    assert.match(stored.stdout, /password=stored-token/);
+    const runtime = await runHelper(["get"], input, isolatedEnvironment({ PI_WEB_HOME: home, PI_WEB_GITHUB_TOKEN: "environment-token", GITHUB_TOKEN: "github-token" }));
+    assert.match(runtime.stdout, /password=environment-token/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("Git credentials are exact HTTPS GitHub get-only lookups", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-git-helper-"));
   try {
