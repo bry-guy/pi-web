@@ -1,21 +1,23 @@
 // Web side of role_agent (role-runner.js is the worker side). A project session asks for a role run with an event
 // on its worker's stream. Web decides whether that project may use the role, starts a hidden run on the role's own
-// sandboxed worker, and posts the run's final reply back to the calling session.
+// sandboxed worker, and posts the run's final reply back to the calling session. A request that names an earlier
+// run (`run`) is a follow-up: its message goes to that run's session, on the same worker, as the next turn.
 //
 // The role's worker is a project worker like any other: project "<calling project>-<grant name>", under a grant
 // in workspaced's grants that names the role, is an OpenShell sandbox and lists that project in `repos`. So what a
 // project may hand to which role is decided where grants are (deploy), and workspaced checks it again.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { createRunDoor, finalReply } from "./run-door.js";
+import { createRunDoor, ensureWorker, finalReply } from "./run-door.js";
 
 const ENDS = new Set(["done", "errored", "stopped"]);
 const MAX_REPLY = 6000; // characters, as pi-projects cuts a laptop run's reply
 const GIVE_UP_MS = 24 * 3600_000;
 
 export function createRoleRuns({ remote, path = null, log = console.log, now = Date.now }) {
-  // Runs started and not yet delivered: run session id → { parent, request, role, at, result? }. Kept on disk, so a run
-  // that ends while web is down is delivered when web next connects to its worker.
+  // Runs started and not yet delivered: run session id → { parent, request, role, at, result?, turns? }. Kept on disk,
+  // so a run that ends while web is down is delivered when web next connects to its worker. `turns`: a follow-up's
+  // count of the messages the run had before it.
   let open = {};
   try { open = path ? JSON.parse(readFileSync(path, "utf8")) : {}; } catch { open = {}; }
   function save() {
@@ -45,36 +47,67 @@ export function createRoleRuns({ remote, path = null, log = console.log, now = D
     return { project: `${project}-${grant.name}`, grant: grant.name };
   }
 
-  async function start(session, { request, role, msg, name, cwd }) {
+  /**
+   * Sends `msg` to the earlier run `id` as its next message, and returns how many messages it had before. Throws
+   * the refusal. `entry` is the role's worker for the calling project (target).
+   */
+  async function followUp(entry, role, id, msg) {
+    // Both from web's own files, never from a worker: agent-sessions.json says whose run this is and on which
+    // worker web created it; workspaced says which worker is this project's for the role.
+    const flag = typeof id === "string" && id ? remote.agentOf(id) : null;
+    const worker = (await remote.list()).find(w => w.repository === `project:${entry.project}`);
+    if (flag?.kind !== "run" || flag.agent !== role || !worker || flag.worker !== worker.name) {
+      throw new Error(flag || (typeof id === "string" && await remote.owner("session", id)) ? `it is not a run of ${role} in this project` : "that run cannot be found");
+    }
+    if (open[id]) throw new Error(`${role} is still running there${open[id].result ? " (its last result has not reached its caller yet)" : ""}`);
+    // Refuses a worker that is no longer this grant's sandbox, and wakes it.
+    await ensureWorker(remote, { ...entry, provider: "openshell" });
+    const at = `/sessions/${encodeURIComponent(id)}`;
+    const t = await remote.workerGet(worker.name, `${at}/transcript`);
+    if (t.status === 404) throw new Error("that run cannot be found on its worker");
+    if (t.status !== 200 || !Array.isArray(t.body?.records)) throw new Error(`the run could not be read (${t.body?.error || t.status})`);
+    if (t.body.streaming) throw new Error(`${role} is still running there`);
+    // To the worker web created the run on, whichever worker claims the session now.
+    const sent = await remote.workerPost(worker.name, `${at}/message`, { text: msg });
+    if (sent.status >= 300) throw new Error(sent.body?.error === "session_busy" ? `${role} is still running there` : `could not send the message (${sent.body?.error || sent.status})`);
+    return t.body.records.filter(r => r.role === "user").length;
+  }
+
+  async function start(session, { request, role, msg, name, cwd, run: earlier }) {
     if (![request, role, msg].every(v => typeof v === "string" && v)) return;
     // First, so the caller knows web heard it; creating a worker can take minutes.
     await answer(session, { request, state: "accepted" });
+    const again = earlier !== undefined;
     let run = null;
     try {
       const entry = await target(session, role);
-      const model = (await remote.sessionGet(session, "/meta")).body?.model || null;
-      const brief = cwd && cwd !== "." ? `${msg}\n\n(The caller asked for ${cwd}. This run starts in the project folder of a separate worker with its own disk.)` : msg;
-      // The run door's own handler does the rest (wake or create the worker, hidden run session, model, brief).
-      // The token only lets this one call through the door's check.
-      const token = randomBytes(24).toString("hex");
-      const door = createRunDoor({ entries: [{ agent: role, ...entry, provider: "openshell", model, hash: createHash("sha256").update(token).digest() }], remote, log });
-      const res = await door.fetch(new Request("http://role-runs/run", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: brief }));
-      const out = await res.json().catch(() => ({}));
-      if (res.status !== 202 || !out.session) throw new Error(out.message || out.error || `status ${res.status}`);
+      let id = earlier, turns = 0;
+      {
+        const model = (await remote.sessionGet(session, "/meta")).body?.model || null;
+        const brief = cwd && cwd !== "." ? `${msg}\n\n(The caller asked for ${cwd}. This run starts in the project folder of a separate worker with its own disk.)` : msg;
+        // The run door's own handler does the rest (wake or create the worker, hidden run session, model, brief).
+        // The token only lets this one call through the door's check.
+        const token = randomBytes(24).toString("hex");
+        const door = createRunDoor({ entries: [{ agent: role, ...entry, provider: "openshell", model, hash: createHash("sha256").update(token).digest() }], remote, log });
+        const res = await door.fetch(new Request("http://role-runs/run", { method: "POST", headers: { authorization: `Bearer ${token}` }, body: brief }));
+        const out = await res.json().catch(() => ({}));
+        if (res.status !== 202 || !out.session) throw new Error(out.message || out.error || `status ${res.status}`);
+        id = out.session;
+      }
       if (stopped.delete(request)) {
-        remote.markReported(out.session);
-        await remote.sessionPost(out.session, "/stop", {});
+        remote.markReported(id);
+        await remote.sessionPost(id, "/stop", {});
         return;
       }
-      open[out.session] = { parent: session, request, role, at: now() };
+      open[id] = { parent: session, request, role, at: now(), ...(again ? { turns } : {}) };
       save();
       // The door titles a run by its time; a role run is known by its task.
-      if (typeof name === "string" && name.trim()) await remote.sessionPost(out.session, "/name", { name: name.trim().slice(0, 120) }).catch(() => {});
-      run = out.session;
+      if (!again && typeof name === "string" && name.trim()) await remote.sessionPost(id, "/name", { name: name.trim().slice(0, 120) }).catch(() => {});
+      run = id;
     } catch (e) {
       stopped.delete(request);
-      log(`pi-ez-web: role run ${role} for session ${session} was not started: ${e.message}`);
-      await answer(session, { request, state: "failed", message: `Can't start ${role}: ${e.message}` });
+      log(`pi-ez-web: role run ${role} for session ${session} was not ${again ? "sent a follow-up" : "started"}: ${e.message}`);
+      await answer(session, { request, state: "failed", message: `${again ? `Can't follow up on ${earlier}` : `Can't start ${role}`}: ${e.message}` });
       return;
     }
     // Outside the try: the run is live, so a lost "started" must not read as "Can't start" (a retry would run it twice).
@@ -126,6 +159,8 @@ export function createRoleRuns({ remote, path = null, log = console.log, now = D
     const t = await remote.sessionGet(run, "/transcript").catch(() => null);
     if (t?.status !== 200 || t.body.streaming || !Array.isArray(t.body.records)) return;
     const records = t.body.records;
+    // A follow-up just sent may not be in the transcript yet: what ends it then is the turn before.
+    if (records.filter(r => r.role === "user").length <= (open[run]?.turns || 0)) return;
     const brief = records.findLastIndex(r => r.role === "user");
     const last = brief < 0 ? null : records.slice(brief + 1).findLast(r => ["assistant", "error", "tool"].includes(r.role));
     if (!last) return;

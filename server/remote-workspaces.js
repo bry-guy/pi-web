@@ -146,20 +146,20 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
 
   // Agent sessions: sessionId → { agent, kind }. kind "agent": created with `agent: "<name>"` (older files hold
   // the bare name); "run": a run-door run, hidden, reporting into its prime's one "conversation".
-  // A run also holds `started` (ISO time), gets `reported: true` and its `outcome` once its report is in the
-  // conversation, and `dmed: true` once DMed.
+  // A run also holds `started` (ISO time) and the `worker` it was created on, gets `reported: true` and its
+  // `outcome` once its report is in the conversation, and `dmed: true` once DMed.
   const agentsPath = cachePath ? path.join(path.dirname(cachePath), "agent-sessions.json") : null;
   let agents = {};
   try { agents = agentsPath ? JSON.parse(readFileSync(agentsPath, "utf8")) : {}; } catch { agents = {}; }
   // Runs from before `started` was kept: their 30 days start now.
   const undated = Object.values(agents).filter(f => f?.kind === "run" && !f.started);
   for (const f of undated) f.started = new Date().toISOString();
-  function markAgent(id, name, kind = "agent") {
+  function markAgent(id, name, kind = "agent", worker = null) {
     if (typeof id !== "string" || !id) return;
     if (name === null) delete agents[id];
     else if (typeof name !== "string" || !name.trim()) return;
     // kind "agent" stays the bare name older builds read; only runs and conversations are objects.
-    else agents[id] = kind === "run" ? { agent: name.trim().slice(0, 100), kind, started: new Date().toISOString() }
+    else agents[id] = kind === "run" ? { agent: name.trim().slice(0, 100), kind, started: new Date().toISOString(), ...(worker ? { worker } : {}) }
       : kind === "conversation" ? { agent: name.trim().slice(0, 100), kind } : name.trim().slice(0, 100);
     saveAgents();
   }
@@ -663,7 +663,12 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   async function sessionPost(id, rest, body) {
     const name = await owner("session", id);
     if (!name) return { status: 404, body: { error: "no_such_session" } };
-    const res = await call(workerPath(name, `/sessions/${encodeURIComponent(id)}${rest}`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+    return workerPost(name, `/sessions/${encodeURIComponent(id)}${rest}`, body);
+  }
+
+  // POST to a named worker, whichever worker says a session is its own.
+  async function workerPost(name, rest, body) {
+    const res = await call(workerPath(name, rest), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
     if (res.ok) subscribe(name);
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
@@ -683,13 +688,13 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   async function createSession(name, projectId, body) {
     const res = await call(workerPath(name, `/projects/${encodeURIComponent(projectId)}/sessions`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const out = await res.json().catch(() => ({}));
-    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent, body.kind); subscribe(name); }
+    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent, body.kind, name); subscribe(name); }
     return { status: res.status, body: out };
   }
 
   return {
     list, waitReady, createSession,
-    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, runIds, unreportedRuns, runsOf, conversationOf, workerGet,
+    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, runIds, unreportedRuns, runsOf, conversationOf, workerGet, workerPost,
     projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };
