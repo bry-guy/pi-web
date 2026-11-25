@@ -34,6 +34,19 @@ test("a run asks web with an event on the calling session and returns web's fina
   assert.deepEqual(kept, [], "a waiting call takes the result; nothing is written into the session");
 });
 
+test("a follow-up asks web with the earlier run's id; a new run names none", async () => {
+  const { runner, events } = setup();
+  assert.equal(runner.followUps, true, "pi-projects asks before it passes followUp");
+  const result = ask(runner, { msg: "now also fix X", followUp: "r1" });
+  assert.deepEqual([events[0].type, events[0].run, events[0].msg, events[0].sessionId], ["role_run_request", "r1", "now also fix X", "s1"]);
+  await runner.answer({ request: events[0].request, state: "failed", message: "Can't follow up on r1: app/dev is still running there" }, null, "s1");
+  await assert.rejects(result, /Can't follow up on r1: app\/dev is still running there/);
+  const fresh = ask(runner);
+  assert.equal("run" in events[1], false);
+  await runner.answer({ request: events[1].request, state: "failed" }, null, "s1");
+  await assert.rejects(fresh);
+});
+
 test("no answer from web is an error, and so is web's refusal", async () => {
   const silent = setup({ ackMs: 20 });
   await assert.rejects(ask(silent.runner), /pi-web did not answer, so app\/dev was not started/);
