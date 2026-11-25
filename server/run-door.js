@@ -64,7 +64,7 @@ const fail = (status, error, message) => Object.assign(new Error(message), { sta
 const asJson = { json: (body, status = 200) => ({ status, body }) };
 
 /** The prime's project worker under its grant: woken, or created. */
-async function ensureWorker(remote, entry) {
+export async function ensureWorker(remote, entry) {
   const existing = (await remote.list()).find(w => w.repository === `project:${entry.project}`);
   if (existing && (existing.grant || "default") !== entry.grant) throw fail(409, "grant_mismatch", `project ${entry.project} runs under another grant`);
   // A role's worker must be a sandbox: one of that name from before its grant was one is refused, never woken.
