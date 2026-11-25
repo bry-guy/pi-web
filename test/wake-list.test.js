@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createWakeList } from "../server/wake-list.js";
@@ -8,17 +8,17 @@ import { createWakeList } from "../server/wake-list.js";
 const T0 = Date.parse("2026-11-24T12:00:00Z");
 const MIN = 60_000;
 const iso = ms => new Date(ms).toISOString();
-const record = (id, over = {}) => ({ id, agent: "labrat", due: iso(T0 + 20 * MIN), note: `note ${id}`, from: "conv1", ...over });
+const record = (id, over = {}) => ({ id, agent: "labrat", due: iso(T0 + 20 * MIN), note: `note ${id}`, from: "conv1", depth: 1, ...over });
 
 function setup(t, { file = path.join(mkdtempSync(path.join(tmpdir(), "wake-")), "wake-list.json"), start = null } = {}) {
-  const clock = { t: T0 }, started = [], logs = [];
-  const wake = createWakeList({ path: file, now: () => clock.t, log: l => logs.push(l), start: start || (async r => { started.push(r); }) });
+  const clock = { t: T0 }, started = [], logs = [], told = [];
+  const wake = createWakeList({ path: file, now: () => clock.t, log: l => logs.push(l), start: start || (async r => { started.push(r); }), started: r => { told.push(r.id); } });
   t.after(() => wake.stop());
-  return { wake, clock, started, logs, file, saved: () => JSON.parse(readFileSync(file, "utf8")) };
+  return { wake, clock, started, logs, told, file, saved: () => JSON.parse(readFileSync(file, "utf8")) };
 }
 
 test("a wake-up starts its run once it is due, and goes only after the start succeeded", async t => {
-  const { wake, clock, started, saved } = setup(t);
+  const { wake, clock, started, told, saved } = setup(t);
   assert.equal(wake.add(record("f1")), "added");
   assert.deepEqual(saved(), [record("f1")]);
   clock.t = T0 + 19 * MIN;
@@ -30,6 +30,7 @@ test("a wake-up starts its run once it is due, and goes only after the start suc
   assert.deepEqual(started, [record("f1")], "started once");
   assert.deepEqual(wake.pending("labrat"), []);
   assert.deepEqual(saved(), []);
+  assert.deepEqual(told, ["f1"], "and whoever asked is told once it runs");
 });
 
 test("a pending wake-up survives a restart and still fires", async t => {
@@ -47,7 +48,7 @@ test("a pending wake-up survives a restart and still fires", async t => {
 test("a start that fails keeps the wake-up and is retried later; one that never can, or fails for a day, is dropped", async t => {
   let fault = new Error("worker unavailable");
   const attempts = [];
-  const { wake, clock, logs, saved } = setup(t, { start: async r => { attempts.push(r.id); if (fault) throw fault; } });
+  const { wake, clock, logs, told, saved } = setup(t, { start: async r => { attempts.push(r.id); if (fault) throw fault; } });
   wake.add(record("f1"));
   wake.add(record("f2", { agent: "gone" }));
   clock.t = T0 + 20 * MIN;
@@ -70,6 +71,7 @@ test("a start that fails keeps the wake-up and is retried later; one that never 
   await wake.tick();
   assert.deepEqual(saved(), [], "given up after a day of failing");
   assert.match(logs.at(-1), /follow-up f3 is dropped: still down/);
+  assert.deepEqual(told, [], "a run that never started is not reported as started");
 });
 
 test("a wake-up whose run is starting is not started twice and cannot be cancelled", async t => {
@@ -80,7 +82,7 @@ test("a wake-up whose run is starting is not started twice and cannot be cancell
   clock.t = T0 + 20 * MIN;
   const first = wake.tick();
   await wake.tick();
-  assert.equal(wake.cancel("labrat", "f1"), false);
+  assert.equal(wake.cancel("labrat", "f1"), "missing");
   release();
   await first;
   assert.deepEqual(attempts, ["f1"]);
@@ -101,7 +103,7 @@ test("a request that comes again after its run started is not scheduled a second
   clock.t = T0 + 20 * MIN;
   await wake.tick();
   assert.equal(wake.add(record("f1")), "duplicate");
-  assert.equal(wake.cancel("labrat", "f1"), false);
+  assert.equal(wake.cancel("labrat", "f1"), "missing");
   clock.t = T0 + 60 * MIN;
   await wake.tick();
   assert.equal(started.length, 1);
@@ -113,7 +115,7 @@ test("a prime holds at most 5 pending wake-ups, counted per prime", t => {
   assert.equal(wake.add(record("f6")), "full");
   assert.equal(wake.add(record("o1", { agent: "other" })), "added");
   assert.deepEqual(wake.pending("labrat").map(r => r.id), ["f5", "f4", "f3", "f2", "f1"], "soonest first");
-  assert.equal(wake.cancel("labrat", "f3"), true);
+  assert.equal(wake.cancel("labrat", "f3"), "cancelled");
   assert.equal(wake.add(record("f6")), "added");
 });
 
@@ -121,10 +123,10 @@ test("cancel reaches only the named prime's own wake-ups", t => {
   const { wake, saved } = setup(t);
   wake.add(record("f1"));
   wake.add(record("o1", { agent: "other" }));
-  assert.equal(wake.cancel("labrat", "o1"), false);
-  assert.equal(wake.cancel("labrat", "nope"), false);
+  assert.equal(wake.cancel("labrat", "o1"), "missing");
+  assert.equal(wake.cancel("labrat", "nope"), "missing");
   assert.deepEqual(saved().map(r => r.id), ["f1", "o1"]);
-  assert.equal(wake.cancel("labrat", "f1"), true);
+  assert.equal(wake.cancel("labrat", "f1"), "cancelled");
   assert.deepEqual(saved().map(r => r.id), ["o1"]);
 });
 
@@ -138,6 +140,41 @@ test("limits are checked again: never sooner than 10 minutes, never past 30 days
   assert.equal(wake.add(record("when", { due: "tomorrow" })), "invalid");
   assert.equal(wake.add({ id: "bare" }), "invalid");
   assert.deepEqual(wake.pending("labrat").map(r => r.id), ["soon"]);
+});
+
+test("a wake-up carries its place in a row of follow-up runs: 1 unless said, never past 3", t => {
+  const { wake } = setup(t);
+  assert.equal(wake.add({ ...record("first"), depth: undefined }), "added");
+  assert.equal(wake.add(record("third", { depth: 3 })), "added");
+  assert.equal(wake.add(record("fourth", { depth: 4 })), "chain");
+  assert.deepEqual(wake.pending("labrat").map(r => [r.id, r.depth]), [["first", 1], ["third", 3]]);
+});
+
+test("a wake-up list that cannot be read is logged and kept aside, not overwritten", t => {
+  const dir = mkdtempSync(path.join(tmpdir(), "wake-"));
+  const file = path.join(dir, "wake-list.json");
+  writeFileSync(file, '[{"id":"f1","agent":"labrat"');
+  const { wake, logs, saved } = setup(t, { file });
+  assert.match(logs[0], /wake-list\.json could not be read \(.*\); its follow-ups are dropped and the file is kept as .*wake-list\.json\.corrupt-\d+$/);
+  assert.equal(wake.add(record("f2")), "added");
+  assert.deepEqual(saved(), [record("f2")]);
+  const aside = readdirSync(dir).filter(f => f.startsWith("wake-list.json.corrupt-"));
+  assert.equal(aside.length, 1);
+  assert.equal(readFileSync(path.join(dir, aside[0]), "utf8"), '[{"id":"f1","agent":"labrat"');
+  assert.deepEqual(setup(t).logs, [], "no file yet is not a corrupt file");
+});
+
+test("a cancel that could not be saved answers so, and the wake-up stays", t => {
+  const { wake, logs, file } = setup(t);
+  wake.add(record("f1"));
+  // A folder where the temporary file goes: every write fails, whoever runs the test.
+  mkdirSync(`${file}.tmp`);
+  assert.equal(wake.cancel("labrat", "f1"), "unsaved");
+  assert.deepEqual(wake.pending("labrat").map(r => r.id), ["f1"]);
+  assert.match(logs.at(-1), /could not save wake-list\.json/);
+  rmdirSync(`${file}.tmp`);
+  assert.equal(wake.cancel("labrat", "f1"), "cancelled");
+  assert.deepEqual(wake.pending("labrat"), []);
 });
 
 test("a wake-up that could not be written is not taken", t => {
