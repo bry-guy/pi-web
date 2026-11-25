@@ -43,25 +43,57 @@ test("the follow-up tool's limits: one time, with a zone, 10 minutes to 30 days 
 test("the worker's list is web's last acknowledgement plus what web has not taken; cancels follow the same road", () => {
   fresh();
   const a = ask({ in_minutes: 30 }), b = ask({ in_minutes: 20 });
-  assert.deepEqual(listFollowUps(NOW).map(f => [f.id, f.scheduled]), [[b.id, false], [a.id, false]], "soonest first");
+  assert.deepEqual(listFollowUps().map(f => [f.id, f.scheduled]), [[b.id, false], [a.id, false]], "soonest first");
 
   // Web takes both; a request made while it did stays for the next pull.
   const c = ask({ in_minutes: 40 });
   const scheduled = [b, a].map(({ id, due, note }) => ({ id, due, note }));
   acknowledgeFollowUps([a.id, b.id], scheduled);
   assert.deepEqual(followUpRequests().map(r => r.id), [c.id]);
-  assert.deepEqual(listFollowUps(NOW).map(f => [f.id, f.scheduled]), [[b.id, true], [a.id, true], [c.id, false]]);
-  assert.deepEqual(listFollowUps(NOW + 25 * MIN).map(f => f.id), [a.id, c.id], "one whose time has come is no longer pending");
+  assert.deepEqual(listFollowUps().map(f => [f.id, f.scheduled]), [[b.id, true], [a.id, true], [c.id, false]]);
 
   // One web never took is dropped here; one on web's list becomes a cancel request, and is hidden meanwhile.
-  requestCancel({ session: "run1", id: c.id }, NOW);
+  requestCancel({ session: "run1", id: c.id });
   assert.deepEqual(followUpRequests(), []);
-  requestCancel({ session: "run1", id: a.id }, NOW);
+  requestCancel({ session: "run1", id: a.id });
   assert.deepEqual(followUpRequests().map(r => [r.session, r.cancel]), [["run1", a.id]]);
-  assert.deepEqual(listFollowUps(NOW).map(f => f.id), [b.id]);
-  assert.throws(() => requestCancel({ session: "run1", id: a.id }, NOW), /No pending follow-up has the id/);
-  assert.throws(() => requestCancel({ session: "run1", id: "nope" }, NOW), /No pending follow-up has the id nope/);
+  assert.deepEqual(listFollowUps().map(f => f.id), [b.id]);
+  assert.throws(() => requestCancel({ session: "run1", id: a.id }), /No pending follow-up has the id/);
+  assert.throws(() => requestCancel({ session: "run1", id: "nope" }), /No pending follow-up has the id nope/);
   assert.equal(JSON.parse(readFileSync(path.join(process.env.PI_WEB_HOME, "follow-ups.json"), "utf8")).pending.length, 2);
+});
+
+test("the worker counts what web still holds: one whose time has come stays pending until web says its run started", () => {
+  fresh();
+  // Web's list: five, the first already due (web is still starting its run, or retrying).
+  const held = [-5, 20, 30, 40, 50].map((m, i) => ({ id: `w${i}`, due: iso(NOW + m * MIN), note: `note ${i}` }));
+  acknowledgeFollowUps([], held);
+  assert.deepEqual(listFollowUps().map(f => f.id), ["w0", "w1", "w2", "w3", "w4"]);
+  assert.throws(() => ask({ in_minutes: 60 }), /5 follow-ups are already pending/, "a sixth here would be refused by web after the tool said yes");
+  // Web's next acknowledgement, after the run started, no longer has it.
+  acknowledgeFollowUps([], held.slice(1));
+  assert.equal(ask({ in_minutes: 60 }).note, "Check the deploy.");
+});
+
+test("a request web refused stays listed with the reason until the prime cancels it, and does not count as pending", () => {
+  fresh();
+  const a = ask({ in_minutes: 30 }), c = ask({ in_minutes: 40, note: "Second." });
+  acknowledgeFollowUps([a.id, c.id, "unknown"], [], [{ id: c.id, reason: "pi-web already holds 5 pending follow-ups for this agent" }, { id: "unknown", reason: "never asked here" }]);
+  assert.deepEqual(followUpRequests(), [], "refused is taken too: web does not see it again");
+  assert.deepEqual(listFollowUps(), [{ id: c.id, due: c.due, note: "Second.", refused: "pi-web already holds 5 pending follow-ups for this agent" }]);
+  for (let i = 0; i < 5; i++) ask({ in_minutes: 60 + i });
+  assert.throws(() => ask({ in_minutes: 90 }), /5 follow-ups are already pending/);
+  // Cancelling it only clears the line: web holds nothing by that id.
+  requestCancel({ session: "conv", id: c.id });
+  assert.equal(followUpRequests().length, 5);
+  assert.equal(listFollowUps().some(f => f.refused), false);
+});
+
+test("a follow-up run may set the next one, the third in a row may not", () => {
+  fresh();
+  assert.equal(ask({ in_minutes: 30, depth: 2 }).session, "conv");
+  assert.throws(() => ask({ in_minutes: 30, depth: 3 }), /This run is follow-up number 3 in a row, each set by the run before it, and 3 in a row is the limit, so it cannot set another\./);
+  assert.equal(followUpRequests().length, 1);
 });
 
 test("the extension registers the three tools, which write requests for the calling session and call nobody", async () => {
@@ -69,7 +101,8 @@ test("the extension registers the three tools, which write requests for the call
   const tools = {};
   followUpExtension({ registerTool: t => { tools[t.name] = t; } });
   assert.deepEqual(Object.keys(tools), ["follow_up", "list_follow_ups", "cancel_follow_up"]);
-  const ctx = { sessionManager: { getSessionId: () => "run7" } };
+  let depth = 0;
+  const ctx = { sessionManager: { getSessionId: () => "run7", getEntries: () => [{ type: "custom", customType: "pi-web:prime-session", data: { depth } }] } };
   const call = (name, params) => tools[name].execute("call", params, undefined, undefined, ctx).then(r => r.content[0].text);
 
   assert.equal(await call("list_follow_ups", {}), "No follow-ups are pending.");
@@ -82,4 +115,21 @@ test("the extension registers the three tools, which write requests for the call
   await assert.rejects(call("cancel_follow_up", { id: "nope" }), /No pending follow-up/);
   assert.match(await call("cancel_follow_up", { id: ` ${request.id} ` }), /is cancelled/);
   assert.deepEqual(followUpRequests(), []);
+
+  // Whose request it is, and how deep in a chain, come from the session: a tool call cannot say otherwise.
+  await call("follow_up", { in_minutes: 45, note: "Mine.", session: "someone-else", depth: 0, id: "chosen" });
+  const [mine] = followUpRequests();
+  assert.equal(mine.session, "run7");
+  assert.notEqual(mine.id, "chosen");
+  depth = 3;
+  await assert.rejects(call("follow_up", { in_minutes: 45, note: "A fourth.", depth: 0 }), /3 in a row is the limit/);
+
+  // What web refused, and one whose run web is starting, read as such.
+  acknowledgeFollowUps([mine.id], [{ id: "w1", due: "2020-01-01T00:00:00.000Z", note: "Old." }], [{ id: mine.id, reason: "its time or its note is outside pi-web's limits" }]);
+  assert.equal(await call("list_follow_ups", {}), [
+    "w1 · due 2020-01-01T00:00:00.000Z · pi-web is starting its run · Old.",
+    `${mine.id} · due ${mine.due} · REFUSED by pi-web (its time or its note is outside pi-web's limits): it will not run, and cancel_follow_up clears this line · Mine.`,
+  ].join("\n"));
+  assert.match(await call("cancel_follow_up", { id: mine.id }), /is cancelled/);
+  assert.equal(await call("list_follow_ups", {}), "w1 · due 2020-01-01T00:00:00.000Z · pi-web is starting its run · Old.");
 });
