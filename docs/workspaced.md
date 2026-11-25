@@ -68,7 +68,7 @@ How Secrets get filled (kubectl, External Secrets, a CI job) is your choice. Wor
 
 ## OpenShell sandboxes
 
-A grant with `"provider": "openshell"` creates its workers as [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) sandboxes (0.1.7) instead of Deployments, next to whatever `WORKSPACED_PROVIDER` runs. It is off unless `OPENSHELL_GATEWAY_ENDPOINT` is set; without it, creating a worker with such a grant fails with `501 provider_unconfigured`, and nothing else changes. workspaced drives the gateway with the `openshell` CLI (in the image) and keeps no record of its own: the gateway's sandbox list is the record.
+A grant with `"provider": "openshell"` creates its workers as [OpenShell](https://github.com/ai-openshell/openshell) sandboxes (CLI 0.1.10) instead of Deployments, next to whatever `WORKSPACED_PROVIDER` runs. It is off unless `OPENSHELL_GATEWAY_ENDPOINT` is set; without it, creating a worker with such a grant fails with `501 provider_unconfigured`, and nothing else changes. workspaced drives the gateway with the `openshell` CLI (in the image) and keeps no record of its own: the gateway's sandbox list is the record.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
