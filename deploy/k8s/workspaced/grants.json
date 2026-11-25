@@ -53,7 +53,28 @@
       "GIT_COMMITTER_NAME": "bry-guy-pi-web-developer[bot]",
       "GIT_COMMITTER_EMAIL": "353922029+bry-guy-pi-web-developer[bot]@users.noreply.github.com"
     },
-    "egress": [],
-    "description": "Role pi-web/pi-web-developer for role_agent calls from the pi-web-ecosystem project: an OpenShell sandbox with Claude through the gateway, GitHub as the role's bot through gateway provider pi-web-developer-github (which must exist first: clone, push and the API for the pi-* repos), and the npm registry. No other network, no secrets, no cluster access."
+    "egress": [
+      {
+        "host": "proxy.golang.org",
+        "port": 443
+      },
+      {
+        "host": "sum.golang.org",
+        "port": 443
+      },
+      {
+        "host": "go.dev",
+        "port": 443
+      },
+      {
+        "host": "dl.google.com",
+        "port": 443
+      },
+      {
+        "host": "storage.googleapis.com",
+        "port": 443
+      }
+    ],
+    "description": "Role pi-web/pi-web-developer for role_agent calls from the pi-web-ecosystem project: an OpenShell sandbox with Claude through the gateway, GitHub as the role's bot through gateway provider pi-web-developer-github (which must exist first: clone, push and the API for the pi-* repos), the npm registry, and the Go toolchain and module hosts. No other network, no secrets, no cluster access."
   }
 }

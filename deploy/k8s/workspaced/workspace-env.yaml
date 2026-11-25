@@ -20,7 +20,7 @@ data:
   # The public key that signs pi-projects' role grants (the laptop's ~/.local/state/pi-roles/allowed_signers,
   # without the leading "pi-roles "). It lives here, not in dotfiles, so a dotfiles change cannot grant a role.
   # Empty: role_agent refuses in every worker. workspaced's grants.json decides again which role a project gets.
-  PI_ROLES_SIGNER: ""
+  PI_ROLES_SIGNER: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIITo6tgiI+HgDMRhhcnfeWbC5KrOr1HtKPaqmuceX8dO brainbook.local"
   PI_WEB_PRESTART_COMMAND: |
     set -eu
     : "${DOTFILES_REPOSITORY:?DOTFILES_REPOSITORY is required}"
