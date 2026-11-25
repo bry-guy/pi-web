@@ -100,7 +100,7 @@ export function register(api, deps) {
   api.post("/follow-ups/ack", async c => {
     const body = await c.req.json().catch(() => null);
     if (!Array.isArray(body?.ids) || !Array.isArray(body.pending)) return err(c, 400, "invalid_request");
-    acknowledgeFollowUps(body.ids, body.pending);
+    acknowledgeFollowUps(body.ids, body.pending, Array.isArray(body.refused) ? body.refused : []);
     return c.json({ ok: true });
   });
 
