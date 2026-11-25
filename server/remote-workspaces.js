@@ -148,19 +148,20 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   // Agent sessions: sessionId → { agent, kind }. kind "agent": created with `agent: "<name>"` (older files hold
   // the bare name); "run": a run-door run, hidden, reporting into its prime's one "conversation".
   // A run also holds `started` (ISO time), gets `reported: true` and its `outcome` once its report is in the
-  // conversation, and `dmed: true` once DMed. A run a follow-up started holds its note as `followUp`.
+  // conversation, and `dmed: true` once DMed. A run a follow-up started holds its note as `followUp` and its
+  // place in a row of follow-up runs as `depth` (1 for the first).
   const agentsPath = cachePath ? path.join(path.dirname(cachePath), "agent-sessions.json") : null;
   let agents = {};
   try { agents = agentsPath ? JSON.parse(readFileSync(agentsPath, "utf8")) : {}; } catch { agents = {}; }
   // Runs from before `started` was kept: their 30 days start now.
   const undated = Object.values(agents).filter(f => f?.kind === "run" && !f.started);
   for (const f of undated) f.started = new Date().toISOString();
-  function markAgent(id, name, kind = "agent", followUp = null) {
+  function markAgent(id, name, kind = "agent", followUp = null, depth = 0) {
     if (typeof id !== "string" || !id) return;
     if (name === null) delete agents[id];
     else if (typeof name !== "string" || !name.trim()) return;
     // kind "agent" stays the bare name older builds read; only runs and conversations are objects.
-    else agents[id] = kind === "run" ? { agent: name.trim().slice(0, 100), kind, started: new Date().toISOString(), ...(typeof followUp === "string" ? { followUp } : {}) }
+    else agents[id] = kind === "run" ? { agent: name.trim().slice(0, 100), kind, started: new Date().toISOString(), ...(typeof followUp === "string" ? { followUp } : {}), ...(Number.isInteger(depth) && depth > 0 ? { depth } : {}) }
       : kind === "conversation" ? { agent: name.trim().slice(0, 100), kind } : name.trim().slice(0, 100);
     saveAgents();
   }
@@ -689,7 +690,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   async function createSession(name, projectId, body) {
     const res = await call(workerPath(name, `/projects/${encodeURIComponent(projectId)}/sessions`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const out = await res.json().catch(() => ({}));
-    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent, body.kind, body.followUp); subscribe(name); }
+    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent, body.kind, body.followUp, body.followUpDepth); subscribe(name); }
     return { status: res.status, body: out };
   }
 
@@ -712,6 +713,10 @@ export function registerRemoteRoutes(api, remote) {
   api.post("/sessions/:id/role-run", c => c.json({ error: "forbidden" }, 403));
   // Only web's retention sweep deletes a worker's session (run-door.js calls the worker directly).
   api.post("/sessions/:id/delete", c => c.json({ error: "forbidden" }, 403));
+  // Only web reads and acknowledges a worker's follow-up requests (run-door.js, through workspaced). No forwarded
+  // path reaches a worker's copy of these routes; without these, web's own in-process copy would answer a browser.
+  api.get("/follow-ups", c => c.json({ error: "forbidden" }, 403));
+  api.post("/follow-ups/ack", c => c.json({ error: "forbidden" }, 403));
   for (const [kind, pattern] of [["project", "/projects/:id/*"], ["session", "/sessions/:id/*"]]) {
     api.use(pattern, async c => {
       const name = await remote.owner(kind, c.req.param("id"));
@@ -769,7 +774,11 @@ export function registerRemoteRoutes(api, remote) {
     } catch (e) { return c.json({ error: "prime_unavailable", message: e.message }, 502); }
   });
   // The owner cancels one of a prime's pending follow-ups (the Activity list).
-  api.delete("/primes/:agent/follow-ups/:id", async c => (await remote.cancelFollowUp?.(c.req.param("agent"), c.req.param("id"))) ? c.json({ ok: true }) : c.json({ error: "no_such_follow_up" }, 404));
+  api.delete("/primes/:agent/follow-ups/:id", async c => {
+    const result = await remote.cancelFollowUp?.(c.req.param("agent"), c.req.param("id"));
+    if (result === "cancelled") return c.json({ ok: true });
+    return result === "unsaved" ? c.json({ error: "not_saved", message: "pi-web could not save its wake-up list, so the follow-up is still pending" }, 500) : c.json({ error: "no_such_follow_up" }, 404);
+  });
   api.post("/projects", async c => {
     const body = await c.req.json().catch(() => ({}));
     if (body.project && !body.source) return remote.createProject(c, body);

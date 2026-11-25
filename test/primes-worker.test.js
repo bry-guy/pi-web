@@ -32,12 +32,38 @@ test("a prime's AGENTS.md is written once and never overwritten", () => {
   assert.equal(fs.readFileSync(file, "utf8"), "the owner's own instructions\n");
 });
 
+test("a session gets the follow-up mark only when web says it collects its requests", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "prime-projects-"));
+  fs.mkdirSync(path.join(root, "eco"));
+  fs.writeFileSync(path.join(root, "eco", "project.json"), JSON.stringify({ id: "p1", name: "eco" }));
+  const before = process.env.PI_PROJECTS_DIR;
+  process.env.PI_PROJECTS_DIR = root;
+  const real = supervisor.createSession, asked = [];
+  supervisor.createSession = function (options) { asked.push(options.followUpDepth); return real.call(this, options); };
+  try {
+    const create = body => post("/api/projects/pp-eco/sessions", body).then(r => r.status);
+    // A prime's run of a web that collects; a follow-up run two deep; a role run (web sends no depth); a browser's own session.
+    assert.deepEqual([
+      await create({ agent: "labrat", kind: "run", followUpDepth: 0 }),
+      await create({ agent: "labrat", kind: "run", followUpDepth: 2 }),
+      await create({ agent: "app/dev", kind: "run" }),
+      await create({ followUpDepth: 0 }),
+      await create({ agent: "labrat", kind: "run", followUpDepth: "0" }),
+    ], [200, 200, 200, 200, 200]);
+    assert.deepEqual(asked, [0, 2, null, null, null]);
+  } finally {
+    supervisor.createSession = real;
+    if (before === undefined) delete process.env.PI_PROJECTS_DIR; else process.env.PI_PROJECTS_DIR = before;
+  }
+});
+
 test("a worker hands web its follow-up requests and keeps web's list from the acknowledgement", async () => {
   const made = requestFollowUp({ session: "conv", in_minutes: 30, note: "Check again." });
   assert.deepEqual(await (await get("/api/follow-ups")).json(), { requests: [made] });
   assert.equal((await post("/api/follow-ups/ack", { ids: [made.id] })).status, 400, "no list, no acknowledgement");
   const scheduled = [{ id: made.id, due: made.due, note: made.note }];
-  assert.equal((await post("/api/follow-ups/ack", { ids: [made.id], pending: scheduled })).status, 200);
+  const refusedOne = requestFollowUp({ session: "conv", in_minutes: 40, note: "One too many." });
+  assert.equal((await post("/api/follow-ups/ack", { ids: [made.id, refusedOne.id], pending: scheduled, refused: [{ id: refusedOne.id, reason: "full" }] })).status, 200);
   assert.deepEqual(await (await get("/api/follow-ups")).json(), { requests: [] });
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(process.env.PI_WEB_HOME, "follow-ups.json"), "utf8")), { requests: [], pending: scheduled });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(process.env.PI_WEB_HOME, "follow-ups.json"), "utf8")), { requests: [], pending: scheduled, refused: [{ id: refusedOne.id, due: refusedOne.due, note: "One too many.", reason: "full" }] });
 });
