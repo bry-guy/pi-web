@@ -135,7 +135,7 @@ test("a run creates the worker with the entry's grant, marks an agent session, s
     ["/workspaces/ws-labrat/api/sessions/s1/message", { text: brief }],
   ]);
   const { started, ...flag } = fake.remote.agentOf("s1");
-  assert.deepEqual(flag, { agent: "labrat", kind: "run" });
+  assert.deepEqual(flag, { agent: "labrat", kind: "run", worker: "ws-labrat" });
   assert.ok(Date.now() - Date.parse(started) < 60_000, "a run records when it started");
 });
 

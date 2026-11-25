@@ -1,7 +1,8 @@
 // Worker side of role_agent on web. pi-projects' role_agent tool takes its runner from the global handle below
 // when a project worker sets it. The role never runs here: run() asks web with an event on the calling session
 // and waits for web's answers (POST /sessions/:id/role-run). Web decides whether this project may use the role
-// and runs it on that role's own sandboxed worker (role-runs.js).
+// and runs it on that role's own sandboxed worker (role-runs.js). With `followUp` (an earlier run's id), web sends
+// the message to that run's session instead of starting one.
 import { randomUUID } from "node:crypto";
 import { hub as webHub } from "./events.js";
 
@@ -10,7 +11,7 @@ export const ROLE_RUNNER = Symbol.for("pi-role-runner.v1");
 export function createRoleRunner(hub, { ackMs = 20_000, waitMs = 15 * 60_000 } = {}) {
   const waiting = new Map(); // request → what web's next answer does
 
-  function run({ role, msg, name, cwd, session, background = false, signal, onUpdate }) {
+  function run({ role, msg, name, cwd, session, background = false, followUp, signal, onUpdate }) {
     const request = randomUUID();
     return new Promise((resolve, reject) => {
       let started = false;
@@ -41,7 +42,7 @@ export function createRoleRunner(hub, { ackMs = 20_000, waitMs = 15 * 60_000 } =
       }, { session }));
       if (signal?.aborted) return end(reject, new Error(`Aborted before ${role} was started`));
       signal?.addEventListener("abort", abort, { once: true });
-      hub.emit(session, "role_run_request", { request, role, msg, name, cwd });
+      hub.emit(session, "role_run_request", { request, role, msg, name, cwd, ...(followUp === undefined ? {} : { run: followUp }) });
     });
   }
 
@@ -64,7 +65,8 @@ export function createRoleRunner(hub, { ackMs = 20_000, waitMs = 15 * 60_000 } =
     return true;
   }
 
-  return { run, answer };
+  // followUps: pi-projects asks before it passes `followUp`; a runner without it would start a new run.
+  return { run, answer, followUps: true };
 }
 
 export const roleRunner = createRoleRunner(webHub);
