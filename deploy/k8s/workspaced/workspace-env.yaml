@@ -17,6 +17,10 @@ data:
   PI_PROJECTS_STATE_REMOTE: https://github.com/bry-guy/pi-projects-state.git
   # Laptop-only packages from the dotfiles profile; workers never sleep or switch sessions mid-turn.
   PI_WEB_SKIP_PACKAGES: git:github.com/bry-guy/pi-background,git:github.com/bry-guy/pi-keepalive
+  # The public key that signs pi-projects' role grants (the laptop's ~/.local/state/pi-roles/allowed_signers,
+  # without the leading "pi-roles "). It lives here, not in dotfiles, so a dotfiles change cannot grant a role.
+  # Empty: role_agent refuses in every worker. workspaced's grants.json decides again which role a project gets.
+  PI_ROLES_SIGNER: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIITo6tgiI+HgDMRhhcnfeWbC5KrOr1HtKPaqmuceX8dO brainbook.local"
   PI_WEB_PRESTART_COMMAND: |
     set -eu
     : "${DOTFILES_REPOSITORY:?DOTFILES_REPOSITORY is required}"
@@ -46,6 +50,13 @@ data:
     git config --file "$HOME/.gitconfig.identity.local" --replace-all user.name 'Bryan Smith'
     git config --file "$HOME/.gitconfig.identity.local" --replace-all user.email 'bryan@bry-guy.net'
     git config --file "$HOME/.gitconfig.identity.local" --replace-all credential.helper /usr/local/bin/pi-ez-web-git-credential-helper
+    if [ -n "${PI_ROLES_SIGNER:-}" ]; then
+      mkdir -p "$HOME/.local/state/pi-roles"
+      printf 'pi-roles %s\n' "$PI_ROLES_SIGNER" > "$HOME/.local/state/pi-roles/allowed_signers"
+    else
+      # The disk outlives this value: without a signer, an earlier trust anchor must not keep granting roles.
+      rm -f "$HOME/.local/state/pi-roles/allowed_signers"
+    fi
     # Default project setup hook; a project's own hooks in config.json win.
     cfg="$PI_WEB_HOME/config.json"
     mkdir -p "$PI_WEB_HOME"

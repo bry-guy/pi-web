@@ -33,5 +33,48 @@
       }
     ],
     "description": "labrat only: an OpenShell sandbox with Claude through the gateway and read-only cluster access through the labrat-kube relay. No GitHub, no secrets, no other network."
+  },
+  "pi-web-developer": {
+    "repos": [
+      "project:pi-web-ecosystem-pi-web-developer"
+    ],
+    "role": "pi-web/pi-web-developer",
+    "provider": "openshell",
+    "providers": [
+      "pi-web-developer-github"
+    ],
+    "packages": [
+      "npm:@gotgenes/pi-anthropic-auth@3.4.4"
+    ],
+    "environment": {
+      "PI_SKIP_VERSION_CHECK": "1",
+      "GIT_AUTHOR_NAME": "Bryan Smith",
+      "GIT_AUTHOR_EMAIL": "bryan@bry-guy.net",
+      "GIT_COMMITTER_NAME": "bry-guy-pi-web-developer[bot]",
+      "GIT_COMMITTER_EMAIL": "353922029+bry-guy-pi-web-developer[bot]@users.noreply.github.com"
+    },
+    "egress": [
+      {
+        "host": "proxy.golang.org",
+        "port": 443
+      },
+      {
+        "host": "sum.golang.org",
+        "port": 443
+      },
+      {
+        "host": "go.dev",
+        "port": 443
+      },
+      {
+        "host": "dl.google.com",
+        "port": 443
+      },
+      {
+        "host": "storage.googleapis.com",
+        "port": 443
+      }
+    ],
+    "description": "Role pi-web/pi-web-developer for role_agent calls from the pi-web-ecosystem project: an OpenShell sandbox with Claude through the gateway, GitHub as the role's bot through gateway provider pi-web-developer-github (which must exist first: clone, push and the API for the pi-* repos), the npm registry, and the Go toolchain and module hosts. No other network, no secrets, no cluster access."
   }
 }

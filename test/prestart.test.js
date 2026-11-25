@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -112,4 +113,22 @@ test("invalid prestart timeout aborts startup", () => {
       return true;
     });
   });
+});
+
+test("the workers' prestart writes the role-grant trust anchor from PI_ROLES_SIGNER and removes it when that is empty", () => {
+  const yaml = fs.readFileSync(new URL("../deploy/k8s/workspaced/workspace-env.yaml", import.meta.url), "utf8");
+  const block = /^ {4}if \[ -n "\$\{PI_ROLES_SIGNER:-\}" \]; then\n[\s\S]*?^ {4}fi$/m.exec(yaml)?.[0];
+  assert.ok(block, "the PI_ROLES_SIGNER step of PI_WEB_PRESTART_COMMAND");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-prestart-signer-"));
+  const anchor = path.join(home, ".local/state/pi-roles/allowed_signers");
+  const run = signer => execFileSync("sh", ["-euc", block], { env: { PATH: process.env.PATH, HOME: home, PI_ROLES_SIGNER: signer } });
+  try {
+    run(""); // nothing to remove on a new disk
+    run("ssh-ed25519 AAAA");
+    assert.equal(fs.readFileSync(anchor, "utf8"), "pi-roles ssh-ed25519 AAAA\n");
+    run("");
+    assert.equal(fs.existsSync(anchor), false, "an emptied signer leaves no old trust anchor on the worker's disk");
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
