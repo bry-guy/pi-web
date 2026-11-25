@@ -42,7 +42,7 @@ function fake({ workers = [caller()], grants = [DEFAULT, DEV], records = [], str
     if (p.endsWith("/api/models")) return json({ models: [{ id: MODEL }] });
     if (p === "/workspaces/p-dev/api/projects/pp-p-dev/sessions") return json({ id: "r1" });
     if (/\/sessions\/r1\/(model|message|stop|name)$/.test(p)) return json({ ok: true });
-    if (p.endsWith("/sessions/r1/transcript")) return json({ sessionId: "r1", streaming: state.streaming, records: state.records });
+    if (p.endsWith("/sessions/r1/transcript")) return state.gone ? json({ error: "no_such_session" }, 404) : json({ sessionId: "r1", streaming: state.streaming, records: state.records });
     return json({ error: "unexpected" }, 500);
   };
   const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, retryMs: 50, modelAuthSyncMs: 0, onEvent, cachePath: path.join(home, "remote-projects.json") });
@@ -66,7 +66,7 @@ test("a granted role runs hidden on its own worker under the role's grant, and t
   assert.deepEqual([created.agent, created.kind], ["app/dev", "run"]);
   assert.equal("followUpDepth" in created, false, "nothing collects a role run's follow-up requests, so its worker must not offer the tools");
   const { started, ...flags } = f.remote.agentOf("r1");
-  assert.deepEqual(flags, { agent: "app/dev", kind: "run" }, "hidden like a prime's run");
+  assert.deepEqual(flags, { agent: "app/dev", kind: "run", worker: "p-dev" }, "hidden like a prime's run, and web keeps which worker it made it on");
   assert.ok(Date.parse(started), "with a start time, as every run has");
   assert.deepEqual(f.calls.find(([, p]) => p.endsWith("/sessions/r1/model"))[2], { model: MODEL }, "the calling session's model");
   assert.deepEqual(f.calls.find(([, p]) => p.endsWith("/sessions/r1/message"))[2], { text: REQUEST.msg });
@@ -298,5 +298,101 @@ test("end to end: the worker's runner and web agree on the wire, through the wor
     await roleRuns.event("r1", "turn_end", { reason: "done" });
     assert.deepEqual(await result, { text: "app/dev run done (run: r1)\n\nShipped: PR #7.", isError: false, status: "done", background: false });
     assert.deepEqual(noted, []);
+
+    // A follow-up, named by the run id that result gave.
+    f.state.streaming = false;
+    const more = runner.run({ project: "p", role: "app/dev", msg: "now also fix X", name: "dev: now also fix X", cwd: ".", session: "c1", background: false, followUp: "r1" });
+    await new Promise(r => setTimeout(r, 20));
+    await started;
+    assert.deepEqual(posted(f, "/message").at(-1), ["/workspaces/p-dev/api/sessions/r1/message", { text: "now also fix X" }]);
+    assert.equal(posted(f, "/sessions").length, 1);
+    f.state.records = AFTER;
+    await roleRuns.event("r1", "turn_end", { reason: "done" });
+    assert.deepEqual(await more, { text: "app/dev run done (run: r1)\n\nFixed X too.", isError: false, status: "done", background: false });
   } finally { f.remote.stop(); }
+});
+
+// A first run that ended and was delivered: r1 on p-dev, its transcript REPLY.
+async function ended(options = {}) {
+  const f = fake({ streaming: true, ...options });
+  const runs = f.runs();
+  await runs.event("c1", "role_run_request", REQUEST);
+  Object.assign(f.state, { records: REPLY, streaming: false });
+  await runs.event("r1", "turn_end", { reason: "done" });
+  return { f, runs };
+}
+const MORE = { request: "q2", role: "app/dev", msg: "now also fix X", name: "dev: now also fix X", cwd: "worktrees/app/x", run: "r1" };
+const AFTER = [...REPLY, { role: "user", text: "now also fix X" }, { role: "assistant", text: "Fixed X too." }];
+const DONE = { request: "q2", state: "done", status: "done", isError: false, text: "app/dev run done (run: r1)\n\nFixed X too.", role: "app/dev", run: "r1" };
+const posted = (f, end) => f.calls.filter(([m, p]) => m === "POST" && p.endsWith(end)).map(([, p, b]) => [p, b]);
+
+test("a follow-up is sent to the earlier run's own session on the role's worker, and that turn's reply goes back", async () => {
+  const { f, runs } = await ended();
+  await runs.event("c1", "role_run_request", MORE);
+  assert.deepEqual(f.answers().slice(3), [{ request: "q2", state: "accepted" }, { request: "q2", state: "started", run: "r1" }], "the turn before is not taken for its reply");
+  assert.deepEqual(posted(f, "/message"), [
+    ["/workspaces/p-dev/api/sessions/r1/message", { text: REQUEST.msg }],
+    ["/workspaces/p-dev/api/sessions/r1/message", { text: "now also fix X" }],
+  ], "the same session on the same worker, the message as it is");
+  assert.equal(posted(f, "/sessions").length, 1, "no second session");
+  assert.equal(posted(f, "/model").length, 1, "the run keeps its model");
+  assert.equal(posted(f, "/workspaces").length, 1, "no second worker");
+  assert.equal(posted(f, "/workspaces/p-dev/wake").length, 1, "its worker is woken");
+  const { at, ...kept } = f.open().r1;
+  assert.deepEqual(kept, { parent: "c1", request: "q2", role: "app/dev", turns: 1 });
+
+  f.state.records = AFTER;
+  await runs.event("r1", "turn_end", { reason: "done" });
+  assert.deepEqual(f.answers().at(-1), DONE);
+  assert.deepEqual(f.open(), {});
+
+  // A turn that was over before web recorded the follow-up is still delivered.
+  const state = {};
+  const quick = await ended({ route: (m, p, body) => { if (p.endsWith("/sessions/r1/message") && body.text === MORE.msg) state.f.state.records = AFTER; return null; } });
+  state.f = quick.f;
+  await quick.runs.event("c1", "role_run_request", MORE);
+  assert.deepEqual(quick.f.answers().slice(3), [{ request: "q2", state: "accepted" }, { request: "q2", state: "started", run: "r1" }, DONE]);
+});
+
+test("a follow-up is refused, and nothing is sent: not this role's run in the caller's project, unknown, still running, or its worker no longer a sandbox", async () => {
+  const refused = async ({ f, runs }, run, pattern, extra = {}) => {
+    const sent = posted(f, "/message").length;
+    await runs.event("c1", "role_run_request", { ...MORE, run, ...extra });
+    assert.equal(f.answers().at(-1).state, "failed");
+    assert.match(f.answers().at(-1).message, pattern);
+    assert.equal(posted(f, "/message").length, sent, "no message");
+    assert.equal(posted(f, "/sessions").length, 1, "and no new run in its place");
+  };
+  const e = await ended();
+  // Web's own record of each run: whose it is, and the worker web made it on.
+  e.f.remote.markAgent("r7", "app/dev", "run", null, 0, "other-dev");
+  e.f.remote.markAgent("r8", "app/ops", "run", null, 0, "p-dev");
+  e.f.remote.markAgent("r9", "app/dev", "run");
+  e.f.remote.markAgent("a1", "app/dev");
+  await refused(e, "r7", /^Can't follow up on r7: it is not a run of app\/dev in this project$/, { project: "other" });
+  await refused(e, "r8", /^Can't follow up on r8: it is not a run of app\/dev in this project$/);
+  await refused(e, "r9", /it is not a run of app\/dev in this project$/);
+  await refused(e, "a1", /it is not a run of app\/dev in this project$/);
+  await refused(e, "c1", /^Can't follow up on c1: it is not a run of app\/dev in this project$/);
+  await refused(e, "nope", /^Can't follow up on nope: that run cannot be found$/);
+  await refused(e, "", /that run cannot be found$/);
+  await refused(e, { id: "r1" }, /that run cannot be found$/);
+
+  // Still running: its first turn, a follow-up's turn, and a turn web no longer waits for.
+  const live = fake({ streaming: true });
+  const runs = live.runs();
+  await runs.event("c1", "role_run_request", REQUEST);
+  await refused({ f: live, runs }, "r1", /^Can't follow up on r1: app\/dev is still running there$/);
+  await runs.event("c1", "role_run_stop", { request: "q1" });
+  await refused({ f: live, runs }, "r1", /app\/dev is still running there$/);
+  await e.runs.event("c1", "role_run_request", MORE);
+  await refused(e, "r1", /app\/dev is still running there$/, { request: "q3" });
+
+  // A worker of that name that is not the grant's sandbox is not sent the message.
+  const moved = await ended();
+  moved.f.workers[1].provider = undefined;
+  await refused(moved, "r1", /^Can't follow up on r1: project p-dev exists and is not an openshell sandbox/);
+  const gone = await ended();
+  gone.f.state.gone = true;
+  await refused(gone, "r1", /^Can't follow up on r1: that run cannot be found on its worker$/);
 });

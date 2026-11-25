@@ -137,7 +137,7 @@ test("a run creates the worker with the entry's grant, marks an agent session, s
     ["/workspaces/ws-labrat/api/sessions/s1/message", { text: brief }],
   ]);
   const { started, ...flag } = fake.remote.agentOf("s1");
-  assert.deepEqual(flag, { agent: "labrat", kind: "run" });
+  assert.deepEqual(flag, { agent: "labrat", kind: "run", worker: "ws-labrat" });
   assert.ok(Date.now() - Date.parse(started) < 60_000, "a run records when it started");
 });
 
@@ -621,7 +621,7 @@ test("a prime's follow-up requests are collected when its turn ends, acknowledge
     assert.deepEqual(created.find(b => b.followUp === note), { name: "labrat: follow-up 2026-11-22 08:20", agent: "labrat", kind: "run", followUp: note, followUpDepth: 1 });
     assert.equal(created.length, 2);
     const run = fake.calls.find(c => c[1].endsWith("/message") && c[2].text.endsWith(note))[1].split("/")[2];
-    assert.deepEqual({ ...fake.remote.agentOf(run), started: null }, { agent: "labrat", kind: "run", started: null, followUp: note, depth: 1 });
+    assert.deepEqual({ ...fake.remote.agentOf(run), started: null }, { agent: "labrat", kind: "run", started: null, worker: "ws-labrat", followUp: note, depth: 1 });
     assert.equal(fake.calls.find(c => c[1] === `/sessions/${run}/message`)[2].text,
       `This run was started by a follow-up. In its conversation, this agent left itself the note below, to be woken with it at ${due.slice(0, 16).replace("T", " ")} UTC. It is the agent's own note, not a message from the owner.\n\n${note}`);
     assert.equal(primes.list().find(p => p.agent === "labrat").runs.length, 2, "listed with the prime's other runs");
