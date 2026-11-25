@@ -10,7 +10,7 @@ import YAML from "yaml";
 import { DEFAULT_GRANT, grantError, MODEL_PROVIDER } from "./grants.js";
 import { DATA, MANAGED_BY, pvcManifest, WORKSPACE_PORT, workerEnv } from "./manifests.js";
 
-// Workers as NVIDIA OpenShell sandboxes (CLI 0.1.7), driven through the `openshell` CLI. A sandbox
+// Workers as NVIDIA OpenShell sandboxes (CLI 0.1.10), driven through the `openshell` CLI. A sandbox
 // named ws-<name> runs the worker image with the PVC ws-<name> at /data, exposes the worker port
 // through the gateway, and gets a policy built from its grant. The gateway's sandbox list (labels and
 // annotations) is the record; workspaced keeps no database. See docs/workspaced.md#openshell.
