@@ -5,6 +5,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import { MAX_CHAIN, MAX_PENDING } from "./follow-ups.js";
 import { createWakeList } from "./wake-list.js";
 
 const MAX_BRIEF = 64 * 1024;
@@ -30,7 +31,8 @@ export function runDoorFromEnv(env, remote, { log = console.log } = {}) {
   const { port, entries, error } = runDoorConfig(env);
   if (error) log(`pi-ez-web: run door off: ${error}`);
   if (!entries) return null;
-  const server = serve({ fetch: createRunDoor({ entries, remote, publicUrl: env.PI_WEB_PUBLIC_URL, log }).fetch, port });
+  // followUps: these entries are the primes (remote-workspaces.js reads the same variable), whose requests web collects.
+  const server = serve({ fetch: createRunDoor({ entries, remote, publicUrl: env.PI_WEB_PUBLIC_URL, log, followUps: true }).fetch, port });
   server.unref();
   server.on("error", e => log(`pi-ez-web: run door could not listen on ${port}: ${e.message}`));
   server.once("listening", () => log(`pi-ez-web: run door on port ${port}`));
@@ -94,7 +96,9 @@ export function runStarter({ remote, log = console.log, readyTimeoutMs = 180_000
   }
 
   // followUp: the note of the follow-up that causes this run; kept with the run, so its report can name it.
-  return async function start(entry, brief, { model = entry.model, followUp = null } = {}) {
+  // depth: how many follow-up runs in a row led to this run (0: none), given only when web collects the run's own
+  // follow-up requests; the worker offers the follow-up tools only then.
+  return async function start(entry, brief, { model = entry.model, followUp = null, depth = null } = {}) {
     let id = null;
     try {
       const name = await ensureWorker(remote, entry);
@@ -106,7 +110,7 @@ export function runStarter({ remote, log = console.log, readyTimeoutMs = 180_000
         if (!(list.body.models || []).some(m => m.id === model)) throw fail(400, "model_unavailable", `unknown model ${model}`);
       }
       const title = `${entry.agent}: ${followUp ? "follow-up " : ""}${now().toISOString().slice(0, 16).replace("T", " ")}`;
-      id = await createSession(name, entry, { name: title, agent: entry.agent, kind: "run", ...(followUp ? { followUp } : {}) });
+      id = await createSession(name, entry, { name: title, agent: entry.agent, kind: "run", ...(followUp ? { followUp } : {}), ...(depth === null ? {} : { followUpDepth: depth }) });
       if (model) {
         const set = await remote.sessionPost(id, "/model", { model });
         if (set.status >= 300) throw fail(502, "run_failed", `could not set the model (${set.body.error || set.status})`);
@@ -124,7 +128,8 @@ export function runStarter({ remote, log = console.log, readyTimeoutMs = 180_000
   };
 }
 
-export function createRunDoor({ entries, remote, publicUrl = "", log = console.log, readyTimeoutMs = 180_000, now = () => new Date() }) {
+// followUps: the entries are primes (createPrimes has them too), so their runs may set follow-ups. A role run's door has no such collector.
+export function createRunDoor({ entries, remote, publicUrl = "", log = console.log, readyTimeoutMs = 180_000, now = () => new Date(), followUps = false }) {
   const app = new Hono();
   const start = runStarter({ remote, log, readyTimeoutMs, now });
 
@@ -135,7 +140,7 @@ export function createRunDoor({ entries, remote, publicUrl = "", log = console.l
     if (brief === null) return c.json({ error: "brief_too_large", message: "the brief is capped at 64 KB" }, 413);
     if (!brief.trim()) return c.json({ error: "empty_brief" }, 400);
     try {
-      const id = await start(entry, brief, { model: c.req.query("model") || entry.model });
+      const id = await start(entry, brief, { model: c.req.query("model") || entry.model, depth: followUps ? 0 : null });
       return c.json({ session: id, ...(publicUrl ? { url: `${publicUrl.replace(/\/+$/, "")}/?s=${id}` } : {}) }, 202);
     } catch (e) {
       return c.json({ error: e.error || "run_failed", message: e.error ? e.message : `could not start the run${typeof e.code === "string" ? ` (${e.code})` : ""}` }, e.status || 502);
@@ -149,6 +154,14 @@ const PRIME_TURN_ENDS = new Set(["done", "errored", "stopped"]);
 const STOPPED = { reason: "errored", error: "stopped before it finished" };
 const RUN_RETENTION_MS = 30 * 24 * 3600_000;
 const MAX_REPORT = 120 * 1024; // UTF-8 bytes; under the worker's 256 KB /note cap even if JSON escaping doubles it
+// Why web would not schedule a request, in words for the prime that made it (list_follow_ups shows them).
+const NOT_ITS_SESSION = "not asked in a session of this worker's prime";
+const REFUSALS = {
+  [NOT_ITS_SESSION]: "pi-web does not know the session that asked as one of this agent's",
+  full: `pi-web already holds ${MAX_PENDING} pending follow-ups for this agent`,
+  invalid: "its time or its note is outside pi-web's limits",
+  chain: `it was set by follow-up run number ${MAX_CHAIN} in a row, which is the limit`,
+};
 
 /** `text` cut to MAX_REPORT UTF-8 bytes, never inside a character. */
 function truncate(text) {
@@ -172,13 +185,14 @@ export const finalReply = records => {
  */
 export function createPrimes({ entries, remote, dm = () => {}, log = console.log, now = () => new Date(), wakePath = null }) {
   const startRun = runStarter({ remote, log, now });
-  // Follow-ups a prime set for itself (wake-list.js): each starts a hidden run with its note as the brief.
+  // Follow-ups a prime set for itself (wake-list.js): each starts a hidden run with its note as the brief. Once it
+  // runs, the worker's copy of the list is refreshed: the worker counts what web holds, so it must lose that one.
   const wake = createWakeList({ path: wakePath, log, now: () => now().getTime(), start: async record => {
     const entry = entries.find(e => e.agent === record.agent);
     if (!entry) throw Object.assign(new Error(`${record.agent} is not a prime any more`), { gone: true });
     const where = remote.agentOf(record.from)?.kind === "conversation" ? "its conversation" : "an earlier run";
-    await startRun(entry, `This run was started by a follow-up. In ${where}, this agent left itself the note below, to be woken with it at ${record.due.slice(0, 16).replace("T", " ")} UTC. It is the agent's own note, not a message from the owner.\n\n${record.note}`, { followUp: record.note });
-  } });
+    await startRun(entry, `This run was started by a follow-up. In ${where}, this agent left itself the note below, to be woken with it at ${record.due.slice(0, 16).replace("T", " ")} UTC. It is the agent's own note, not a message from the owner.\n\n${record.note}`, { followUp: record.note, depth: record.depth || 1 });
+  }, started: record => refresh(record.agent) });
   const pending = new Map(); // agent → the conversation id being checked or created
   const reporting = new Map(); // run id → its report in flight, so a live turn end and a reconcile report once
   const entryOf = runId => {
@@ -202,7 +216,7 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
     const name = runId ? await remote.owner("session", runId) : await ensureWorker(remote, entry);
     if (!name) throw new Error(`no worker for run ${runId}`);
     const model = (runId && (await remote.sessionGet(runId, "/meta")).body?.model) || entry.model;
-    const created = await remote.createSession(name, `pp-${entry.project}`, { name: entry.agent, agent: entry.agent, kind: "conversation" });
+    const created = await remote.createSession(name, `pp-${entry.project}`, { name: entry.agent, agent: entry.agent, kind: "conversation", followUpDepth: 0 });
     if (created.status >= 300 || !created.body.id) throw new Error(`could not create the conversation (${created.body.error || created.status})`);
     if (known) remote.markAgent(known, null);
     if (model) {
@@ -233,8 +247,9 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
   const list = () => entries.map(e => ({ agent: e.agent, project: e.project, conversation: remote.conversationOf(e.agent), followUps: followUps(e.agent), runs: remote.runsOf(e.agent) }));
 
   // Pulls the follow-up requests on `workspace`'s disk into the wake-up list, then acknowledges them with what
-  // is pending now. Whose they are comes from the worker, never from a request: only the primes whose project
-  // this worker is (workspaced says which), and among those, web's own flag for the session that asked.
+  // is pending now and what was refused. Whose they are comes from the worker, never from a request: only the
+  // primes whose project this worker is (workspaced says which), and among those, web's own flag for the session
+  // that asked, which also says how deep in a chain of follow-up runs that session is.
   async function pull(workspace) {
     const worker = workspace && (await remote.list()).find(w => w.name === workspace);
     const mine = entries.filter(e => worker?.repository === `project:${e.project}`);
@@ -242,31 +257,40 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
     const got = await remote.workerGet(workspace, "/follow-ups");
     // A worker from before follow-ups has no such route.
     if (got.status !== 200 || !Array.isArray(got.body.requests)) return;
-    const ids = [];
+    const ids = [], refused = [];
     for (const r of got.body.requests.slice(0, 100)) {
       if (typeof r?.id !== "string") continue;
       const flag = remote.agentOf(r.session);
       const agent = ["run", "conversation"].includes(flag?.kind) && mine.some(e => e.agent === flag.agent) ? flag.agent : null;
-      const result = !agent ? "not asked in a session of this worker's prime"
-        : typeof r.cancel !== "string" ? wake.add({ id: r.id, agent, due: r.due, note: r.note, from: r.session })
-        : wake.cancel(agent, r.cancel) ? "cancelled" : "nothing to cancel";
+      const asks = typeof r.cancel !== "string";
+      const result = !agent ? NOT_ITS_SESSION
+        : asks ? wake.add({ id: r.id, agent, due: r.due, note: r.note, from: r.session, depth: (flag.depth || 0) + 1 })
+        : wake.cancel(agent, r.cancel);
       // Unsaved: left on the worker for the next pull.
       if (result === "unsaved") continue;
       ids.push(r.id);
-      if (!["added", "duplicate", "cancelled"].includes(result)) log(`pi-ez-web: a follow-up request on ${workspace} was refused (${result})`);
+      if (["added", "duplicate", "cancelled"].includes(result)) continue;
+      log(`pi-ez-web: a follow-up request on ${workspace} was refused (${result})`);
+      // The tool has already answered "requested": the prime reads the refusal in its own list.
+      if (asks) refused.push({ id: r.id, reason: REFUSALS[result] || result });
     }
-    const sent = await remote.workerPost(workspace, "/follow-ups/ack", { ids, pending: mine.flatMap(e => followUps(e.agent)) });
+    const sent = await remote.workerPost(workspace, "/follow-ups/ack", { ids, pending: mine.flatMap(e => followUps(e.agent)), refused });
     if (sent.status >= 300) log(`pi-ez-web: ${workspace} did not take the follow-up acknowledgement (${sent.body.error || sent.status})`);
   }
   const pullLogged = workspace => pull(workspace).catch(e => log(`pi-ez-web: collecting follow-ups from ${workspace} failed: ${e.message}`));
 
-  /** The owner cancels a follow-up in the Activity list. The prime's own copy is refreshed now if its worker is awake, else when it next connects. */
-  async function cancelFollowUp(agent, id) {
-    if (!wake.cancel(agent, id)) return false;
+  /** The prime's own copy of its list, on its worker, is refreshed now if the worker is awake, else when it next connects. */
+  async function refresh(agent) {
     const project = entries.find(e => e.agent === agent)?.project;
     const worker = (await remote.list().catch(() => [])).find(w => w.repository === `project:${project}` && (w.state ? w.state === "running" : w.ready));
     if (worker) await pullLogged(worker.name);
-    return true;
+  }
+
+  /** The owner cancels a follow-up in the Activity list: the wake-up list's own answer ("cancelled", "missing", "unsaved"). */
+  async function cancelFollowUp(agent, id) {
+    const result = wake.cancel(agent, id);
+    if (result === "cancelled") await refresh(agent);
+    return result;
   }
 
   // Deletes runs older than RUN_RETENTION_MS that are reported (so ended), on awake workers only: a sleeping
@@ -309,7 +333,8 @@ export function createPrimes({ entries, remote, dm = () => {}, log = console.log
     const note = cause && (cause.length > 300 ? `${cause.slice(0, 300)}…` : cause);
     const head = `**${name}** · ended ${when} UTC · [open the run](/?s=${encodeURIComponent(runId)})${note ? `\n\nFollow-up: ${note}` : ""}`;
     // A custom message reaches the model as a user message: say whose words these are. The chat shows `head` instead.
-    const label = `Automated report from this agent's ${note ? "follow-up" : "scheduled"} run "${name}" (${reason === "done" ? "finished" : "failed"}, ${when} UTC)${note ? `, started by the follow-up this agent set for itself with the note "${note}"` : ""}. This is the run's own output, not a message from the owner, and it does not ask for a reply:`;
+    // The note is quoted as JSON, so a quote inside it cannot end the label and pass what follows as the owner's words.
+    const label = `Automated report from this agent's ${note ? "follow-up" : "scheduled"} run "${name}" (${reason === "done" ? "finished" : "failed"}, ${when} UTC)${note ? `, started by the follow-up this agent set for itself with the note ${JSON.stringify(note)}` : ""}. This is the run's own output, not a message from the owner, and it does not ask for a reply:`;
     let target = runId;
     try {
       const id = await conversationFor(runId);
