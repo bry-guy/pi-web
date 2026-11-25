@@ -1786,6 +1786,34 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     }
     assert.deepEqual(restored, ["POST"]);
     assert.equal(store.state.sessionId, "run3");
+
+    // Pending follow-ups head the Activity list; each has a cancel button, and cancelling asks web, then reloads state.
+    store.set({ primes: [{ agent: "labrat", project: "labrat", conversation: "conv1", followUps: [
+      { id: "f1", due: "2026-11-24T18:00:00.000Z", note: "Check the <deploy> again" },
+      { id: "f2", due: "2026-11-25T08:00:00.000Z", note: "Look at the backup" },
+    ], runs: [{ id: "run3", name: "labrat: closed", started: "2026-11-21T08:00:00.000Z", running: false, failed: false }] }] });
+    const pending = () => [...section().querySelectorAll(".prime-follow-up")];
+    assert.deepEqual(pending().map(r => [r.querySelector(".lbl").textContent, r.dataset.state]), [["Check the <deploy> again", "pending"], ["Look at the backup", "pending"]]);
+    assert.match(pending()[0].querySelector(".when").textContent, /^follow-up · /);
+    assert.equal(pending()[0].dataset.act, undefined, "a follow-up opens nothing");
+    const rows = [...section().querySelectorAll(".row")];
+    assert.ok(rows.indexOf(pending()[1]) < rows.indexOf(section().querySelector("[data-act='prime-run']")), "before the runs");
+    const cancelButton = pending()[0].querySelector("button[data-act='cancel-follow-up']");
+    assert.deepEqual([cancelButton.dataset.agent, cancelButton.dataset.id], ["labrat", "f1"]);
+    assert.match(cancelButton.getAttribute("aria-label"), /^Cancel the follow-up due /);
+    const cancelled = [];
+    globalThis.fetch = async (input, options) => {
+      if (String(input).startsWith("/api/primes/")) { cancelled.push([options?.method, String(input)]); return new Response("{}", { status: 200, headers: { "content-type": "application/json" } }); }
+      if (String(input) === "/api/state") return new Response(JSON.stringify({ ...state, primes: [{ agent: "labrat", project: "labrat", conversation: "conv1", followUps: [{ id: "f2", due: "2026-11-25T08:00:00.000Z", note: "Look at the backup" }], runs: [] }] }), { status: 200, headers: { "content-type": "application/json" } });
+      return bootFetch(input, options);
+    };
+    try {
+      cancelButton.click();
+      for (let i = 0; i < 50 && pending().length !== 1; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    } finally { globalThis.fetch = bootFetch; }
+    assert.deepEqual(cancelled, [["DELETE", "/api/primes/labrat/follow-ups/f1"]]);
+    assert.deepEqual(pending().map(r => r.querySelector("[data-act='cancel-follow-up']").dataset.id), ["f2"]);
+    assert.equal(store.state.sessionId, "run3", "cancelling opens nothing");
     store.set({ primes: [] });
     p1.sessions.splice(-3);
   }

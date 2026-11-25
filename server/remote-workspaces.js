@@ -46,7 +46,7 @@ export function remoteWorkspacesFromEnv(env, deps) {
   roleRuns = createRoleRuns({ remote, path: cachePath ? path.join(path.dirname(cachePath), "role-runs.json") : null });
   // The run door's agents are primes: each run reports into the agent's one conversation.
   const { entries } = runDoorConfig(env);
-  primes = entries ? createPrimes({ entries, remote, dm: (...a) => discord?.runReport(...a) }) : null;
+  primes = entries ? createPrimes({ entries, remote, dm: (...a) => discord?.runReport(...a), wakePath: env.PI_WEB_HOME ? path.join(env.PI_WEB_HOME, "wake-list.json") : null }) : null;
   discord = discordFromEnv(env, {
     post: (id, subpath, body) => (remoteSessions?.owns(id) || remoteSessions?.wasKnown(id) ? remoteSessions.sessionPost(id, subpath, body) : remote.sessionPost(id, subpath, body)),
     titleOf: id => remoteSessions?.sessionTitle(id) || remote.sessionTitle(id),
@@ -57,12 +57,13 @@ export function remoteWorkspacesFromEnv(env, deps) {
   if (primes) remote.refresh().catch(() => {});
   remote.primes = () => primes?.list() || [];
   remote.primeConversation = agent => primes ? primes.openConversation(agent) : Promise.resolve(null);
+  remote.cancelFollowUp = (agent, id) => primes ? primes.cancelFollowUp(agent, id) : Promise.resolve(false);
   // Old runs are deleted once a day, and once shortly after start.
   if (primes) {
     const timers = [setTimeout(primes.sweep, 60_000), setInterval(primes.sweep, 24 * 3600_000)];
     for (const timer of timers) timer.unref?.();
     const stop = remote.stop;
-    remote.stop = () => { stop(); for (const timer of timers) clearTimeout(timer); };
+    remote.stop = () => { stop(); primes.stop(); for (const timer of timers) clearTimeout(timer); };
   }
   if (discord) {
     const stop = remote.stop;
@@ -147,19 +148,20 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   // Agent sessions: sessionId → { agent, kind }. kind "agent": created with `agent: "<name>"` (older files hold
   // the bare name); "run": a run-door run, hidden, reporting into its prime's one "conversation".
   // A run also holds `started` (ISO time), gets `reported: true` and its `outcome` once its report is in the
-  // conversation, and `dmed: true` once DMed.
+  // conversation, and `dmed: true` once DMed. A run a follow-up started holds its note as `followUp` and its
+  // place in a row of follow-up runs as `depth` (1 for the first).
   const agentsPath = cachePath ? path.join(path.dirname(cachePath), "agent-sessions.json") : null;
   let agents = {};
   try { agents = agentsPath ? JSON.parse(readFileSync(agentsPath, "utf8")) : {}; } catch { agents = {}; }
   // Runs from before `started` was kept: their 30 days start now.
   const undated = Object.values(agents).filter(f => f?.kind === "run" && !f.started);
   for (const f of undated) f.started = new Date().toISOString();
-  function markAgent(id, name, kind = "agent") {
+  function markAgent(id, name, kind = "agent", followUp = null, depth = 0) {
     if (typeof id !== "string" || !id) return;
     if (name === null) delete agents[id];
     else if (typeof name !== "string" || !name.trim()) return;
     // kind "agent" stays the bare name older builds read; only runs and conversations are objects.
-    else agents[id] = kind === "run" ? { agent: name.trim().slice(0, 100), kind, started: new Date().toISOString() }
+    else agents[id] = kind === "run" ? { agent: name.trim().slice(0, 100), kind, started: new Date().toISOString(), ...(typeof followUp === "string" ? { followUp } : {}), ...(Number.isInteger(depth) && depth > 0 ? { depth } : {}) }
       : kind === "conversation" ? { agent: name.trim().slice(0, 100), kind } : name.trim().slice(0, 100);
     saveAgents();
   }
@@ -679,17 +681,22 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     return { status: res.status, body: await res.json().catch(() => ({})) };
   }
 
+  async function workerPost(name, rest, body) {
+    const res = await call(workerPath(name, rest), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  }
+
   // The run door's session create (run-door.js), as forward does for the browser's.
   async function createSession(name, projectId, body) {
     const res = await call(workerPath(name, `/projects/${encodeURIComponent(projectId)}/sessions`), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const out = await res.json().catch(() => ({}));
-    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent, body.kind); subscribe(name); }
+    if (res.ok && out.id) { owners.session.set(out.id, name); markAgent(out.id, body.agent, body.kind, body.followUp, body.followUpDepth); subscribe(name); }
     return { status: res.status, body: out };
   }
 
   return {
     list, waitReady, createSession,
-    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, runIds, unreportedRuns, runsOf, conversationOf, workerGet,
+    wake, projectSynced, syncedPreview, sessionPost, sessionGet, sessionTitle, agentOf, markAgent, markReported, runIds, unreportedRuns, runsOf, conversationOf, workerGet, workerPost,
     projects, refresh, createChat, chatsPost, isChatSession, owner, forward, createProject, pushGitHubAuth, pushModelAuth, setPinned, grants, setGrant, inventory, workspaceAction, reloadAwake, remove,
     stop() { stopped = true; clearInterval(modelAuthTimer); for (const c of streams.values()) c.abort(); },
   };
@@ -706,6 +713,10 @@ export function registerRemoteRoutes(api, remote) {
   api.post("/sessions/:id/role-run", c => c.json({ error: "forbidden" }, 403));
   // Only web's retention sweep deletes a worker's session (run-door.js calls the worker directly).
   api.post("/sessions/:id/delete", c => c.json({ error: "forbidden" }, 403));
+  // Only web reads and acknowledges a worker's follow-up requests (run-door.js, through workspaced). No forwarded
+  // path reaches a worker's copy of these routes; without these, web's own in-process copy would answer a browser.
+  api.get("/follow-ups", c => c.json({ error: "forbidden" }, 403));
+  api.post("/follow-ups/ack", c => c.json({ error: "forbidden" }, 403));
   for (const [kind, pattern] of [["project", "/projects/:id/*"], ["session", "/sessions/:id/*"]]) {
     api.use(pattern, async c => {
       const name = await remote.owner(kind, c.req.param("id"));
@@ -761,6 +772,12 @@ export function registerRemoteRoutes(api, remote) {
       const id = await remote.primeConversation?.(c.req.param("agent"));
       return id ? c.json({ id }) : c.json({ error: "no_such_prime" }, 404);
     } catch (e) { return c.json({ error: "prime_unavailable", message: e.message }, 502); }
+  });
+  // The owner cancels one of a prime's pending follow-ups (the Activity list).
+  api.delete("/primes/:agent/follow-ups/:id", async c => {
+    const result = await remote.cancelFollowUp?.(c.req.param("agent"), c.req.param("id"));
+    if (result === "cancelled") return c.json({ ok: true });
+    return result === "unsaved" ? c.json({ error: "not_saved", message: "pi-web could not save its wake-up list, so the follow-up is still pending" }, 500) : c.json({ error: "no_such_follow_up" }, 404);
   });
   api.post("/projects", async c => {
     const body = await c.req.json().catch(() => ({}));
