@@ -72,7 +72,7 @@ export function sandboxPolicy(grant, { model = false } = {}) {
   const network = {
     ...Object.fromEntries(rules.map((r, i) => [`egress-${i + 1}`, {
       name: `${r.host}:${r.port}`,
-      endpoints: [{ host: r.host, port: r.port, protocol: "rest", enforcement: "enforce", access: "full", ...(r.allowEncodedSlash ? { allow_encoded_slash: true } : {}) }],
+      endpoints: [{ host: r.host, port: r.port, protocol: "rest", enforcement: "enforce", access: r.access || "full", ...(r.allowEncodedSlash ? { allow_encoded_slash: true } : {}) }],
       binaries: (r.binaries || [NODE]).map(p => ({ path: p })),
     }])),
     ...(model ? { anthropic: named("anthropic", { host: "api.anthropic.com", port: 443, access: "read-write" }) } : {}),
