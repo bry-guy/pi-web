@@ -154,8 +154,14 @@ test("the policy is the worker base plus the grant's egress, default deny", () =
 });
 
 // workspaced refuses to start on a grants file it cannot parse, so a bad one must fail here first.
-test("the committed grants.json parses", () => {
-  parseGrants(readFileSync(new URL("../deploy/k8s/workspaced/grants.json", import.meta.url), "utf8"), { log: m => assert.fail(m) });
+test("the committed grants.json parses, and labrat reads its cluster services read-only", () => {
+  const grants = parseGrants(readFileSync(new URL("../deploy/k8s/workspaced/grants.json", import.meta.url), "utf8"), { log: m => assert.fail(m) });
+  const labrat = grants.labrat;
+  assert.deepEqual(labrat.providers, ["labrat-seerr", "labrat-romarr", "labrat-questarr", "labrat-github"]);
+  assert.equal(labrat.environment.INFRA_REPO, "bry-guy/infra");
+  assert.ok(!("GITHUB_TOKEN" in labrat.environment), "the token comes from the labrat-github provider");
+  assert.ok(labrat.egress.every(r => r.access === "read-only"));
+  assert.deepEqual(Object.values(sandboxPolicy(labrat).network_policies).map(p => p.endpoints[0].access), ["read-only", "read-only", "read-only", "read-write"]);
 });
 
 test("openshell create makes a labelled PVC, then a sandbox with the worker's env, disk, port and policy", async () => {
