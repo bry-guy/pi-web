@@ -50,7 +50,10 @@ Pi owns transcripts, settings, models, and AI auth under
 `PI_CODING_AGENT_DIR` (normally `~/.pi/agent`). The optional `config.json` `pi`
 block can layer a local or HTTPS `settings.json` profile over SDK sessions and
 add package/extension sources. Pi's resource loader installs missing npm/git
-packages in the persistent agent directory. Remote profiles are cached after a
+packages in the persistent agent directory. Pi never refreshes an installed
+package itself, so the supervisor updates them (as `pi update` does) once per
+start and per configuration reload, before the first session loads them; a
+package that cannot be updated stays as it is. Remote profiles are cached after a
 successful fetch; they never replace deployment-local credentials or session
 storage. The web supervisor binds extensions in headless JSON mode so tools,
 commands, hooks, `session_start`, and dynamic resources work, while TUI/RPC
