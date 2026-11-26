@@ -4,6 +4,9 @@
 // and runs it on that role's own sandboxed worker (role-runs.js). With `followUp` (an earlier run's id), web sends
 // the message to that run's session instead of starting one.
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { hub as webHub } from "./events.js";
 
 export const ROLE_RUNNER = Symbol.for("pi-role-runner.v1");
@@ -72,9 +75,14 @@ export function createRoleRunner(hub, { ackMs = 20_000, waitMs = 15 * 60_000 } =
 export const roleRunner = createRoleRunner(webHub);
 
 /** Offers the runner to pi-projects on a project worker. A sandbox (a role's own worker) gets none: roles do not nest. */
-export function installRoleRunner(env = process.env) {
+export function installRoleRunner(env = process.env, home = os.homedir()) {
   // The placeholder file marks sandboxes created before PI_WEB_SANDBOX existed (a sandbox keeps the env it was created with).
   if (!env.PI_WEB_PROJECT || env.PI_WEB_SANDBOX || env.PI_ANTHROPIC_PLACEHOLDER_FILE) return false;
+  // pi-projects looks for the signed grants in Pi's agent dir, which a worker moves off the dotfiles that carry them.
+  // Only beside the trust anchor (PI_ROLES_SIGNER): a signed file that cannot be verified counts as tampered, and
+  // pi-mounts then disables every tool.
+  const grants = path.join(home, ".pi", "agent", "pi-roles.json");
+  if (!env.PI_ROLES_FILE && env.PI_ROLES_SIGNER && fs.existsSync(grants)) env.PI_ROLES_FILE = grants;
   globalThis[ROLE_RUNNER] = roleRunner;
   return true;
 }

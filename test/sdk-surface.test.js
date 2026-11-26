@@ -40,6 +40,7 @@ test("pi SDK exposes the surface the real supervisor uses", async () => {
   assert.equal(typeof sdk.SettingsManager?.fromStorage, "function");
   assert.equal(typeof sdk.DefaultResourceLoader, "function");
   assert.equal(typeof sdk.DefaultPackageManager, "function");
+  assert.equal(typeof sdk.DefaultPackageManager.prototype.update, "function", "DefaultPackageManager.update");
   assert.equal(typeof sdk.createBashToolDefinition, "function");
   assert.equal(typeof sdk.ModelRuntime, "function");
   assert.equal(typeof sdk.ModelRuntime.create, "function");

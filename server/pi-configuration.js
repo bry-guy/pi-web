@@ -395,6 +395,21 @@ function gitPackageSource(entry) {
   return parts;
 }
 
+/**
+ * Brings each configured package to its latest version, as `pi update` does. Pi clones or installs a package once
+ * and never refreshes it, so without this a worker runs its first copy of every extension for as long as its disk
+ * lives. One update() per package: update() of all of them rejects on the first failure while it is still
+ * rewriting the others, and a session loaded then would find a package without its dependencies.
+ */
+export async function updatePackages(packageManager, packages, warn = console.warn) {
+  const sources = (Array.isArray(packages) ? packages : []).map(sourceOf).filter(source => typeof source === "string");
+  const update = source => packageManager.update(source)
+    .catch(error => warn(`pi-ez-web: could not update Pi package ${source}: ${publicError(error)}`));
+  const git = sources.filter(source => source.startsWith("git:"));
+  await Promise.all(git.map(update)); // each git package has its own folder
+  for (const source of sources.filter(source => !git.includes(source))) await update(source); // npm packages share one
+}
+
 // Pi's package manager cleans failed clones, but a process interruption can
 // leave a non-repository directory behind. Remove only such directories for
 // Git packages explicitly present in the selected profile/configuration.
