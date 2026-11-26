@@ -158,7 +158,7 @@ test("the committed grants.json parses, and pi-web-developer only reads the clus
   const grants = parseGrants(readFileSync(new URL("../deploy/k8s/workspaced/grants.json", import.meta.url), "utf8"), { log: m => assert.fail(m) });
   const inCluster = grants["pi-web-developer"].egress.filter(r => r.host.endsWith(".svc.cluster.local"));
   assert.deepEqual(inCluster.map(r => [r.host.split(".")[0], r.access]),
-    [["pi-web-kube", "read-only"], ["kube-prometheus-stack-prometheus", "read-only"], ["loki", "read-only"]]);
+    [["labrat-kube", "read-only"], ["kube-prometheus-stack-prometheus", "read-only"], ["loki", "read-only"]]);
 });
 
 test("openshell create makes a labelled PVC, then a sandbox with the worker's env, disk, port and policy", async () => {
