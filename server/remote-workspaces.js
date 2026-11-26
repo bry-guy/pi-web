@@ -615,7 +615,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       await pushModelAuth();
       const res = await call("/workspaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ project: body.project, ...(body.grant ? { grant: String(body.grant) } : {}) }) });
       const created = await res.json().catch(() => ({}));
-      if (!res.ok) return c.json({ error: created.error || "workspaced_unavailable" }, res.status);
+      if (!res.ok) return c.json({ error: created.error || "workspaced_unavailable", ...(created.message ? { message: created.message } : {}) }, res.status);
       await waitReady(created.name);
       subscribe(created.name);
       return c.json({ project: body.project, workspace: created.name }, 201);
@@ -636,7 +636,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     await pushModelAuth();
     const res = await call("/workspaces", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repository: repository.trim(), ...(body.grant ? { grant: String(body.grant) } : {}) }) });
     const created = await res.json().catch(() => ({}));
-    if (!res.ok) return c.json({ error: created.error || "workspaced_unavailable" }, res.status);
+    if (!res.ok) return c.json({ error: created.error || "workspaced_unavailable", ...(created.message ? { message: created.message } : {}) }, res.status);
     await waitReady(created.name);
     subscribe(created.name);
     const forwarded = await call(workerPath(created.name, "/projects"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
