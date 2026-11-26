@@ -154,8 +154,11 @@ test("the policy is the worker base plus the grant's egress, default deny", () =
 });
 
 // workspaced refuses to start on a grants file it cannot parse, so a bad one must fail here first.
-test("the committed grants.json parses", () => {
-  parseGrants(readFileSync(new URL("../deploy/k8s/workspaced/grants.json", import.meta.url), "utf8"), { log: m => assert.fail(m) });
+test("the committed grants.json parses, and pi-web-developer only reads the cluster", () => {
+  const grants = parseGrants(readFileSync(new URL("../deploy/k8s/workspaced/grants.json", import.meta.url), "utf8"), { log: m => assert.fail(m) });
+  const inCluster = grants["pi-web-developer"].egress.filter(r => r.host.endsWith(".svc.cluster.local"));
+  assert.deepEqual(inCluster.map(r => [r.host.split(".")[0], r.access]),
+    [["pi-web-kube", "read-only"], ["kube-prometheus-stack-prometheus", "read-only"], ["loki", "read-only"]]);
 });
 
 test("openshell create makes a labelled PVC, then a sandbox with the worker's env, disk, port and policy", async () => {
