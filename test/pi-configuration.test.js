@@ -6,7 +6,7 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { effectivePiConfig, saveConfig } from "../server/config.js";
-import { PiConfiguration, githubProfileSettingsUrl, recoverIncompleteGitPackages } from "../server/pi-configuration.js";
+import { PiConfiguration, githubProfileSettingsUrl, recoverIncompleteGitPackages, updatePackages } from "../server/pi-configuration.js";
 
 let tmp;
 let previousWebHome;
@@ -369,4 +369,25 @@ test("an OpenShell sandbox worker loads its grant's packages and the model shim 
   } finally {
     keys.forEach((k, i) => { if (previous[i] === undefined) delete process.env[k]; else process.env[k] = previous[i]; });
   }
+});
+
+test("updating packages waits for every package, even after one fails, and never runs two npm updates at once", async () => {
+  const log = [];
+  let npmRunning = 0;
+  const packageManager = {
+    async update(source) {
+      log.push(`start ${source}`);
+      if (source === "git:github.com/a/broken") throw new Error("fetch failed with Bearer abc123");
+      if (source.startsWith("npm:")) assert.equal(++npmRunning, 1, "npm packages share one folder");
+      await new Promise(resolve => setTimeout(resolve, 5));
+      if (source.startsWith("npm:")) npmRunning -= 1;
+      log.push(`done ${source}`);
+    },
+  };
+  const warnings = [];
+  await updatePackages(packageManager, ["git:github.com/a/broken", { source: "git:github.com/a/slow" }, "npm:one", "npm:two", 7], w => warnings.push(w));
+  assert.deepEqual(log.filter(line => line.startsWith("done")), ["done git:github.com/a/slow", "done npm:one", "done npm:two"]);
+  assert.deepEqual(log.slice(0, 2), ["start git:github.com/a/broken", "start git:github.com/a/slow"], "git packages update side by side");
+  assert.deepEqual(warnings, ["pi-ez-web: could not update Pi package git:github.com/a/broken: fetch failed with Bearer [redacted]"]);
+  await updatePackages(packageManager, undefined);
 });

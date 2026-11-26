@@ -10,7 +10,7 @@ import { exportSyncEnvironment, loadBindings, loadConfig, prepareSessionVisibili
 import { commandInfo, parseSlashCommand } from "../commands.js";
 import { activityFromEntry, activityFromToolResult, normalizeActivity } from "../activity.js";
 import { SubagentActivityStore } from "../subagent-activity.js";
-import { FOLLOW_UP_EXTENSION, PiConfiguration, WEB_SUBAGENT_EXTENSION, publicError } from "../pi-configuration.js";
+import { FOLLOW_UP_EXTENSION, PiConfiguration, WEB_SUBAGENT_EXTENSION, publicError, updatePackages } from "../pi-configuration.js";
 import { PRIME_SESSION } from "../follow-ups.js";
 import { GitHubClient } from "../github.js";
 import { findProjectByWorkspace } from "../lifecycle.js";
@@ -127,7 +127,19 @@ export class RealSupervisor {
     this.packageSetupError = null;
     this.packageSources = null;
     this.packageStatus = null;
+    this.packagesUpdated = null; // one package update per start and per configuration reload
     this.piConfiguration = new PiConfiguration();
+  }
+
+  /** Updates the configured packages once, before the first session loads them. A failed update is logged, never thrown. */
+  updatePackages() {
+    return this.packagesUpdated ||= (async () => {
+      const SDKModule = await SDK();
+      const agentDir = SDKModule.getAgentDir();
+      // The agent dir as cwd: no project-scope settings there, so only the profile's packages are touched.
+      const { settingsManager } = await this.piConfiguration.createSettingsManager(agentDir, agentDir, SDKModule.SettingsManager);
+      await updatePackages(new SDKModule.DefaultPackageManager({ cwd: agentDir, agentDir, settingsManager }), settingsManager.getGlobalSettings().packages);
+    })().catch(error => console.warn(`pi-ez-web: Pi packages were not updated: ${publicError(error)}`));
   }
 
   async _modelRuntime() {
@@ -280,6 +292,7 @@ export class RealSupervisor {
       const extensionPaths = [WEB_SUBAGENT_EXTENSION, ...(prime ? [FOLLOW_UP_EXTENSION] : []), ...(syncExtensionPath ? [syncExtensionPath] : [])];
       const resolved = await this.piConfiguration.resolve();
       const configuredPackages = Array.isArray(resolved.settings?.packages) ? resolved.settings.packages : [];
+      await this.updatePackages();
       const loadResources = async (loadPackages, packageSources, resolveOnly = false) => {
         const { settingsManager } = await this.piConfiguration.createSettingsManager(
           cwd,
@@ -1182,6 +1195,7 @@ export class RealSupervisor {
     this.packageSetupError = null;
     this.packageSources = null;
     this.packageStatus = null;
+    this.packagesUpdated = null;
     this.piConfiguration.invalidate();
     report?.({ type: "phase", phase: "runtime-load", message: "Reloading Pi profile settings and resources." });
     await this.piConfiguration.state({ force: true, report });

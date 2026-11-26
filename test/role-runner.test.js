@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { EventHub, hub as webHub } from "../server/events.js";
@@ -114,6 +114,21 @@ test("only a project worker that is not a sandbox offers the runner", () => {
     assert.equal(globalThis[ROLE_RUNNER], undefined);
     assert.equal(installRoleRunner({ PI_WEB_PROJECT: "p" }), true);
     assert.equal(typeof globalThis[ROLE_RUNNER].run, "function");
+  } finally { delete globalThis[ROLE_RUNNER]; }
+});
+
+test("a project worker points pi-projects at the dotfiles' signed grants, but only beside the trust anchor", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "pi-web-role-home-"));
+  const grants = path.join(home, ".pi", "agent", "pi-roles.json");
+  const fileFor = env => { installRoleRunner(env, home); return env.PI_ROLES_FILE; };
+  try {
+    assert.equal(fileFor({ PI_WEB_PROJECT: "p", PI_ROLES_SIGNER: "ssh-ed25519 AAAA" }), undefined, "no grants file in the dotfiles");
+    mkdirSync(path.dirname(grants), { recursive: true });
+    writeFileSync(grants, "{}");
+    assert.equal(fileFor({ PI_WEB_PROJECT: "p", PI_ROLES_SIGNER: "ssh-ed25519 AAAA" }), grants);
+    assert.equal(fileFor({ PI_WEB_PROJECT: "p" }), undefined, "without the anchor a signed file would read as tampered");
+    assert.equal(fileFor({ PI_WEB_PROJECT: "p", PI_ROLES_SIGNER: "ssh-ed25519 AAAA", PI_ROLES_FILE: "/elsewhere" }), "/elsewhere");
+    assert.equal(fileFor({ PI_WEB_PROJECT: "p", PI_WEB_SANDBOX: "1", PI_ROLES_SIGNER: "ssh-ed25519 AAAA" }), undefined, "a sandbox starts no role runs");
   } finally { delete globalThis[ROLE_RUNNER]; }
 });
 
