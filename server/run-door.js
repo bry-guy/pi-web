@@ -75,7 +75,7 @@ export async function ensureWorker(remote, entry) {
     return existing.name;
   }
   const { status, body } = await remote.createProject(asJson, { project: entry.project, grant: entry.grant });
-  if (status >= 300) throw fail(502, "run_failed", `could not create the project's worker (${body.error || status})`);
+  if (status >= 300) throw fail(502, "run_failed", `could not create the project's worker (${body.error || status}${body.message ? `: ${body.message}` : ""})`);
   return body.workspace;
 }
 

@@ -779,3 +779,24 @@ test("a browser is refused the follow-up routes on web, and no spelling of a for
     assert.deepEqual(forwarded, ["/api/sessions/s1/..%2f..%2ffollow-ups"]);
   } finally { server.close(); }
 });
+
+test("worker creation errors include workspaced's detail message", async () => {
+  const fetchImpl = async (url, init = {}) => {
+    const p = new URL(url).pathname.replace(/^\/v1/, "");
+    const json = (b, status = 200) => new Response(JSON.stringify(b), { status });
+    if (p === "/workspaces" && !init.method) return json({ workspaces: [] });
+    if (p === "/workspaces" && init.method === "POST") {
+      return json({ error: "openshell_error", message: "openshell sandbox create failed: unknown provider" }, 502);
+    }
+    if (/^\/(github-auth|model-auth)$/.test(p)) return json({ ok: true });
+    return json({ error: "unexpected" }, 500);
+  };
+  const remote = createRemoteWorkspaces({ url: "http://workspaced", token: "t", hub: new EventHub(), fetchImpl, retryMs: 50, modelAuthSyncMs: 0 });
+  try {
+    const res = await door({ remote }).fetch(run("tok-labrat"));
+    assert.equal(res.status, 502);
+    const body = await res.json();
+    assert.equal(body.error, "run_failed");
+    assert.match(body.message, /openshell_error: openshell sandbox create failed: unknown provider/);
+  } finally { remote.stop(); }
+});
