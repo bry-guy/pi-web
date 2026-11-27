@@ -77,6 +77,7 @@ RUN ./scripts/install-pi-sync.sh \
 
 COPY server ./server
 COPY workspaced ./workspaced
+COPY oauth-middleware ./oauth-middleware
 
 COPY public ./public
 
