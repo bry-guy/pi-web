@@ -1,4 +1,5 @@
-import { syncConfig } from "../config.js";
+import { loadClosed, saveClosed, syncConfig } from "../config.js";
+import { attachSynced } from "../lifecycle.js";
 import { remoteConversationPreview, remoteConversationsForProject, remoteConversationsForRepository } from "../pi-sync.js";
 import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
 import { createPiProject, ensurePrimeAgentsFile, forgetRepo, listPiProjects, piProject, pushState, recordRepo, repoEntry } from "../pi-projects.js";
@@ -186,6 +187,16 @@ export function register(api, deps) {
     if (!syncConfig(loadConfig()).serverUrl) return { error: err(c, 409, "sync_not_configured") };
     if (typeof syncSessionId !== "string" || !syncSessionId) return { error: err(c, 400, "bad_sync_session") };
     reporter.log({ type: "phase", phase: "open-synced", message: `Opening synchronized conversation ${syncSessionId}.` });
+    // A copy already here (ended earlier, so detached) is attached again in its own file, which brings in the
+    // server's copy; /sync open would write a second file for the same id and leave it archived.
+    if ((await sup.allSessions()).some(session => session.id === syncSessionId)) {
+      const closed = loadClosed();
+      if (closed.delete(syncSessionId)) saveClosed(closed);
+      const { attached, syncError } = await attachSynced(sup, [syncSessionId]);
+      if (attached.length) return { sessionId: syncSessionId };
+      const operation = reporter.finish({ status: "error", httpStatus: 409, message: syncError || "The conversation could not be opened." });
+      return { error: err(c, 409, "sync_open_failed", { message: syncError, operation }) };
+    }
     const { id: createdId } = await sup.createSession({ cwd });
     try { await sup.command(createdId, `/sync open ${syncSessionId}`, "prompt"); }
     catch (error) {

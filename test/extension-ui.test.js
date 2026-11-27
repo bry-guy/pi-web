@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { EventHub } from "../server/events.js";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import { EventHub, hub as workerHub } from "../server/events.js";
 import { buildApi } from "../server/routes.js";
 import { ExtensionUiHost } from "../server/extension-ui.js";
+import { createRemoteWorkspaces, registerRemoteRoutes } from "../server/remote-workspaces.js";
+import { createWorkspaced } from "../workspaced/index.js";
 
 function frames(hub) {
   const values = [];
@@ -17,7 +21,7 @@ async function waitFor(values, predicate) {
   for (let i = 0; i < 100; i++) {
     const value = values.find(predicate);
     if (value) return value;
-    await new Promise(resolve => setTimeout(resolve, 1));
+    await new Promise(resolve => setTimeout(resolve, i < 50 ? 1 : 20));
   }
   throw new Error("timed out waiting for event");
 }
@@ -90,6 +94,60 @@ test("pending extension dialogs are re-sent when the browser reloads the transcr
   assert.deepEqual(replayed.options, ["one"]);
   adapter.respond("session-r", first.requestId, { value: "one" });
   assert.equal(await selected, "one");
+});
+
+test("an extension's status is remembered for a page that loads later, and forgotten with the session", async () => {
+  const hub = new EventHub();
+  const events = frames(hub);
+  const adapter = new ExtensionUiHost({ hub });
+  const status = events => events.filter(event => event.type === "extension_ui_status").map(event => [event.sessionId, event.key, event.text]);
+  adapter.uiContext("session-s").setStatus("pi-sync", "sync: up to date");
+  adapter.uiContext("session-s").setStatus("other", "busy");
+  adapter.uiContext("session-s").setStatus("other", undefined);
+  events.length = 0;
+  adapter.replayPending("session-s");
+  adapter.replayPending("other-session");
+  assert.deepEqual(status(events), [["session-s", "pi-sync", "sync: up to date"]], "only what is still shown, only for that session");
+  events.length = 0;
+  adapter.cancelSession("session-s");
+  assert.deepEqual(status(events), [["session-s", "pi-sync", null]], "open pages drop the label of a session whose runtime is gone");
+  events.length = 0;
+  adapter.replayPending("session-s");
+  assert.deepEqual(status(events), []);
+});
+
+test("a page loaded after a worker's session set its sync status gets it through web's relay", async () => {
+  // The worker: its real API and event stream, with a status set before web or any page was listening.
+  const extensionUi = new ExtensionUiHost({ hub: workerHub });
+  extensionUi.uiContext("s1").setStatus("pi-sync", "sync: up to date");
+  const sup = { transcript: async () => [], isStreaming: () => false, isCompacting: () => false, queue: () => [] };
+  const workerApp = new Hono();
+  workerApp.get("/api/state", c => c.json({ projects: [{ id: "p1", name: "app", sessions: [{ id: "s1" }] }] }));
+  workerApp.route("/api", buildApi(sup, { extensionUi }));
+  const worker = serve({ fetch: workerApp.fetch, port: 0, hostname: "127.0.0.1" });
+  await new Promise(resolve => worker.once("listening", resolve));
+  const provider = { list: async () => [{ name: "app", ready: true, state: "running" }], upstream: () => `http://127.0.0.1:${worker.address().port}` };
+  const daemon = serve({ fetch: createWorkspaced({ provider, token: "t" }).fetch, port: 0, hostname: "127.0.0.1" });
+  await new Promise(resolve => daemon.once("listening", resolve));
+  const hub = new EventHub();
+  const events = frames(hub);
+  const remote = createRemoteWorkspaces({ url: `http://127.0.0.1:${daemon.address().port}`, token: "t", hub, retryMs: 50, modelAuthSyncMs: 0 });
+  try {
+    const api = new Hono();
+    registerRemoteRoutes(api, remote);
+    await remote.projects();
+    await waitFor(events, event => event.type === "events_resync");
+    assert.equal(events.some(event => event.type === "extension_ui_status"), false, "nothing replays a status on its own");
+    // The page opens the conversation: its transcript load brings the status with it.
+    assert.equal((await api.request("/sessions/s1/transcript")).status, 200);
+    const shown = await waitFor(events, event => event.type === "extension_ui_status");
+    assert.deepEqual([shown.sessionId, shown.key, shown.text], ["s1", "pi-sync", "sync: up to date"]);
+  } finally {
+    remote.stop();
+    daemon.close();
+    worker.closeAllConnections();
+    worker.close();
+  }
 });
 
 test("a question tells the browser when it is no longer waiting, however it ended", async () => {
