@@ -218,9 +218,17 @@ spec:
             # Projects run in per-project workers via workspaced; chats in its "chats" worker.
             - name: PI_WEB_WORKSPACED_URL
               value: http://pi-workspaced.pi-workspaced.svc:3150
+            # Run door (docs/web.md): scheduled agent runs from pi-agents; NetworkPolicy restricts TCP 3142.
+            - name: PI_WEB_RUN_PORT
+              value: "3142"
+            - name: PI_WEB_RUN_TOKENS
+              value: '[{"agent":"labrat","project":"labrat","grant":"labrat","model":"anthropic/claude-opus-5-5","sha256":"REPLACE_WITH_SHA256_FROM_RUN_TOKEN_APPLY"}]'
           ports:
             - name: http
               containerPort: 3141
+              protocol: TCP
+            - name: run
+              containerPort: 3142
               protocol: TCP
           startupProbe:
             httpGet:

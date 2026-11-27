@@ -15,3 +15,7 @@ spec:
       port: 3141
       targetPort: http
       protocol: TCP
+    - name: run
+      port: 3142
+      targetPort: run
+      protocol: TCP
