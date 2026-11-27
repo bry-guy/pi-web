@@ -1,0 +1,10 @@
+{
+  "logins": {
+    "agy": {
+      "tokenUrl": "https://oauth2.googleapis.com/token",
+      "provider": "agy-google",
+      "access": "AGY_ACCESS_TOKEN",
+      "refresh": "AGY_REFRESH_TOKEN"
+    }
+  }
+}

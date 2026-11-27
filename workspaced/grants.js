@@ -28,8 +28,8 @@ export const MODEL_PROVIDER = "pi-web-anthropic";
 // Sandbox variables workspaced sets itself, beside workerEnv.
 export const SANDBOX_ENV = ["HOST", "PI_WEB_SANDBOX", "PI_ANTHROPIC_PLACEHOLDER_FILE", "PI_WEB_PACKAGES"];
 const RESERVED_ENV = new Set([...workerEnv({ name: "x", repository: "project:x" }).map(e => e.name), ...SANDBOX_ENV]);
-const KNOWN_KEYS = new Set(["anyProject", "repos", "env", "namespace", "serviceAccount", "runtimeClass", "provider", "egress", "description", "providers", "environment", "packages", "role"]);
-const OPENSHELL_ONLY = ["providers", "environment", "packages", "role"];
+const KNOWN_KEYS = new Set(["anyProject", "repos", "env", "namespace", "serviceAccount", "runtimeClass", "provider", "egress", "description", "providers", "environment", "packages", "role", "middlewares"]);
+const OPENSHELL_ONLY = ["providers", "environment", "packages", "role", "middlewares"];
 // OpenShell endpoint presets: read-only = GET/HEAD/OPTIONS, read-write adds POST/PUT/PATCH, full = every method.
 const ACCESS = ["read-only", "read-write", "full"];
 
@@ -50,7 +50,17 @@ function parseSandboxFields(name, g) {
   if (g.role != null && (typeof g.role !== "string" || !ROLE_ID.test(g.role))) fail(`${name}.role must be <repo>/<role>`);
   // A role's credentials must never be open to every project.
   if (g.role != null && g.anyProject) fail(`${name}.role cannot be combined with anyProject`);
-  return { providers: [...new Set(providers)], environment: { ...environment }, packages: [...new Set(packages)], ...(g.role ? { role: g.role } : {}) };
+  if (g.middlewares != null && !Array.isArray(g.middlewares)) fail(`${name}.middlewares must be a list`);
+  const middlewares = (g.middlewares ?? []).map((m, i) => {
+    const at = `${name}.middlewares[${i}]`;
+    if (!m || typeof m !== "object" || typeof m.middleware !== "string" || !GATEWAY_NAME.test(m.middleware)) fail(`${at}.middleware must be a registered middleware name`);
+    if (!Array.isArray(m.hosts) || !m.hosts.length || !m.hosts.every(h => typeof h === "string" && HOST.test(h))) fail(`${at}.hosts must be a list of host names`);
+    if (m.config != null && (typeof m.config !== "object" || Array.isArray(m.config))) fail(`${at}.config must be an object`);
+    const unknown = Object.keys(m).filter(k => !["middleware", "hosts", "config"].includes(k));
+    if (unknown.length) fail(`${at} has unknown fields ${unknown.join(", ")}`);
+    return { middleware: m.middleware, hosts: [...m.hosts], ...(m.config ? { config: m.config } : {}) };
+  });
+  return { providers: [...new Set(providers)], environment: { ...environment }, packages: [...new Set(packages)], ...(g.role ? { role: g.role } : {}), ...(middlewares.length ? { middlewares } : {}) };
 }
 
 // An OpenShell grant's egress: default deny, plus these endpoints.

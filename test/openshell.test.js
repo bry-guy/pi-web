@@ -153,6 +153,20 @@ test("the policy is the worker base plus the grant's egress, default deny", () =
   }
 });
 
+test("a grant's middlewares become the policy's network_middlewares, in order", () => {
+  const grants = m => parseGrants(JSON.stringify({ default: { anyProject: true }, g: { anyProject: true, provider: "openshell", middlewares: m } }));
+  const g = grants([{ middleware: "oauth", hosts: ["auth.example.com"], config: { login: "acme" } }, { middleware: "scan", hosts: ["*.example.com"] }]).g;
+  assert.deepEqual(sandboxPolicy(g).network_middlewares, {
+    "middleware-1": { middleware: "oauth", order: 0, endpoints: { include: ["auth.example.com"] }, config: { login: "acme" } },
+    "middleware-2": { middleware: "scan", order: 1, endpoints: { include: ["*.example.com"] } },
+  });
+  assert.equal(sandboxPolicy(parseGrants("").default).network_middlewares, undefined);
+  assert.throws(() => grants({}), /must be a list/);
+  assert.throws(() => grants([{ middleware: "oauth", hosts: [] }]), /hosts/);
+  assert.throws(() => grants([{ middleware: "oauth", hosts: ["a.b"], extra: 1 }]), /unknown fields extra/);
+  assert.throws(() => parseGrants(JSON.stringify({ default: { anyProject: true }, k: { anyProject: true, middlewares: [] } })), /middlewares/);
+});
+
 // workspaced refuses to start on a grants file it cannot parse, so a bad one must fail here first.
 test("the committed grants.json parses", () => {
   parseGrants(readFileSync(new URL("../deploy/k8s/workspaced/grants.json", import.meta.url), "utf8"), { log: m => assert.fail(m) });
