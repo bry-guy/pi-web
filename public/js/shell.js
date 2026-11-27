@@ -398,10 +398,11 @@ export async function closeConversation(id, kind = "session") {
   }
 }
 
-// Undoes an end. A pi-sync detach is not undone: the conversation is no longer shared.
+// Undoes an end. The server shares the conversation again when the sync server has it, and says so when it could not.
 export async function restoreConversation(id) {
   try {
-    await api.restore(id);
+    const result = await api.restore(id);
+    if (result.syncError) store.setError(result.syncError);
     await refreshState();
   } catch (error) {
     store.setError(`Could not restore: ${error.detail || error.message || error.error || error}`);
@@ -792,7 +793,7 @@ class PiHeader extends HTMLElement {
       : chat ? chat.title : node ? node.title : (s.chatId ? "New chat" : (p ? p.name : "Chat"));
     const activeSession = node || chat;
     const syncInfo = syncSummary(activeSession?.id && store.state.extensionStatuses[activeSession.id]?.["pi-sync"]);
-    const syncLine = syncInfo ? `<span class="sync-label ${syncInfo.tone}" title="${esc(syncInfo.full)}">${esc(`${syncInfo.state}: ${syncInfo.message}`)}</span>` : "";
+    const syncLine = syncInfo ? `<span class="sync-label ${syncInfo.tone}" title="${esc(syncInfo.full)}">${esc(syncInfo.message)}</span>` : "";
     const remoteLine = s.remoteSessionId ? (() => {
       const dev = remoteMeta?.device || "Device";
       const cwd = remoteMeta?.cwdShort ? `<span class="workspace-divider">·</span><span class="workspace-commit" title="${esc(remoteMeta.cwd || remoteMeta.cwdShort)}">${esc(remoteMeta.cwdShort)}</span>` : "";
@@ -853,12 +854,18 @@ class PiHeader extends HTMLElement {
 
 }
 
-// The header's sync label comes from the pi-sync extension's status text ("sync: up to date").
-export function syncSummary(extensionText = "") {
-  const detail = String(extensionText || "").replace(/^sync:\s*/, "");
-  if (!detail) return null;
-  const tone = /in use/.test(detail) ? "busy" : /offline|missing|taken over|failed|error|unavailable/.test(detail) ? "error" : "";
-  return { tone, state: "Sync", message: detail, full: detail };
+// One wording for the header and the session rows. What pi-sync says in a running session comes first ("sync: up
+// to date" reads "synced", "sync: in use on X" reads "on X", anything else as it is); without that, `standing`:
+// where the sync server's list puts the copy here ("synced", "on <device> · <when>", "not synced").
+export function syncSummary(extensionText = "", standing = "") {
+  const full = String(extensionText || "");
+  const detail = full.replace(/^sync:\s*/, "");
+  const message = !detail ? String(standing || "")
+    : /^(up to date|on|reconnected)(?= · |$)/.test(detail) ? detail.replace(/^(up to date|on|reconnected)/, "synced")
+    : /^in use on /.test(detail) ? detail.slice(7) : full;
+  if (!message) return null;
+  const tone = /^on /.test(message) ? "busy" : /offline|missing|taken over|failed|error|unavailable|rejected/.test(detail) ? "error" : "";
+  return { tone, message, full: full || message };
 }
 
 // Plain-words Git state shared by the header and the Files panel.

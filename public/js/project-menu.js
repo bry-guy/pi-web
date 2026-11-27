@@ -23,8 +23,8 @@ export function openChatsMenu() {
   store.set({ projectMenu: { chats: true }, sessionPicker: null, drawerOpen: false });
 }
 
-// What pi-sync last reported for a session open on this server ("up to date", "in use on …"), if anything.
-const syncOf = id => syncSummary(store.state.extensionStatuses?.[id]?.["pi-sync"])?.message || "";
+// Where a session here stands with sync, in the header's words: what pi-sync reports while it runs, else the sync server's list.
+const syncOf = n => syncSummary(store.state.extensionStatuses?.[n.id]?.["pi-sync"], n.sync)?.message || "";
 // Sessions pi-projects' role_agent started: its "<role>: <task>" name, or the role prompt as title before names existed.
 // shortcut: matched by title since pi-sync records no role marker; a run renamed by hand counts as yours.
 const isRoleRun = title => /^(?:You are running as role |Foreground Role Agent Mode$|[a-z0-9]+(?:-[a-z0-9]+)+: )/.test(title || "");
@@ -312,7 +312,9 @@ class PiProjectMenu extends HTMLElement {
     if (group.folder) walk(group.folder.sessions, group.folder.id);
     // Other devices' project-level sessions sit in the same list; repository ones list under their repository.
     for (const item of menu.synced || []) if (!item.repo) flat.push(this.syncedNode(item));
-    const sessions = this.sessionsSection(menu, flat, n => n.synced ? [n.where, n.when] : [n.when, syncOf(n.id)]);
+    // Ended here and continued on another device: that device's conversation; opening it restores and catches up.
+    for (const item of group.folder?.moved || []) flat.push({ ...item, moved: true, pid: group.folder.id });
+    const sessions = this.sessionsSection(menu, flat, n => n.synced || n.moved ? [n.where, n.when] : [n.when, syncOf(n)]);
 
     const past = [group.folder].filter(Boolean).flatMap(m => (m.ended || []).map(item => ({ ...item, pid: m.id })));
     const pastSection = past.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Past sessions</span><span>${past.length}</span></div>
@@ -330,7 +332,7 @@ class PiProjectMenu extends HTMLElement {
   }
 
   syncedNode(item) {
-    return { synced: item.sessionId, title: item.title || "Untitled conversation", branch: item.branch, commit: item.commit, when: item.when, updatedAt: item.updatedAt, where: item.leaseHolder ? `running on ${item.leaseHolder}` : item.device };
+    return { synced: item.sessionId, title: item.title || "Untitled conversation", branch: item.branch, commit: item.commit, when: item.when, updatedAt: item.updatedAt, where: `on ${item.leaseHolder || item.device || "another device"}` };
   }
 
   /** A repository's sessions here plus its other-device ones (pi-sync's listing names the repository). */
@@ -339,6 +341,7 @@ class PiProjectMenu extends HTMLElement {
     const walk = nodes => { for (const n of nodes || []) { if (!n.draft && n.agentKind !== "run") flat.push({ ...n, pid: repo.id }); walk(n.children); } };
     walk(repo.sessions);
     for (const item of menu.synced || []) if (item.repo === repo.name) flat.push({ ...this.syncedNode(item), repoId: repo.id });
+    for (const item of repo.moved || []) flat.push({ ...item, moved: true, pid: repo.id });
     return flat;
   }
 
@@ -347,7 +350,7 @@ class PiProjectMenu extends HTMLElement {
     flat.sort((a, b) => String(b.activityAt || b.updatedAt || "").localeCompare(String(a.activityAt || a.updatedAt || "")));
     const head = n => n.synced
       ? `data-act="open-synced" data-sync-id="${esc(n.synced)}" data-branch="${esc(n.branch || "")}" data-repo="${esc(n.repoId || "")}"`
-      : `data-act="open-session" data-id="${esc(n.id)}" data-pid="${esc(n.pid)}"`;
+      : `data-act="${n.moved ? "open-past" : "open-session"}" data-id="${esc(n.id)}" data-pid="${esc(n.pid)}"`;
     const total = flat.length;
     const filter = total > FILTER_ABOVE ? (menu.filter || "").trim() : "";
     // Match what the row shows: its title, device and branch (when the hint lists them).
@@ -373,9 +376,9 @@ class PiProjectMenu extends HTMLElement {
       ${row("New session", `Starts in ${repo.name} on ${primary}.`, `<button class="btn btn-secondary" data-act="new-repo-session" data-id="${esc(repo.id)}" ${busy ? "disabled" : ""}>New</button>`)}
     </div></section>`;
     const headOf = n => (repo.contexts || []).find(c => c.id === n.contextId || c.path === n.workspacePath)?.head;
-    const sessions = this.sessionsSection(menu, this.repoSessions(menu, repo), n => n.synced
+    const sessions = this.sessionsSection(menu, this.repoSessions(menu, repo), n => n.synced || n.moved
       ? [n.branch, shortSha(n.commit), n.where, n.when]
-      : [n.branch, shortSha(headOf(n)), n.when, syncOf(n.id)]);
+      : [n.branch, shortSha(headOf(n)), n.when, syncOf(n)]);
     const past = repo.ended || [];
     const pastSection = past.length ? `<section class="session-history"><div class="session-context-heading session-history-heading"><span>Past sessions</span><span>${past.length}</span></div>
       <div class="history-list">${past.map(item => this.listRow(menu, `past:${item.id}`, item.title, `Ended ${item.when}`, `data-act="open-past" data-id="${esc(item.id)}" data-pid="${esc(repo.id)}"`)).join("")}</div></section>` : "";
