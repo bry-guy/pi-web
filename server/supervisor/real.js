@@ -10,7 +10,7 @@ import { exportSyncEnvironment, loadBindings, loadConfig, prepareSessionVisibili
 import { commandInfo, parseSlashCommand } from "../commands.js";
 import { activityFromEntry, activityFromToolResult, normalizeActivity } from "../activity.js";
 import { SubagentActivityStore } from "../subagent-activity.js";
-import { FOLLOW_UP_EXTENSION, PiConfiguration, WEB_SUBAGENT_EXTENSION, publicError, updatePackages } from "../pi-configuration.js";
+import { AGY_SIGN_IN_EXTENSION, FOLLOW_UP_EXTENSION, PiConfiguration, WEB_SUBAGENT_EXTENSION, isAntigravityBridgeSource, isPiAntigravitySource, publicError, sourceOf, updatePackages } from "../pi-configuration.js";
 import { PRIME_SESSION } from "../follow-ups.js";
 import { GitHubClient } from "../github.js";
 import { findProjectByWorkspace } from "../lifecycle.js";
@@ -48,17 +48,15 @@ export function isPackageSetupFailure(error) {
 }
 
 // Subscription providers that ship as Pi extensions. Only their providers are taken, not their tools or commands.
-const PROVIDER_EXTENSIONS = [
-  path.join(path.dirname(createRequire(import.meta.url).resolve("pi-antigravity/package.json")), "src", "index.ts"),
-];
+const PI_ANTIGRAVITY_EXTENSION = path.join(path.dirname(createRequire(import.meta.url).resolve("pi-antigravity/package.json")), "src", "index.ts");
 
-async function registerExtensionProviders(SDKModule, runtime) {
+async function registerExtensionProviders(SDKModule, runtime, extensionPaths) {
   const loader = new SDKModule.DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: SDKModule.getAgentDir(),
     settingsManager: SDKModule.SettingsManager.inMemory(),
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-    additionalExtensionPaths: PROVIDER_EXTENSIONS,
+    additionalExtensionPaths: extensionPaths,
   });
   await loader.reload();
   const { errors, runtime: extensionRuntime } = loader.getExtensions();
@@ -142,13 +140,34 @@ export class RealSupervisor {
     })().catch(error => console.warn(`pi-ez-web: Pi packages were not updated: ${publicError(error)}`));
   }
 
+  /** Whether the worker's packages (profile and PI_WEB_PACKAGES) include @estebanforge/pi-antigravity-bridge. */
+  async _antigravityBridgeConfigured(SDKModule) {
+    const agentDir = SDKModule.getAgentDir();
+    const { settingsManager } = await this.piConfiguration.createSettingsManager(agentDir, agentDir, SDKModule.SettingsManager);
+    return (settingsManager.getGlobalSettings().packages || []).some(pkg => isAntigravityBridgeSource(sourceOf(pkg)));
+  }
+
+  // pi-antigravity and the bridge both register the `antigravity` provider, and Pi merges a second registration
+  // into the first key by key, so only one of them may ever register: the bridge when it is configured.
+  async _providerExtensions(SDKModule) {
+    this.antigravityBridge = await this._antigravityBridgeConfigured(SDKModule);
+    if (!this.antigravityBridge) return [PI_ANTIGRAVITY_EXTENSION];
+    const agentDir = SDKModule.getAgentDir();
+    await this.updatePackages();
+    const { settingsManager } = await this.piConfiguration.createSettingsManager(agentDir, agentDir, SDKModule.SettingsManager);
+    const { extensions } = await new SDKModule.DefaultPackageManager({ cwd: agentDir, agentDir, settingsManager }).resolve();
+    this.piAntigravityPaths = new Set(extensions.filter(extension => isPiAntigravitySource(extension.metadata?.source)).map(extension => extension.path));
+    return extensions.filter(extension => extension.enabled && isAntigravityBridgeSource(extension.metadata?.source)).map(extension => extension.path);
+  }
+
   async _modelRuntime() {
     if (this.runtime) return this.runtime;
     if (!this.runtimePromise) {
       const initializing = (async () => {
         const SDKModule = await SDK();
         const runtime = await SDKModule.ModelRuntime.create();
-        await registerExtensionProviders(SDKModule, runtime).catch(error => console.error("pi-ez-web: extension providers unavailable", publicError(error?.message || String(error))));
+        await this._providerExtensions(SDKModule)
+          .then(extensionPaths => registerExtensionProviders(SDKModule, runtime, extensionPaths)).catch(error => console.error("pi-ez-web: extension providers unavailable", publicError(error?.message || String(error))));
         this.runtime = runtime;
         return runtime;
       })();
@@ -289,7 +308,9 @@ export class RealSupervisor {
       const syncExtensionPath = await activePiSyncExtensionPath();
       // A prime's session web collects follow-ups from (marked when web created it) also gets the follow-up tools.
       const prime = (sessionManager.getEntries?.() || []).some(entry => entry.type === "custom" && entry.customType === PRIME_SESSION);
-      const extensionPaths = [WEB_SUBAGENT_EXTENSION, ...(prime ? [FOLLOW_UP_EXTENSION] : []), ...(syncExtensionPath ? [syncExtensionPath] : [])];
+      const bridge = !!this.antigravityBridge;
+      const piAntigravity = bridge ? this.piAntigravityPaths || new Set() : new Set();
+      const extensionPaths = [WEB_SUBAGENT_EXTENSION, ...(prime ? [FOLLOW_UP_EXTENSION] : []), ...(bridge ? [AGY_SIGN_IN_EXTENSION] : []), ...(syncExtensionPath ? [syncExtensionPath] : [])];
       const resolved = await this.piConfiguration.resolve();
       const configuredPackages = Array.isArray(resolved.settings?.packages) ? resolved.settings.packages : [];
       await this.updatePackages();
@@ -305,13 +326,18 @@ export class RealSupervisor {
           agentDir,
           settingsManager,
           additionalExtensionPaths: extensionPaths,
-          ...(syncExtensionPath ? { extensionsOverride: result => ({
+          ...(syncExtensionPath || bridge ? { extensionsOverride: result => ({
             ...result,
-            extensions: result.extensions.filter(extension =>
+            extensions: result.extensions.filter(extension => (
+              !syncExtensionPath ||
               !extension.commands?.has("sync") ||
               path.resolve(extension.path || "") === path.resolve(syncExtensionPath) ||
               !/(?:^|[/\\])pi-sync[/\\](?:.*[/\\])?extensions[/\\]sync\.[jt]s$/.test(extension.path || "")
-            ),
+            ) && !piAntigravity.has(extension.path)),
+            // A dropped extension's provider was queued while it loaded; Pi registers the queue regardless.
+            runtime: Object.assign(result.runtime, {
+              pendingProviderRegistrations: result.runtime.pendingProviderRegistrations.filter(item => !piAntigravity.has(item.extensionPath)),
+            }),
           }) } : {}),
         });
         if (resolveOnly) {
@@ -504,6 +530,12 @@ export class RealSupervisor {
         if (summary) {
           st.liveRecords.set(summary.id, summary);
           hub.emit(id, "summary", { record: summary });
+        }
+        const native = agyNativeToolRecord(entry);
+        if (native) {
+          st.liveRecords.set(native.id, native);
+          hub.emit(id, "tool_start", { toolId: native.id, name: native.tool, argsSummary: native.arg });
+          hub.emit(id, "tool_end", { toolId: native.id, ok: !native.meta, output: native.out, meta: native.meta });
         }
         const activity = activityFromEntry(entry);
         if (activity) {
@@ -1200,6 +1232,11 @@ export class RealSupervisor {
     report?.({ type: "phase", phase: "runtime-load", message: "Reloading Pi profile settings and resources." });
     await this.piConfiguration.state({ force: true, report });
     await this.updatePackages();
+    // The antigravity provider is chosen when the model runtime is created; no session holds it now.
+    if (this.runtime && await this._antigravityBridgeConfigured(await SDK()) !== !!this.antigravityBridge) {
+      this.runtime = null;
+      this.runtimePromise = null;
+    }
     if (sessionId) {
       try {
         report?.({ type: "phase", phase: "runtime-attach", message: `Attaching the refreshed resource runtime for ${sessionId}.` });
@@ -1649,6 +1686,11 @@ export function entriesToRecords(entries) {
       if (summary) records.push(summary);
       continue;
     }
+    const native = agyNativeToolRecord(entry);
+    if (native) {
+      records.push(native);
+      continue;
+    }
     if (entry.type === "custom_message" && entry.customType === PRIME_REPORT) {
       records.push(reportRecord(entry));
       continue;
@@ -1719,6 +1761,21 @@ function toolStartRecord(evt) {
   return {
     id: evt.toolCallId, role: "tool", tool: evt.toolName,
     arg: summarizeArgs(evt.toolName, evt.args), meta: "", out: "", at: Date.now(), running: true,
+  };
+}
+
+// The Antigravity bridge keeps agy's own tool steps as display-only session entries, never Pi tool calls.
+function agyNativeToolRecord(entry) {
+  if (entry?.type !== "custom" || entry.customType !== "agy-native-event") return null;
+  const data = entry.data || {};
+  const text = value => (typeof value === "string" ? value : "");
+  const failed = data.status === "failed";
+  return {
+    id: entry.id, role: "tool", tool: text(data.name) || "Antigravity",
+    arg: text(data.path) || text(data.command).split(/\r?\n/, 1)[0].trim(),
+    meta: failed ? "error" : "",
+    out: (!failed && text(data.diff)) || text(data.output),
+    at: entryTime(entry),
   };
 }
 

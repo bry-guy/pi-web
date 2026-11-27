@@ -8,6 +8,12 @@ With Docker Compose, the app config lives at `/data/pi-ez-web/config.json` insid
 
 In **Settings**, sign in to a provider or add an API key, then choose a default model. Pi stores provider credentials below `$PI_CODING_AGENT_DIR`; the Compose setup keeps this directory in the persistent volume. `defaultModel: null` selects the first available model; an explicit value uses the `provider/modelId` format.
 
+### Antigravity through the agy CLI
+
+pi-web offers Antigravity (`antigravity/...` models) through [pi-antigravity](https://www.npmjs.com/package/pi-antigravity) and a Google sign-in in **Settings**. To run Antigravity models through Google's `agy` CLI instead, add `npm:@estebanforge/pi-antigravity-bridge` to the worker's packages: the Pi profile's `packages`, or a sandbox grant's `packages` (`PI_WEB_PACKAGES`). Both register the `antigravity` provider, so a worker with the bridge registers only the bridge's (its model list comes from `agy models`, or the bridge's built-in list) and drops pi-antigravity even if a profile also lists it. The choice is made when the worker starts and again on **Save & reload**.
+
+The image ships a pinned `agy` (`/usr/local/bin/agy`; `AGY_BIN` overrides it). agy keeps its own Google login, separate from the **Settings** one. Before the first turn on a bridge model, pi-web checks it with `agy models`; when agy is not signed in, the chat shows a Google sign-in link and asks for the authorization code that page shows, then passes it to `agy` (run under `script` for a terminal). Cancelling the question stops the sign-in, and the turn then fails with agy's sign-in error. agy's own tool steps (edits, commands) show as finished tool cards in the turn's steps; they ran inside agy, so they are display-only.
+
 ## Add repositories
 
 The project picker offers two sources. Both clone into `reposRoot` (`/data/repos` in Compose), or into the worker's own volume when workspaced is configured:
