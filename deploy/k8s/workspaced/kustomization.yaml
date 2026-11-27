@@ -5,12 +5,17 @@ namespace: pi-workspaced
 resources:
   - workspace-env.yaml
   - workspaced.yaml
+  - oauth-middleware.yaml
 # Grant shapes for project workers (workspaced/grants.js). The hash
 # suffix restarts workspaced when they change.
 configMapGenerator:
   - name: pi-workspaced-grants
     files:
       - grants.json
+  # Logins oauth-middleware keeps on the gateway (docs/oauth-middleware.md).
+  - name: pi-oauth-middleware-logins
+    files:
+      - oauth-logins.json
 images:
   - name: ghcr.io/bry-guy/pi-ez-web
     digest: sha256:641cbd743ba62c6aaf7446bd25f37ac0b1a464e51a5dc90f9c59cf5f8d72b64e
@@ -28,3 +33,8 @@ replacements:
           # Anchored: the name is matched as a regular expression, and unanchored it also
           # overwrote WORKSPACE_IMAGE_PULL_SECRET.
           - spec.template.spec.containers.[name=gateway].env.[name=^WORKSPACE_IMAGE$].value
+      - select:
+          kind: Deployment
+          name: pi-oauth-middleware
+        fieldPaths:
+          - spec.template.spec.containers.[name=middleware].image

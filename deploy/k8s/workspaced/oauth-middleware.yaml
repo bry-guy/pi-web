@@ -1,0 +1,130 @@
+# OAuth logins for OpenShell sandbox workers whose real tokens stay on the gateway (docs/oauth-middleware.md).
+# The gateway registers it in its config (infra: selfhost/platform/openshell) and refuses to start while a registered
+# middleware is down, so it runs on its own, apart from workspaced. Its TLS key pair (pi-oauth-middleware-tls) and the
+# gateway's JWT public key (openshell-jwt-public) are platform-owned in bry-guy/infra, as is its network policy.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pi-oauth-middleware
+  labels:
+    app.kubernetes.io/name: pi-oauth-middleware
+    app.kubernetes.io/part-of: selfhost
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pi-oauth-middleware
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pi-oauth-middleware
+        app.kubernetes.io/part-of: selfhost
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: middleware
+          image: ghcr.io/bry-guy/pi-ez-web:sha-placeholder
+          imagePullPolicy: IfNotPresent
+          command: [node, oauth-middleware/index.js]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          # The same OpenShell client settings as workspaced: it reads sandbox placeholders and updates providers.
+          envFrom:
+            - configMapRef:
+                name: openshell-client
+                optional: true
+          env:
+            - name: PORT
+              value: "50051"
+            - name: OAUTH_MIDDLEWARE_CONFIG
+              value: /etc/oauth-middleware/oauth-logins.json
+            - name: OAUTH_MIDDLEWARE_NAME
+              value: oauth
+            - name: OAUTH_MIDDLEWARE_TLS_CERT
+              value: /var/run/oauth-middleware-tls/tls.crt
+            - name: OAUTH_MIDDLEWARE_TLS_KEY
+              value: /var/run/oauth-middleware-tls/tls.key
+            - name: OAUTH_MIDDLEWARE_JWT_KEY
+              value: /var/run/openshell-jwt/public.pem
+            - name: OAUTH_MIDDLEWARE_GATEWAY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: openshell-jwt-public
+                  key: gateway-id
+          ports:
+            - name: grpc
+              containerPort: 50051
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+          resources:
+            requests:
+              cpu: 5m
+              memory: 48Mi
+            limits:
+              memory: 192Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: logins
+              mountPath: /etc/oauth-middleware
+              readOnly: true
+            - name: tls
+              mountPath: /var/run/oauth-middleware-tls
+              readOnly: true
+            - name: jwt
+              mountPath: /var/run/openshell-jwt
+              readOnly: true
+            - name: openshell-config
+              mountPath: /var/lib/openshell-client
+            - name: openshell-client-tls
+              mountPath: /var/lib/openshell-client/openshell/gateways/openshell/mtls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: logins
+          configMap:
+            name: pi-oauth-middleware-logins
+        - name: tls
+          secret:
+            secretName: pi-oauth-middleware-tls
+            defaultMode: 0440
+        - name: jwt
+          secret:
+            secretName: openshell-jwt-public
+            defaultMode: 0440
+        - name: openshell-config
+          emptyDir: {}
+        - name: openshell-client-tls
+          secret:
+            secretName: openshell-client-tls
+            optional: true
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pi-oauth-middleware
+  labels:
+    app.kubernetes.io/name: pi-oauth-middleware
+    app.kubernetes.io/part-of: selfhost
+spec:
+  selector:
+    app.kubernetes.io/name: pi-oauth-middleware
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc

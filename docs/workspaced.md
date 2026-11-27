@@ -68,7 +68,7 @@ How Secrets get filled (kubectl, External Secrets, a CI job) is your choice. Wor
 
 ## OpenShell sandboxes
 
-A grant with `"provider": "openshell"` creates its workers as [OpenShell](https://github.com/ai-openshell/openshell) sandboxes (CLI 0.1.10) instead of Deployments, next to whatever `WORKSPACED_PROVIDER` runs. It is off unless `OPENSHELL_GATEWAY_ENDPOINT` is set; without it, creating a worker with such a grant fails with `501 provider_unconfigured`, and nothing else changes. workspaced drives the gateway with the `openshell` CLI (in the image) and keeps no record of its own: the gateway's sandbox list is the record.
+A grant with `"provider": "openshell"` creates its workers as [OpenShell](https://github.com/ai-openshell/openshell) sandboxes (CLI 0.1.10) instead of Deployments, next to whatever `WORKSPACED_PROVIDER` runs (gateway and CLI 0.1.10). It is off unless `OPENSHELL_GATEWAY_ENDPOINT` is set; without it, creating a worker with such a grant fails with `501 provider_unconfigured`, and nothing else changes. workspaced drives the gateway with the `openshell` CLI (in the image) and keeps no record of its own: the gateway's sandbox list is the record.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -106,6 +106,7 @@ What it gets: the variables of `workerEnv` (paths, port, project; the same `HOME
 | `providers` | Gateway provider names, each attached with `--provider`. You create them on the gateway first: workspaced does not check them, and creating a sandbox whose grant names a provider the gateway lacks fails. `pi-web-anthropic` is workspaced's own and may not be listed |
 | `environment` | Plain, non-secret variables (`--env`). Names starting with `OPENSHELL_` (the CLI's) and the ones workspaced sets are refused |
 | `packages` | pi package sources the worker loads on top of its config (a sandbox worker has no dotfiles profile). Any `npm:` source adds a `registry.npmjs.org` rule |
+| `middlewares` | Supervisor middleware registered on the gateway, each `{middleware, hosts, config?}`, run in list order on those hosts (`network_middlewares`). [oauth-middleware](oauth-middleware.md) is one |
 | `role` | `<repo>/<role>`: this grant is that role's worker for `role_agent` (see [Role runs](web.md#role-runs)). Refused with `anyProject`; list each allowed caller in `repos` as `project:<calling project>-<grant name>` |
 
 An OpenShell grant may not set `namespace`, `serviceAccount` or `env`. An unknown field in any grant logs one warning and is ignored.
