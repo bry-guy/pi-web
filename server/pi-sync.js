@@ -81,6 +81,38 @@ export async function remoteConversationsForProject(project, isHere = () => fals
   return listItems((await client.list()).sessions.filter(item => item.project === project && !isHere(item.sessionId)), await loadPiSyncModule());
 }
 
+/** Every conversation on the sync server by id, or null when no sync server is set. Throws when it does not answer. */
+export async function syncedConversations({ timeoutMs = 1_500 } = {}) {
+  const base = syncConfig(loadConfig()).serverUrl;
+  if (!base) return null;
+  const client = await createSyncClient(base, { timeoutMs });
+  return new Map(listItems((await client.list()).sessions, await loadPiSyncModule()).map(item => [item.sessionId, item]));
+}
+
+// shortcut: the server's list names no last writer, so "newer elsewhere" is its last write coming this long after
+// this copy's file was written; an upload delayed longer reads as newer until the next write here. Upgrade when
+// pi-sync lists each conversation's last writer.
+const NEWER_MS = 120_000;
+
+/**
+ * Whether the sync server's `item` is held by another device or newer than the copy here (`local`: { writtenAt,
+ * streaming }): { where: "on <device>", when } or null. A lease while the copy here runs a turn is its own.
+ */
+export function elsewhere(item, local = {}) {
+  const held = item.leaseHolder && !local.streaming ? item.leaseHolder : null;
+  const newer = !!local.writtenAt && Date.parse(item.updatedAt) - Date.parse(local.writtenAt) > NEWER_MS;
+  // shortcut: the newest device on the server's list stands for "the other device"; it can be this one's own name.
+  return held || newer ? { where: `on ${held || item.device || "another device"}`, when: rel(item.updatedAt) } : null;
+}
+
+/** A row's words for the copy here: "synced", "on <device> · <when>" or "not synced" (`items`: syncedConversations()). */
+export function syncStanding(items, local) {
+  const item = items.get(local.id);
+  if (!item) return "not synced";
+  const away = elsewhere(item, local);
+  return away ? `${away.where} · ${away.when}` : "synced";
+}
+
 function listItems(sessions, module) {
   return sessions
     .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
