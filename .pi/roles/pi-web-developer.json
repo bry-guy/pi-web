@@ -1,5 +1,5 @@
 {
-  "description": "Develop pi-web and the pi extension repos of this project (pi-sync, pi-projects, pi-background, pi-keepalive, pi-mounts, pi-secret-broker, pi-summarize, pi-worktree-include): work in a worktree, run the repo's tests, push agent/<name> (in pi-web, feature/<name> also deploys preview), open a PR and merge it with `gh pr merge --auto --squash` once CI passes. Merging pi-web or pi-sync deploys production. Changes under .pi/, .github/ and deploy paths wait for Bryan.",
+  "description": "Develop pi-web and the pi extension repos of this project (pi-sync, pi-projects, pi-background, pi-keepalive, pi-mounts, pi-secret-broker, pi-summarize, pi-worktree-include): work in a worktree, run the repo's tests, push agent/<name> (in pi-web, feature/<name> also deploys preview), open a PR and merge it with `gh pr merge --auto --squash` once CI passes. Merging pi-web or pi-sync deploys production. Check a pi-web deploy with its publish-image run (`gh run watch`): it passes only once preview, or production, serves the commit. Read cluster state (pods, events, logs — view-only RBAC, no Secrets) with the kubectl-view action (in a web sandbox: plain kubectl, Prometheus, Loki). Changes under .pi/, .github/ and deploy paths wait for Bryan.",
   "egress": [
     "uploads.github.com",
     "proxy.golang.org",
@@ -20,5 +20,28 @@
   "git": {
     "name": "bry-guy-pi-web-developer[bot]",
     "email": "353922029+bry-guy-pi-web-developer[bot]@users.noreply.github.com"
+  },
+  "broker": {
+    "kubectl-view": {
+      "description": "read-only kubectl (infra-k3s-view, cluster-wide view-only RBAC, no Secrets): get, describe, logs, top. One target, e.g. pods, events, deploy/pi-ez-web",
+      "run": [
+        "kubectl",
+        "--context",
+        "infra-k3s-view",
+        "{verb}",
+        "-n",
+        "{namespace}",
+        "{target}"
+      ],
+      "args": {
+        "verb": "get|describe|logs|top",
+        "namespace": "[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?",
+        "target": "[a-zA-Z0-9][a-zA-Z0-9./_-]{0,119}"
+      },
+      "env": [
+        "KUBECONFIG"
+      ],
+      "approve": "auto"
+    }
   }
 }
