@@ -28,6 +28,11 @@ export const WEB_SUBAGENT_EXTENSION = path.join(
   "subagent-telemetry.js",
 );
 export const FOLLOW_UP_EXTENSION = path.join(path.dirname(WEB_SUBAGENT_EXTENSION), "follow-up.js");
+export const AGY_SIGN_IN_EXTENSION = path.join(path.dirname(WEB_SUBAGENT_EXTENSION), "agy-sign-in.js");
+
+// Both packages register the `antigravity` provider (npm, git or local sources).
+export const isAntigravityBridgeSource = source => /(?:^|[:/])pi-antigravity-bridge(?:@[^/]*|\.git)?\/?$/i.test(source || "");
+export const isPiAntigravitySource = source => /(?:^|[:/])pi-antigravity(?:@[^/]*|\.git)?\/?$/i.test(source || "");
 
 function isObject(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -63,7 +68,7 @@ function unique(values) {
   return result;
 }
 
-function sourceOf(pkg) {
+export function sourceOf(pkg) {
   return typeof pkg === "string" ? pkg : isObject(pkg) && typeof pkg.source === "string" ? pkg.source : null;
 }
 

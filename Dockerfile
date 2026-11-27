@@ -61,6 +61,24 @@ RUN set -eu; \
     install -m 0755 "$tmp/gh_2.105.0_linux_amd64/bin/gh" /usr/local/bin/gh; \
     rm -rf "$tmp"
 
+# agy (Antigravity CLI) for workers that load @estebanforge/pi-antigravity-bridge: a pinned build from Google's
+# release manifest (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_<arch>.json),
+# pinned by SHA-512. Bump these to update.
+ARG AGY_BUILD=1.5.18-6386224290725888
+ARG AGY_SHA512_X64=ef379ec869719112f696e8c7cfddf776618712e58fc38e53df80801d6528abb4677782c7c8778f9c09c9123fa44c2c32675d228c06f2a8f7a8f4214e75f5bb26
+ARG AGY_SHA512_ARM64=6c59cbce5a7632083dd4ef594296e52ce0abdc12f8b4ecb55523e093748cf178f8f8383d7e51e9ed7859ea6e46c83a43a7b46364b0e033dd13afb24d6bfbe4c8
+RUN set -eu; \
+    arch="$([ "$(uname -m)" = x86_64 ] && echo x64 || echo arm64)"; \
+    dir="$([ "$arch" = x64 ] && echo linux-x64 || echo linux-arm)"; \
+    sum="$([ "$arch" = x64 ] && echo "$AGY_SHA512_X64" || echo "$AGY_SHA512_ARM64")"; \
+    tmp="$(mktemp -d)"; \
+    curl -fsSL --proto '=https' --tlsv1.2 --max-time 300 -o "$tmp/agy.tar.gz" \
+      "https://storage.googleapis.com/antigravity-public/antigravity-cli/$AGY_BUILD/$dir/cli_linux_$arch.tar.gz"; \
+    echo "$sum  $tmp/agy.tar.gz" | sha512sum -c -; \
+    tar -xzf "$tmp/agy.tar.gz" -C "$tmp" antigravity; \
+    install -m 0755 "$tmp/antigravity" /usr/local/bin/agy; \
+    rm -rf "$tmp"
+
 COPY package.json package-lock.json ./
 
 # Pi is a production dependency: the real supervisor imports its SDK in-process.
