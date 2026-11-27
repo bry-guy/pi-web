@@ -202,7 +202,7 @@ export class RealSupervisor {
     const availableModels = new Set((modelState.models || []).map(model => model.id));
     for (const info of infos) this.paths.set(info.id, info.path);
     return infos.map(info => {
-      const { cwd: openedCwd, model: requestedModel } = this._sessionSummary(SessionManager, info.path);
+      const { cwd: openedCwd, model: requestedModel, mtimeMs } = this._sessionSummary(SessionManager, info.path);
       const liveModel = modelRef(this.live.get(info.id)?.session.model);
       const model = effectiveModelInfo(requestedModel, liveModel, availableModels, modelState.effectiveDefault);
       const recordedCwd = info.cwd || openedCwd || cwd;
@@ -213,6 +213,8 @@ export class RealSupervisor {
         parentSessionId: info.parentSessionPath ? this._idFromPath(info.parentSessionPath) : null,
         created: info.created,
         modified: info.modified,
+        // When the file was last written; `modified` is the last message's time.
+        written: mtimeMs ? new Date(mtimeMs) : null,
         firstMessage: info.firstMessage || "",
         ...model,
       };
@@ -234,13 +236,13 @@ export class RealSupervisor {
   }
 
   _sessionSummary(SessionManager, filePath) {
-    let stamp = null;
-    try { const stat = fs.statSync(filePath); stamp = `${stat.mtimeMs}:${stat.size}`; } catch { /* removed session */ }
+    let stamp = null, mtimeMs = null;
+    try { const stat = fs.statSync(filePath); stamp = `${stat.mtimeMs}:${stat.size}`; mtimeMs = stat.mtimeMs; } catch { /* removed session */ }
     const cached = this.sessionSummaries.get(filePath);
     if (stamp && cached?.stamp === stamp) return cached;
     let manager;
     try { manager = SessionManager.open(filePath); } catch { /* malformed/removed session */ }
-    const summary = { stamp, cwd: manager?.getCwd?.() || null, model: modelRefFromEntries(manager?.getBranch?.() || []) };
+    const summary = { stamp, mtimeMs, cwd: manager?.getCwd?.() || null, model: modelRefFromEntries(manager?.getBranch?.() || []) };
     if (stamp) this.sessionSummaries.set(filePath, summary);
     else this.sessionSummaries.delete(filePath);
     return summary;

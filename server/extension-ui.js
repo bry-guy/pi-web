@@ -20,6 +20,8 @@ export class ExtensionUiHost {
     this.hub = hub;
     this.supervisor = supervisor;
     this.pending = new Map();
+    // sessionId → { key: text }: what each extension last showed, for a page that loads after it was set.
+    this.statuses = new Map();
   }
 
   extensionBindings(sessionId) {
@@ -58,7 +60,11 @@ export class ExtensionUiHost {
       },
       onTerminalInput: () => () => {},
       setStatus: (key, text) => {
-        this.hub?.emit(sessionId, "extension_ui_status", { key, text: text === undefined ? null : String(text) });
+        const shown = text === undefined || text === null ? null : String(text);
+        const known = this.statuses.get(sessionId) || {};
+        if (shown === null) delete known[key]; else known[key] = shown;
+        if (Object.keys(known).length) this.statuses.set(sessionId, known); else this.statuses.delete(sessionId);
+        this.hub?.emit(sessionId, "extension_ui_status", { key, text: shown });
       },
       setWorkingMessage: message => this.hub?.emit(sessionId, "extension_ui_working", { message: message || null }),
       setWorkingVisible: visible => this.hub?.emit(sessionId, "extension_ui_working", { visible: !!visible }),
@@ -152,14 +158,18 @@ export class ExtensionUiHost {
     return { ok: true, cancelled: true };
   }
 
-  /** Re-sends dialogs still waiting for this session, e.g. after the browser reloads mid-dialog. */
+  /** Re-sends this session's extension statuses and dialogs still waiting, e.g. after the browser reloads. */
   replayPending(sessionId) {
+    for (const [key, text] of Object.entries(this.statuses.get(sessionId) || {})) this.hub?.emit(sessionId, "extension_ui_status", { key, text });
     for (const pending of this.pending.values()) {
       if (pending.sessionId === sessionId) this.hub?.emit(sessionId, "extension_ui_request", pending.event);
     }
   }
 
   cancelSession(sessionId) {
+    // The session's runtime is gone (disposed, deleted, replaced): its statuses no longer hold, here or on open pages.
+    for (const key of Object.keys(this.statuses.get(sessionId) || {})) this.hub?.emit(sessionId, "extension_ui_status", { key, text: null });
+    this.statuses.delete(sessionId);
     for (const pending of this.pending.values()) {
       if (pending.sessionId === sessionId) pending.finish(cancelValue(pending.method));
     }
