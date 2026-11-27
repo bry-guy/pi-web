@@ -106,6 +106,7 @@ What it gets: the variables of `workerEnv` (paths, port, project; the same `HOME
 | `providers` | Gateway provider names, each attached with `--provider`. You create them on the gateway first: workspaced does not check them, and creating a sandbox whose grant names a provider the gateway lacks fails. `pi-web-anthropic` is workspaced's own and may not be listed |
 | `environment` | Plain, non-secret variables (`--env`). Names starting with `OPENSHELL_` (the CLI's) and the ones workspaced sets are refused |
 | `packages` | pi package sources the worker loads on top of its config (a sandbox worker has no dotfiles profile). Any `npm:` source adds a `registry.npmjs.org` rule |
+| `middlewares` | Supervisor middleware registered on the gateway, each `{middleware, hosts, config?}`, run in list order on those hosts (`network_middlewares`). [openshell-oauth-middleware](https://github.com/bry-guy/openshell-oauth-middleware) is one |
 | `role` | `<repo>/<role>`: this grant is that role's worker for `role_agent` (see [Role runs](web.md#role-runs)). Refused with `anyProject`; list each allowed caller in `repos` as `project:<calling project>-<grant name>` |
 
 An OpenShell grant may not set `namespace`, `serviceAccount` or `env`. An unknown field in any grant logs one warning and is ignored.

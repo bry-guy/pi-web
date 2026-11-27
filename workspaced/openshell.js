@@ -80,6 +80,10 @@ export function sandboxPolicy(grant, { model = false } = {}) {
     ...(grant?.packages?.some(p => p.startsWith("npm:")) ? { npm: named("npm", { host: "registry.npmjs.org", port: 443, access: "read-write", allow_encoded_slash: true }) } : {}),
   };
   if (Object.keys(network).length) policy.network_policies = network;
+  // Supervisor middleware registered on the gateway, run in the grant's order.
+  if (grant?.middlewares?.length) policy.network_middlewares = Object.fromEntries(grant.middlewares.map((m, i) => [`middleware-${i + 1}`, {
+    middleware: m.middleware, order: i, endpoints: { include: m.hosts }, ...(m.config ? { config: m.config } : {}),
+  }]));
   return policy;
 }
 
