@@ -47,13 +47,14 @@ Visual tokens live at the top of `public/app.css`: radius (`--radius-sm` … `--
 
 The header's second line shows the project's Git context (branch · commit · clean, dirty or unknown, with ↑ahead and ↓behind) and, on the same line, the conversation's sync state as one label, in the same words as the session rows of a pi project's menu:
 
-- `synced`: on the sync server, with nothing newer on another device.
-- `on <device> · <when>`: another device is running it, or has a newer copy.
-- `not synced`: not on the sync server.
-- `sync: <status>`: anything else pi-sync reports while the session runs (`sync: working`, `sync: offline`, `sync: upload pending`).
-- no label: no sync server is set, or it did not answer.
+- `synced`: the copy here ends in the same entry as the sync server's copy.
+- `not uploaded yet`: the copy here holds entries the sync server does not have.
+- `on <device> · <when>`: another device is running it, or the sync server's copy holds entries this one lacks.
+- `not synced`: not on the sync server, or detached here (`/sync detach`).
+- `sync: <status>`: anything else pi-sync reports while the session runs (`sync: working`, `sync: offline`, `sync: reconnected`), as written.
+- no label: no sync server is set, it did not answer, or the worker holding the copy is asleep or slow. A label is only shown on evidence.
 
-While a session runs here, the label is what its pi-sync extension last reported; the server keeps that per session and sends it again with the transcript, so a page loaded later shows it. Otherwise it comes from the sync server's list of conversations, which web asks for at most every 30 seconds: a conversation counts as newer elsewhere when a device holds it, or when the server's copy was written more than two minutes after this server's file. On a phone the line stays one line and ends in an ellipsis.
+While a session runs here, the label is what its pi-sync extension last reported (only `up to date` reads `synced`); the server keeps that per session and sends it again with the transcript, so a page loaded later shows it. Otherwise the worker that holds the session file compares it with the sync server's list of conversations: by head entry, never by time. It reads that list in the background, at most every 30 seconds, and drops it after a minute or when the sync server does not answer; web passes the words on only from a worker that has just answered. The device named is the lease holder, else the newest other device the sync server has seen, never the worker itself. On a phone the line stays one line and ends in an ellipsis.
 
 ## Chat activity
 
@@ -69,7 +70,7 @@ The `+` on a project's sidebar row (always shown; **New project** at the top of 
 
 **Ending** a session or chat (the sidebar's `×`, or **End** in the session panel) stops a running reply, withdraws it from pi-sync on this server (`/sync detach`; the server copy and other devices keep it), and archives it with its forks. Git is not touched. The detach is recorded in the conversation, so it stays unshared (even with *sync all conversations* on) until it is restored.
 
-After an end, a toast offers **Undo** for a few seconds. Ended project sessions are listed under **Past sessions** in the Project menu (newest 20); opening one brings it and its forks back into the project's list, and shares again (`/sync attach`) those the sync server has: what this copy added is uploaded, and a newer server copy replaces it (turns only this copy has are kept as a separate conversation). If the sync server does not answer, the session is still restored and a notice says it is not syncing. An ended session that another device has continued since is not a past session: a pi project's menu lists it under **Sessions** with that device, and opening it restores it the same way, so it shows the other device's turns before you can type. If the ended session was the last one on a worktree that is clean and fully merged into main, a second toast offers **Delete branch…**, which opens the usual delete confirmation.
+After an end, a toast offers **Undo** for a few seconds. Ended project sessions are listed under **Past sessions** in the Project menu (newest 20); opening one brings it and its forks back into the project's list, and shares again (`/sync attach`) those the end detached: what this copy added is uploaded, and a newer server copy replaces it (turns only this copy has are kept as a separate conversation). A session that was never shared is restored without asking the sync server. If the attach fails, the session is restored but not opened, and the menu says it is not syncing; it then reads `not synced` in the list. An ended session that another device has continued since is not a past session: a pi project's menu lists it under **Sessions** with that device, and opening it restores it the same way, so it shows the other device's turns before you can type. If the ended session was the last one on a worktree that is clean and fully merged into main, a second toast offers **Delete branch…**, which opens the usual delete confirmation.
 
 ## Files
 

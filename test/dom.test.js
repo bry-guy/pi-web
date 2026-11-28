@@ -494,6 +494,15 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.state.extensionStatuses.s1 = { "pi-sync": "sync: offline" };
   store.notify("state");
   assert.equal(root.querySelector("pi-header .sync-label.error").textContent, "sync: offline", "other states read as pi-sync wrote them");
+  // Only "up to date" means synced: a passing or unknown state shows as written.
+  for (const text of ["sync: reconnected", "sync: on", "sync: upload pending", "sync: something new"]) {
+    store.state.extensionStatuses.s1 = { "pi-sync": text };
+    store.notify("state");
+    assert.equal(syncLabel().textContent, text);
+  }
+  store.state.extensionStatuses.s1 = { "pi-sync": "sync: up to date · 2 desynced" };
+  store.notify("state");
+  assert.equal(syncLabel().textContent, "synced · 2 desynced");
   delete store.state.extensionStatuses.s1;
   // Without a status from a running session, the label is where the sync server's list puts the conversation.
   store.findSession("s1").sync = "on laptop · 2h";
@@ -1271,24 +1280,44 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(rowOf("Moved talk").dataset.act, "open-past");
   assert.equal(rowHint("Old talk"), "Ended 1d");
   assert.equal(rowOf("Moved repo work"), undefined, "a repository's moved conversation lists under its repository");
-  // Opening it restores it on the server (which brings in the sync server's copy and shares it again) before it is selected.
-  {
-    const realFetch = globalThis.fetch;
-    const calls = [];
-    globalThis.fetch = async (input, options) => {
-      if (String(input) !== "/api/sessions/m1/restore") return realFetch(input, options);
-      calls.push([options?.method, store.state.sessionId]);
-      return new Response(JSON.stringify({ ok: true, restored: true, attached: ["m1"] }), { status: 200, headers: { "content-type": "application/json" } });
-    };
-    try {
-      rowOf("Moved talk").click();
-      for (let i = 0; i < 50 && store.state.sessionId !== "m1"; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    } finally { globalThis.fetch = realFetch; }
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0][0], "POST");
-    assert.notEqual(calls[0][1], "m1", "restored before it is selected");
-    assert.deepEqual([store.state.projectId, store.state.sessionId], ["pp-eco", "m1"]);
+  // Opening one restores it on the server (which shares it again and brings in the sync server's copy) before it is
+  // selected. This pi project lives only in the store, so state reloads are kept out while the selection changes.
+  const realFetch = globalThis.fetch;
+  const selected = { view: store.state.view, projectId: store.state.projectId, sessionId: store.state.sessionId, chatId: store.state.chatId };
+  const restores = [];
+  let restoreAnswer = { ok: true, restored: true, attached: ["m1"] };
+  globalThis.fetch = async (input, options) => {
+    if (String(input) === "/api/state") throw new Error("not in this check");
+    if (String(input) !== "/api/sessions/m1/restore") return realFetch(input, options);
+    restores.push([options?.method, store.state.sessionId]);
+    return new Response(JSON.stringify(restoreAnswer), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    rowOf("Moved talk").click();
+    for (let i = 0; i < 50 && store.state.sessionId !== "m1"; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(restores.length, 1);
+    assert.equal(restores[0][0], "POST");
+    assert.notEqual(restores[0][1], "m1", "restored before it is selected");
+    assert.deepEqual([store.state.projectId, store.state.sessionId, store.state.projectMenu], ["pp-eco", "m1", null]);
+
+    // A restore that could not share the conversation again does not open it for typing: the menu stays and says why.
+    store.set({ ...selected, projectMenu: { projectId: "group:eco", synced: [] } });
+    restoreAnswer = { ok: true, restored: true, attached: [], syncError: "This conversation is not syncing: pi-sync is down. Run /sync attach in it." };
+    rowOf("Moved talk").click();
+    for (let i = 0; i < 50 && !root.querySelector("pi-project-menu .session-picker-error"); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.match(root.querySelector("pi-project-menu .session-picker-error").textContent, /not syncing: pi-sync is down/);
+    assert.equal(store.state.sessionId, selected.sessionId, "the conversation is not selected");
+    assert.ok(store.state.projectMenu, "and the menu stays open");
+  } finally {
+    store.set(selected);
+    globalThis.fetch = realFetch;
   }
+  // A device or a title is the sync server's text, not markup.
+  folder.moved = [{ id: "m3", title: "<img src=x onerror=alert(1)>", where: "on <b>lap</b>top", when: "1h", updatedAt: "2026-11-27T11:00:00.000Z" }];
+  store.set({ projectMenu: { projectId: "group:eco", synced: [{ sessionId: "sy9", title: "<i>remote</i>", repo: null, device: "<u>phone</u>", when: "2m" }] } });
+  assert.equal(rowHint("<img src=x onerror=alert(1)>"), "on <b>lap</b>top · 1h");
+  assert.equal(rowHint("<i>remote</i>"), "on <u>phone</u> · 2m");
+  assert.equal(root.querySelector("pi-project-menu .history-entry :is(img, b, i, u)"), null, "nothing in a row became an element");
   store.set({ projectMenu: { projectId: "group:eco", repo: "pp-eco-code", synced: [] } });
   assert.equal(rowHint("Moved repo work"), "on phone · 5h");
   assert.deepEqual([rowOf("Moved repo work").dataset.act, rowOf("Moved repo work").dataset.pid], ["open-past", "pp-eco-code"]);
