@@ -12,7 +12,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-test("concurrent closes preserve all archived descendants and events", async () => {
+test("concurrent closes preserve all closed descendants and events", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-concurrent-close-"));
   const previousHome = process.env.PI_WEB_HOME;
   process.env.PI_WEB_HOME = home;
@@ -36,14 +36,14 @@ test("concurrent closes preserve all archived descendants and events", async () 
     lookups[1].resolve(sessions);
 
     assert.deepEqual(await Promise.all([pendingA, pendingB]), [
-      { closed: true, archived: true },
-      { closed: true, archived: true },
+      { closed: true },
+      { closed: true },
     ]);
     assert.deepEqual([...loadClosed()].sort(), ["A", "A-child", "A-grandchild", "B", "B-child", "existing"]);
     assert.deepEqual(phasesBeforeLookup, { A: [], B: [] });
     assert.deepEqual(Object.fromEntries(Object.entries(reports).map(([id, items]) => [id, items.map(item => item.phase)])), {
-      A: ["archive-read", "archive-write", "session-event"],
-      B: ["archive-read", "archive-write", "session-event"],
+      A: ["closed-read", "closed-write", "session-event"],
+      B: ["closed-read", "closed-write", "session-event"],
     });
     assert.deepEqual(events, [
       ["A", "session_closed", { sessionId: "A" }],

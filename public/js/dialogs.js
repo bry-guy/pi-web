@@ -222,12 +222,12 @@ class PiConfirm extends HTMLElement {
       title = `Remove ${esc(c.name)}?`;
       body = c.workspace
         ? "Deletes its worker, so the project and its sessions leave the list. Its disk (checkout, sessions, unpushed work) is kept, so adding the repository again picks it back up."
-        : "Ends its sessions and removes it from the list. The checkout on disk is kept, so adding the repository again picks it back up.";
+        : "Closes its sessions and removes it from the list. The checkout on disk is kept, so adding the repository again picks it back up.";
       if (c.workspace) options = `<label class="confirm-check"><input type="checkbox" data-confirm-purge ${c.purge ? "checked" : ""}><span>Also delete its disk, including uncommitted and unpushed work</span></label>`;
       action = c.purge ? "Remove project and disk" : "Remove project";
     } else if (c.type === "close") {
       title = c.kind === "chat" ? "Close chat" : "Close session";
-      body = `“${esc(c.label)}” will be archived. Its transcript and Git context remain available.`;
+      body = `“${esc(c.label)}” comes off the sidebar. The conversation and its Git context are not changed.`;
       action = c.kind === "chat" ? "Close chat" : "Close session";
     } else if (c.type === "closeRemote") {
       title = `Close on ${esc(c.device)}?`;
