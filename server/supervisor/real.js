@@ -1343,6 +1343,18 @@ export class RealSupervisor {
     this.opened?.delete(id);
   }
 
+  /**
+   * Lets go of a session without touching its file. Its extensions shut down, so pi-sync uploads what is left,
+   * releases its lease and stops polling; the next request for the session loads it again.
+   */
+  async unload(id) {
+    const st = this.live.get(id);
+    // Out of the map first: a request during the shutdown loads it afresh instead of using a session being disposed.
+    this.live.delete(id);
+    this.opened?.delete(id);
+    if (st) await this._disposeLiveState(st, "quit");
+  }
+
   async rehome(id, newCwd) {
     const st = this.live.get(id);
     if (st) {

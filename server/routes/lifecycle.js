@@ -2,8 +2,8 @@ export function register(api, deps) {
   const { closeSession, restoreSession, cleanupCandidate, sessionWorkspace, hub, createOperationReporter, operationRequestId, err, sup } = deps;
 
 
-  // Close ends the conversation (stop, withdraw from sync, archive). Git contexts
-  // remain user-owned and are never removed as a side effect of session lifecycle.
+  // Close takes the conversation off the sidebar (stop, unload, list as closed); the conversation itself is
+  // not changed. Git contexts remain user-owned and are never removed as a side effect.
   api.post("/sessions/:id/close", async c => {
     const id = c.req.param("id");
     const body = await c.req.json().catch(() => ({}));
@@ -13,7 +13,7 @@ export function register(api, deps) {
       const workspacePath = await sessionWorkspace(id, sup).catch(() => null);
       const result = await closeSession(sup, hub, id, { report: reporter.log });
       const cleanup = await cleanupCandidate(sup, workspacePath).catch(() => null);
-      const operation = reporter.finish({ httpStatus: 200, message: `${body.kind === "chat" ? "Chat" : "Session"} ended. No Git branch or worktree was changed.` });
+      const operation = reporter.finish({ httpStatus: 200, message: `${body.kind === "chat" ? "Chat" : "Session"} closed. No Git branch or worktree was changed.` });
       return c.json({ ok: true, ...result, cleanup, operation });
     } catch (e) {
       const statuses = { session_streaming: 409, main_worktree_external: 409 };
@@ -25,7 +25,7 @@ export function register(api, deps) {
     }
   });
 
-  // Deletes an ended session's file: web's retention sweep for a prime's old runs (run-door.js). Never a running one.
+  // Deletes a session's file: web's retention sweep for a prime's old runs (run-door.js). Never a running one.
   api.post("/sessions/:id/delete", async c => {
     const id = c.req.param("id");
     try { await sup.deleteSession(id); }
@@ -38,5 +38,6 @@ export function register(api, deps) {
     return c.json({ ok: true });
   });
 
+  // Opens a closed conversation (the route's name is from when closing ended one).
   api.post("/sessions/:id/restore", async c => c.json({ ok: true, ...await restoreSession(sup, hub, c.req.param("id")) }));
 }
