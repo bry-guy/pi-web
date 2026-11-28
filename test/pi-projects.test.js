@@ -127,6 +127,67 @@ test("a repository being cloned is not served until its clone is complete", asyn
   assert.ok(cfg.projects.some(p => p.name === "clone-me" && p.group === "cl"));
 });
 
+test("a repository whose URL is a local path missing on this machine is not cloned, on any state call", async () => {
+  const { reconcile } = await import("../server/pi-projects.js");
+  const here = fixture.makeRepo("here");
+  const dir = path.join(projectsDir, "lp");
+  fs.mkdirSync(dir, { recursive: true });
+  const repos = [
+    { name: "laptop-only", url: "/Users/someone/dev/laptop-only" },
+    { name: "laptop-file", url: "file:///Users/someone/dev/laptop-file" },
+    { name: "here", url: here },
+    { name: "hosted", url: "https://github.com/bry-guy/pi-web.git" },
+    { name: "hosted-ssh", url: "git@github.com:bry-guy/pi-sync.git" },
+  ];
+  fs.writeFileSync(path.join(dir, "project.json"), JSON.stringify({ id: "x", name: "lp", state: "active", repos }));
+  const asked = [];
+  for (let call = 0; call < 2; call++) reconcile({ projects: [] }, { env: { PI_PROJECTS_DIR: projectsDir }, clone: repo => asked.push(repo.name) });
+  assert.deepEqual(asked.filter(name => name !== "code"), ["here", "hosted", "hosted-ssh", "here", "hosted", "hosted-ssh"], "the two that can never clone here are left alone");
+});
+
+test("a closed conversation past the closed list's cut-off is still listed, with the synced conversations", async () => {
+  const { syncListServer } = await import("./helpers/sync-list-server.js");
+  const folder = path.join(projectsDir, "eco");
+  const ids = [];
+  // 22 closed conversations in the project folder, the first the oldest; the first has a fork closed with it.
+  for (let i = 0; i < 22; i++) {
+    const { id } = await fixture.supervisor.createSession({ cwd: folder, name: `talk ${i}` });
+    const file = path.join(process.env.PI_WEB_HOME, "mock-sessions", `${id}.json`);
+    const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+    fs.writeFileSync(file, JSON.stringify({ ...stored, modified: new Date(Date.UTC(2026, 0, 1 + i)).toISOString() }));
+    ids.push(id);
+  }
+  const open = (await fixture.supervisor.createSession({ cwd: folder, name: "open talk" })).id;
+  const closed = fixture.closedSessions();
+  for (const id of ids) closed.add(id);
+  const { saveClosed } = await import("../server/config.js");
+  saveClosed(closed);
+
+  const listed = (await fixture.state()).projects.find(p => p.id === "pp-eco").closed.map(item => item.id);
+  assert.deepEqual(listed, ids.slice(2).reverse(), "the closed list is the newest 20");
+
+  // The sync server has the two past the cut-off, one inside it, the open one, and one this machine never had.
+  const sync = await syncListServer([ids[0], ids[1], ids[21], open, "elsewhere-only"].map(sessionId => ({ sessionId, project: "eco" })));
+  const previousUrl = process.env.PI_SYNC_SERVER_URL;
+  process.env.PI_SYNC_SERVER_URL = sync.url;
+  try {
+    const synced = (await (await fixture.get("/api/projects/pp-eco/synced-sessions")).json()).sessions.map(item => item.sessionId).sort();
+    // The one inside the cut-off is in both lists; the menu shows it once, from the closed list.
+    assert.deepEqual(synced, [ids[0], ids[1], ids[21], "elsewhere-only"].sort(), "closed ones are listed, so none past the cut-off is unreachable");
+    // Opening one from that list opens the copy here.
+    const before = (await fixture.supervisor.allSessions()).length;
+    const opened = await fixture.post("/api/projects/pp-eco/sessions", { mode: "synced", syncSessionId: ids[0] });
+    assert.equal(opened.status, 200);
+    assert.equal((await opened.json()).id, ids[0]);
+    assert.equal((await fixture.supervisor.allSessions()).length, before);
+    assert.ok((await fixture.state()).projects.find(p => p.id === "pp-eco").sessions.some(s => s.id === ids[0]), "and it is on the sidebar");
+  } finally {
+    if (previousUrl === undefined) delete process.env.PI_SYNC_SERVER_URL;
+    else process.env.PI_SYNC_SERVER_URL = previousUrl;
+    await sync.close();
+  }
+});
+
 test("GitHub SSH remotes clone over HTTPS on web", async () => {
   const { cloneUrl } = await import("../server/pi-projects.js");
   assert.equal(cloneUrl("ssh://git@github.com/bry-guy/pi-web.git"), "https://github.com/bry-guy/pi-web.git");

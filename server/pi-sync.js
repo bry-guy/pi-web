@@ -115,7 +115,7 @@ async function ownDevice() {
 
 /**
  * What a session file holds, for comparing with the sync server: its head entry, whether it was detached here
- * (pi-sync's last `pi-sync-link` entry; a detached copy never syncs, whatever the server has), and has(entryId).
+ * (pi-sync's last `pi-sync-link` entry; a detached copy does not sync until it is attached again), and has(entryId).
  */
 export function copyFacts(entries, head) {
   const link = entries.findLast(entry => entry.type === "custom" && entry.customType === "pi-sync-link");
@@ -141,21 +141,21 @@ export function elsewhere(item, copy, self = null) {
 
 /**
  * A row's words for the copy here against the server's list (`items`), or null for a copy not read. "synced" only
- * when both end in the same entry, or this copy has only model and thinking switches since; a copy with more is "not uploaded yet"; a detached one is "not synced".
+ * when both end in the same entry, or this copy has only model and thinking switches since; a copy with more is
+ * "not uploaded yet". Where the conversation went on comes first: a detached copy reads "not synced" only when
+ * the server is not past it and no other device holds it.
  */
 export function syncStanding(items, id, copy, self = null) {
   if (!copy?.head) return null;
   const item = items.get(id);
-  if (!item || copy.detached) return "not synced";
+  if (!item) return "not synced";
   const away = elsewhere(item, copy, self);
   if (away) return `${away.where} · ${away.when}`;
+  if (copy.detached) return "not synced";
   return item.headEntryId === copy.head || copy.onlySettingsAfter(item.headEntryId) ? "synced" : "not uploaded yet";
 }
 
-/**
- * Gives each session of `projects` (as /api/state lists them) its sync words, and moves an ended copy that another
- * device holds or has continued from `ended` to `moved`: it is that device's conversation now, not a past session.
- */
+/** Gives each session of `projects` (as /api/state lists them), open or closed, its sync words. */
 export function labelProjects(projects, { items, self }, copyOf) {
   const label = nodes => {
     for (const node of nodes || []) {
@@ -166,10 +166,7 @@ export function labelProjects(projects, { items, self }, copyOf) {
   };
   for (const project of projects) {
     label(project.sessions);
-    if (!project.ended) continue;
-    const away = new Map(project.ended.map(s => [s.id, items.has(s.id) ? elsewhere(items.get(s.id), copyOf(s.id), self) : null]));
-    project.moved = project.ended.filter(s => away.get(s.id)).map(s => ({ id: s.id, title: s.title, ...away.get(s.id), updatedAt: items.get(s.id).updatedAt }));
-    project.ended = project.ended.filter(s => !away.get(s.id));
+    label(project.closed);
   }
 }
 
