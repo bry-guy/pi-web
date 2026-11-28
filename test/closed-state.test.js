@@ -63,23 +63,32 @@ test("closed session IDs roundtrip", () => {
   assert.deepEqual(loadClosed(), ids);
 });
 
-test("ending a session stops its turn, detaches open sessions from pi-sync, then archives", async () => {
+test("closing stops a turn and unloads the conversation and its forks, and gives pi-sync no command", async () => {
   const calls = [];
   const sup = {
     allSessions: () => [{ id: "child", parentSessionId: "root" }],
     isStreaming: id => id === "root",
     isOpen: id => id === "child",
     stop: async id => { calls.push(["stop", id]); },
+    unload: async id => { calls.push(["unload", id]); },
     command: async (id, text) => { calls.push(["command", id, text]); },
   };
   const previous = process.env.PI_SYNC_SERVER_URL;
   process.env.PI_SYNC_SERVER_URL = "http://sync.test";
   try {
-    await closeSession(sup, { emit: () => {} }, "root");
+    assert.deepEqual(await closeSession(sup, { emit: () => {} }, "root"), { closed: true });
   } finally {
     if (previous === undefined) delete process.env.PI_SYNC_SERVER_URL;
     else process.env.PI_SYNC_SERVER_URL = previous;
   }
-  assert.deepEqual(calls, [["stop", "root"], ["command", "child", "/sync detach"]]);
+  assert.deepEqual(calls, [["stop", "root"], ["unload", "root"], ["unload", "child"]], "a detach would be written into the conversation");
   assert.deepEqual([...loadClosed()].sort(), ["child", "root"]);
+});
+
+test("a conversation that cannot be unloaded is closed all the same", async () => {
+  const reports = [];
+  const sup = { allSessions: () => [], unload: async () => { throw new Error("stuck"); } };
+  await closeSession(sup, { emit: () => {} }, "root", { report: event => reports.push(event) });
+  assert.deepEqual([...loadClosed()], ["root"]);
+  assert.ok(reports.some(event => event.type === "warning" && /stuck/.test(event.message)));
 });

@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRemoteWorkspaces } from "../server/remote-workspaces.js";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { Hono } from "hono";
+import { createRemoteWorkspaces, registerRemoteRoutes } from "../server/remote-workspaces.js";
 import { EventHub } from "../server/events.js";
 import { copyFacts, elsewhere, knownConversations, labelProjects, syncStanding } from "../server/pi-sync.js";
 
@@ -47,7 +51,9 @@ test("a copy reads synced only when it ends in the entry the sync server's copy 
   assert.equal(standing(copyFacts(entries("e1", "e2", "e3", idle("session_info")))), "not uploaded yet", "a rename is uploaded when idle, so it counts");
   assert.equal(standing(copyFacts(entries("e1", "e2"))), "on laptop · 2h", "one entry behind is behind: no margin of time");
   assert.equal(standing(copyFacts(entries("e1", "e2", "x9"))), "on laptop · 2h", "both went on: the server has what this copy lacks");
-  assert.equal(standing(copyFacts(entries("e1", "e2", "e3", link("d1", true)))), "not synced", "detached here, whatever the heads say");
+  assert.equal(standing(copyFacts(entries("e1", "e2", "e3", link("d1", true)))), "not synced", "detached here, and the server has nothing more");
+  assert.equal(standing(copyFacts(entries("e1", "e2", link("d1", true)))), "on laptop · 2h", "detached here and continued elsewhere: where it went on says more");
+  assert.equal(syncStanding(new Map([served("c", "e3", { leaseHolder: "phone" })]), "c", copyFacts(entries("e1", "e2", "e3", link("d1", true))), "web"), "on phone · 2h", "detached here and held elsewhere");
   assert.equal(standing(copyFacts(entries("e1", link("d1", true), "e2", link("d2", false), "e3"))), "synced", "attached again since");
   assert.equal(syncStanding(items, "other", copyFacts(entries("e1"))), "not synced", "not on the server");
   assert.equal(standing(null), null, "a copy that was not read gets no words");
@@ -67,24 +73,24 @@ test("the device named as elsewhere is the lease holder, else another device, ne
   assert.equal(where({}, null, "web"), undefined, "an unread copy is not called behind");
 });
 
-test("state gets each session's words, and an ended copy continued elsewhere becomes that device's conversation", () => {
+test("state gets each session's words, open or closed; a closed copy continued elsewhere names that device", () => {
   const copies = {
     same: copyFacts(entries("a1", "a2")),
     fork: copyFacts(entries("a1", "f1")),
     moved: copyFacts(entries("m1", link("m2", true))),
-    "ended-same": copyFacts(entries("s1", link("s2", true))),
-    "ended-local": copyFacts(entries("l1")),
+    "closed-same": copyFacts(entries("s1")),
+    "closed-local": copyFacts(entries("l1")),
   };
-  const projects = [{ id: "pp-eco", sessions: [{ id: "same", children: [{ id: "fork", children: [] }] }, { id: "unread", children: [] }], ended: [
-    { id: "moved", title: "primes-impl" }, { id: "ended-same", title: "Done here" }, { id: "ended-local", title: "Never shared" },
+  const projects = [{ id: "pp-eco", sessions: [{ id: "same", children: [{ id: "fork", children: [] }] }, { id: "unread", children: [] }], closed: [
+    { id: "moved", title: "primes-impl", children: [] }, { id: "closed-same", title: "Done here", children: [] }, { id: "closed-local", title: "Never shared", children: [] },
   ] }, { id: "broken", error: "no git" }];
-  const items = new Map([served("same", "a2"), served("moved", "m9"), served("ended-same", "s1")]);
+  const items = new Map([served("same", "a2"), served("moved", "m9"), served("closed-same", "s1")]);
   labelProjects(projects, { items, self: "web" }, id => copies[id] || null);
   const [project] = projects;
   assert.deepEqual([project.sessions[0].sync, project.sessions[0].children[0].sync], ["synced", "not synced"]);
   assert.equal("sync" in project.sessions[1], false);
-  assert.deepEqual(project.moved.map(({ updatedAt, ...shown }) => shown), [{ id: "moved", title: "primes-impl", where: "on laptop", when: "2h" }]);
-  assert.deepEqual(project.ended.map(item => item.id), ["ended-same", "ended-local"], "it is no longer a past session");
+  assert.deepEqual(project.closed.map(item => [item.id, item.sync]), [["moved", "on laptop · 2h"], ["closed-same", "synced"], ["closed-local", "not synced"]], "closed ones stay in one list");
+  assert.equal("moved" in project, false);
 });
 
 test("the sync server's list is read without waiting, and is unknown after no answer", async () => {
@@ -111,21 +117,94 @@ test("the sync server's list is read without waiting, and is unknown after no an
   assert.equal(read(Date.now()), null, "no sync server set");
 });
 
-test("web passes a session's sync words on only from a worker that just answered", async () => {
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test("web passes sync words on from a worker's answer under a minute old, and never keeps them on disk", async () => {
   let state = "running";
-  const project = { id: "pp-eco", sessions: [{ id: "s1", sync: "synced", children: [{ id: "s2", sync: "not uploaded yet", children: [] }] }], ended: [], moved: [{ id: "m1", title: "Moved", where: "on laptop", when: "1h" }] };
-  const fetchImpl = async url => {
+  let delay = 0;
+  const project = { id: "pp-eco", sessions: [{ id: "s1", sync: "synced", children: [{ id: "s2", sync: "not uploaded yet", children: [] }] }], closed: [{ id: "c1", title: "Closed", sync: "on laptop · 1h", children: [] }] };
+  const fetchImpl = async (url, init) => {
     if (String(url).endsWith("/v1/workspaces")) return Response.json({ workspaces: [{ name: "ws-eco", repository: "project:eco", state }] });
-    if (String(url).endsWith("/api/state")) return Response.json({ projects: [project] });
+    if (String(url).endsWith("/api/state")) {
+      if (delay) await new Promise((resolve, reject) => { setTimeout(resolve, delay).unref(); init.signal?.addEventListener("abort", () => reject(init.signal.reason)); });
+      return Response.json({ projects: [project] });
+    }
     return new Response("{}", { status: 503 });
   };
-  const remote = createRemoteWorkspaces({ url: "http://workspaced", hub: new EventHub(), fetchImpl, modelAuthSyncMs: 0 });
+  const cachePath = path.join(mkdtempSync(path.join(tmpdir(), "piweb-sync-words-")), "remote-projects.json");
+  const words = p => [p.sessions[0].sync, p.sessions[0].children[0].sync, p.closed[0].sync];
+  // The age limit is a minute in production; 600 ms here.
+  const remote = createRemoteWorkspaces({ url: "http://workspaced", hub: new EventHub(), fetchImpl, modelAuthSyncMs: 0, cachePath, stateTimeoutMs: 40, stateLimitMs: 1_000, stateFreshMs: 600 });
   try {
     const [awake] = (await remote.refresh()).projects;
-    assert.deepEqual([awake.sessions[0].sync, awake.sessions[0].children[0].sync, awake.moved.length], ["synced", "not uploaded yet", 1]);
+    assert.deepEqual(words(awake), ["synced", "not uploaded yet", "on laptop · 1h"]);
+    assert.doesNotMatch(readFileSync(cachePath, "utf8"), /"sync"/, "the kept snapshot holds no sync words");
+
+    // The worker turns slow: it misses the wait, and what it said last shows.
+    delay = 100;
+    const started = Date.now();
+    const [slow] = (await remote.refresh()).projects;
+    assert.ok(Date.now() - started < 95, "the sidebar does not wait for a slow worker");
+    assert.deepEqual(words(slow), ["synced", "not uploaded yet", "on laptop · 1h"]);
+    // Its answer comes after the wait, and is not thrown away: the next call shows it, sync words included.
+    project.sessions[0].sync = "on phone · 1m";
+    await pause(250);
+    const [late] = (await remote.refresh()).projects;
+    assert.equal(late.sessions[0].sync, "on phone · 1m", "the answer that came after the wait serves the next call");
+
+    // Now it stops answering: once its last answer is over the age limit, that says nothing of sync.
+    delay = 3_000;
+    await pause(800);
+    const [aged] = (await remote.refresh()).projects;
+    assert.deepEqual(words(aged), [undefined, undefined, undefined]);
+    assert.equal(aged.sessions[0].children.length, 1, "though it still lists the sessions");
+
     state = "sleeping";
     const [asleep] = (await remote.refresh()).projects;
     assert.equal(asleep.sessions.length, 1, "the kept snapshot still lists it");
-    assert.deepEqual(["sync" in asleep.sessions[0], "sync" in asleep.sessions[0].children[0]], [false, false], "but says nothing of a copy it cannot read now");
+    assert.deepEqual(words(asleep), [undefined, undefined, undefined], "but says nothing of a copy it cannot read now");
   } finally { remote.stop(); }
+
+  // A new web process has only the snapshot, and a worker that does not answer in time.
+  state = "running";
+  const restarted = createRemoteWorkspaces({ url: "http://workspaced", hub: new EventHub(), fetchImpl, modelAuthSyncMs: 0, cachePath, stateTimeoutMs: 40, stateLimitMs: 100 });
+  try {
+    const [kept] = (await restarted.refresh()).projects;
+    assert.deepEqual([kept.sessions.length, ...words(kept)], [1, undefined, undefined, undefined]);
+  } finally { restarted.stop(); }
+});
+
+test("a worker is asked for its state once at a time, and an answer from before a close is dropped", async () => {
+  const sessions = [{ id: "s1", children: [] }, { id: "s2", children: [] }];
+  const waiting = [];
+  let asked = 0;
+  const fetchImpl = async (url, init) => {
+    const p = new URL(url).pathname;
+    if (p === "/v1/workspaces") return Response.json({ workspaces: [{ name: "ws-eco", repository: "project:eco", state: "running" }] });
+    if (p.endsWith("/api/state")) {
+      const listed = [...sessions];
+      // Every request after the first is slow: it answers when the test lets it.
+      if (++asked > 1) await new Promise(resolve => waiting.push(resolve));
+      return Response.json({ projects: [{ id: "pp-eco", sessions: listed, closed: [] }] });
+    }
+    if (p.endsWith("/api/sessions/s2/close") && init?.method === "POST") return Response.json({ ok: true });
+    return new Response("{}", { status: 503 });
+  };
+  const remote = createRemoteWorkspaces({ url: "http://workspaced", hub: new EventHub(), fetchImpl, modelAuthSyncMs: 0, stateTimeoutMs: 20, stateLimitMs: 1_000 });
+  const api = new Hono();
+  registerRemoteRoutes(api, remote);
+  const shown = async () => (await remote.refresh()).projects[0].sessions.map(s => s.id);
+  try {
+    assert.deepEqual(await shown(), ["s1", "s2"]);
+    assert.deepEqual(await shown(), ["s1", "s2"], "the second request is still out; the last answer shows");
+    assert.deepEqual(await shown(), ["s1", "s2"]);
+    assert.equal(asked, 2, "one request in flight per worker");
+    // s2 is closed while that request, which still lists it, is out.
+    sessions.pop();
+    assert.equal((await api.request("/sessions/s2/close", { method: "POST" })).status, 200);
+    waiting.shift()();
+    await pause(20);
+    assert.deepEqual(await shown(), ["s1"], "the late answer must not put the closed session back");
+    assert.equal(asked, 3);
+  } finally { for (const answer of waiting) answer(); remote.stop(); }
 });

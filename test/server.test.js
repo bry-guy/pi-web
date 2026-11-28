@@ -198,7 +198,7 @@ test("plain chats use isolated scratch workspaces and retain legacy discovery", 
   const closeResponse = await post(`/api/sessions/${a.id}/close`, {});
   assert.equal(closeResponse.status, 200);
   const closeBody = await closeResponse.json();
-  assert.ok(closeBody.operation.events.some(event => /archived/i.test(event.message)));
+  assert.ok(closeBody.operation.events.some(event => /closed/i.test(event.message)));
   assert.equal(closeBody.operation.events.some(event => /pi close/i.test(event.message || event.command || "")), false);
   assert.ok(fs.existsSync(metaA.cwd));
   state = await (await get("/api/state")).json();
@@ -211,7 +211,7 @@ test("operation diagnostics are persisted and exposed through the logs endpoint"
   assert.equal(close.status, 200, await close.clone().text());
   const result = await (await get("/api/logs?limit=100")).json();
   assert.equal(result.file, "logs/pi-ez-web.log");
-  assert.ok(result.logs.some(entry => entry.operationId === "log-test" && /archived|close/i.test(entry.message)));
+  assert.ok(result.logs.some(entry => entry.operationId === "log-test" && /close/i.test(entry.message)));
   assert.ok(fs.existsSync(path.join(home, "logs", "pi-ez-web.log")));
 });
 
