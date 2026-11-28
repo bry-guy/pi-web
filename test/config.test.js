@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
-import { appHome, githubConfig, loadBindings, loadClosed, loadConfig, normalizeHooks, normalizePiConfig, normalizeThinkingLevel, prepareSessionVisibilityReplacement, repositorySource, saveBindings, saveClosed, saveConfig, worktreeRoot } from "../server/config.js";
+import { appHome, exportSyncEnvironment, githubConfig, loadBindings, loadClosed, loadConfig, normalizeHooks, normalizePiConfig, normalizeThinkingLevel, prepareSessionVisibilityReplacement, repositorySource, saveBindings, saveClosed, saveConfig, worktreeRoot } from "../server/config.js";
 
 let tmp;
 const previousHome = process.env.PI_WEB_HOME;
@@ -181,6 +181,27 @@ test("environment overrides repository source settings", () => {
     for (const [key, value] of Object.entries({ PI_WEB_REPOSITORY_SOURCE: previous.source, PI_WEB_GITHUB_CLIENT_ID: previous.client, PI_WEB_GITHUB_OWNER: previous.owner })) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
+  }
+});
+
+test("a deployment's PI_SYNC_ALL_SESSIONS survives startup, and the web setting still overrides it", () => {
+  const keys = ["PI_SYNC_ALL_SESSIONS", "PI_SYNC_SERVER_URL", "PI_SYNC_CODE", "PI_WEB_SYNC_ALL_CONVERSATIONS"];
+  const previous = keys.map(k => process.env[k]);
+  try {
+    for (const k of keys) delete process.env[k];
+    const exported = sync => (exportSyncEnvironment({ sync }), process.env.PI_SYNC_ALL_SESSIONS);
+    process.env.PI_SYNC_ALL_SESSIONS = "on"; // as workspaced pins it on a worker
+    assert.equal(exported({}), "on", "an unset web setting leaves the worker's value");
+    assert.equal(exported({ allConversations: "off" }), "off", "the web setting wins");
+    assert.equal(exported({}), "on", "unsetting the web setting puts the worker's value back");
+    assert.equal(exported({ allConversations: "on" }), "on");
+    assert.equal(exported({}), "on", "also when the web setting matched it");
+    delete process.env.PI_SYNC_ALL_SESSIONS; // no deployment value: unset is left to pi-sync
+    assert.equal(exported({}), undefined);
+    assert.equal(exported({ allConversations: "on" }), "on");
+    assert.equal(exported({}), undefined, "a value this process wrote is removed when the setting is unset again");
+  } finally {
+    keys.forEach((k, i) => previous[i] === undefined ? delete process.env[k] : (process.env[k] = previous[i]));
   }
 });
 

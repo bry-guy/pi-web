@@ -145,6 +145,9 @@ function envBoolean(name, fallback) {
 
 // The URL this process last wrote into PI_SYNC_SERVER_URL; an env value equal to it is ours, not a deployment setting.
 let exportedSyncServerUrl = null;
+// The same for PI_SYNC_ALL_SESSIONS, which workspaced sets on every worker; the deployment's value is kept to put back.
+let exportedSyncAllSessions = null;
+let deployedSyncAllSessions;
 
 export function syncEnvironmentOverrides() {
   const url = process.env.PI_SYNC_SERVER_URL;
@@ -172,9 +175,12 @@ export function syncConfig(cfg = loadConfig()) {
 // Writes the effective sync settings where the pi-sync extension reads them. Called before sessions load it.
 export function exportSyncEnvironment(cfg = loadConfig()) {
   const effective = syncConfig(cfg);
-  // Unset settings are left to pi-sync, which reads the dotfiles' pi-sync.json.
-  if (effective.allConversations === null) delete process.env.PI_SYNC_ALL_SESSIONS;
-  else process.env.PI_SYNC_ALL_SESSIONS = effective.allConversations ? "on" : "off";
+  // Unset settings are left to the deployment's value, else to pi-sync, which reads the dotfiles' pi-sync.json.
+  if (process.env.PI_SYNC_ALL_SESSIONS !== exportedSyncAllSessions) deployedSyncAllSessions = process.env.PI_SYNC_ALL_SESSIONS;
+  const allSessions = effective.allConversations === null ? deployedSyncAllSessions : effective.allConversations ? "on" : "off";
+  exportedSyncAllSessions = allSessions ?? null;
+  if (allSessions === undefined) delete process.env.PI_SYNC_ALL_SESSIONS;
+  else process.env.PI_SYNC_ALL_SESSIONS = allSessions;
   if (effective.code === null) delete process.env.PI_SYNC_CODE;
   else process.env.PI_SYNC_CODE = effective.code;
   if (syncEnvironmentOverrides().serverUrl) return;
