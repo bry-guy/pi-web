@@ -106,7 +106,7 @@ export function workerModelAuth(content) {
   return JSON.stringify(auth, null, 2);
 }
 
-export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, syncedProjects = async () => [], syncedTtlMs = 30_000, onEvent = null, log = console.log }) {
+export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, stateLimitMs = 10_000, stateFreshMs = 60_000, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, syncedProjects = async () => [], syncedTtlMs = 30_000, onEvent = null, log = console.log }) {
   const owners = { project: new Map(), session: new Map() };
 
   // pi projects with synced conversations (pi-sync), so a project not on web yet is still listed.
@@ -200,11 +200,14 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   }).sort((a, b) => String(b.started).localeCompare(String(a.started)));
   const conversationOf = agent => Object.keys(agents).find(id => agents[id]?.kind === "conversation" && agents[id].agent === agent) || null;
   // A session's sync words (`sync`) are the worker's reading of its files against the sync server. They only pass
-  // on from a worker that just answered (`live`): from a kept snapshot they could say "synced" of a stale copy.
+  // on from an answer under a minute old (`live`): from an older one they could say "synced" of a stale copy.
   const flagged = (nodes, live) => nodes?.map(({ sync, ...n }) => {
     const flag = agentOf(n.id);
-    return { ...n, ...(live && sync ? { sync } : {}), ...(flag ? { agent: flag.agent, agentKind: flag.kind } : {}), children: flagged(n.children, live) };
+    return { ...n, ...(live && sync ? { sync } : {}), ...(flag ? { agent: flag.agent, agentKind: flag.kind } : {}), ...(n.children ? { children: flagged(n.children, live) } : {}) };
   });
+  // The snapshot kept on disk never holds sync words: it outlives the reading they came from.
+  const wordless = nodes => nodes?.map(({ sync, ...n }) => ({ ...n, ...(n.children ? { children: wordless(n.children) } : {}) }));
+  const kept = projects => projects.map(p => ({ ...p, ...(p.sessions ? { sessions: wordless(p.sessions) } : {}), ...(p.closed ? { closed: wordless(p.closed) } : {}) }));
   const agentIn = text => { try { return JSON.parse(text || "{}")?.agent; } catch { return null; } };
 
   function sessionNode(id) {
@@ -223,10 +226,26 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     return (await res.json()).workspaces || [];
   }
 
+  // What each worker last answered to /state ({ at, state }) and its request still under way. A slow worker must
+  // not hold up the sidebar: past the wait (`stateTimeoutMs`) the last answer shows, while the request goes on
+  // (one per worker, at most `stateLimitMs`) and its answer serves the next call.
+  const answers = new Map();
+  const asking = new Map();
+  // Requests and forgets in order: an answer asked for before a close would list the closed session again.
+  let tick = 0;
+  const forgot = new Map();
   async function workerState(name) {
-    // A slow worker must not hold up the sidebar; its cached snapshot shows instead.
-    const res = await call(workerPath(name, "/state"), { signal: AbortSignal.timeout(stateTimeoutMs) });
-    return res.ok ? res.json() : null;
+    if (!asking.has(name)) {
+      const asked = ++tick;
+      asking.set(name, call(workerPath(name, "/state"), { signal: AbortSignal.timeout(stateLimitMs) })
+        .then(res => res.ok ? res.json() : null)
+        .then(state => { if (state && asked > (forgot.get(name) || 0)) answers.set(name, { at: Date.now(), state }); }, () => {})
+        .finally(() => asking.delete(name)));
+    }
+    let timer;
+    await Promise.race([asking.get(name), new Promise(resolve => { timer = setTimeout(resolve, stateTimeoutMs); })]);
+    clearTimeout(timer);
+    return answers.get(name) || null;
   }
 
   function remember(name, projects) {
@@ -235,12 +254,14 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     for (const p of projects) {
       owners.project.set(p.id, name);
       walk(p.sessions);
-      walk(p.ended);
+      walk(p.closed);
     }
   }
 
-  // An ended session must not come back from the cached snapshot of a slow or sleeping worker.
+  // A closed session must not come back from the last answer or the kept snapshot of a slow or sleeping worker.
   function forgetSession(name, id) {
+    answers.delete(name);
+    forgot.set(name, ++tick);
     if (name === CHATS) {
       chatSnapshot = chatSnapshot.filter(s => s.id !== id);
       saveChats();
@@ -269,24 +290,33 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     for (const name of streams.keys()) if (!known.has(name)) unsubscribe(name);
     const chatsWorker = all.find(isChats);
     const workspaces = all.filter(w => !isChats(w));
-    // Ended runs are left out of Past sessions too.
-    const tag = (w, p, live = false) => ({ ...p, ...(p.sessions ? { sessions: flagged(p.sessions, live) } : {}), ...(p.ended ? { ended: p.ended.filter(s => agentOf(s.id)?.kind !== "run") } : {}), workspace: w.name, workspaceState: w.state || (w.ready ? "running" : "starting"), workspacePinned: !!w.pinned, workspaceGrant: w.grant || "default", workspaceProblem: w.problem || null });
+    // Closed runs are left out of the closed list too.
+    const tag = (w, p, live = false) => ({ ...p, ...(p.sessions ? { sessions: flagged(p.sessions, live) } : {}), ...(p.closed ? { closed: flagged(p.closed.filter(s => agentOf(s.id)?.kind !== "run"), live) } : {}), workspace: w.name, workspaceState: w.state || (w.ready ? "running" : "starting"), workspacePinned: !!w.pinned, workspaceGrant: w.grant || "default", workspaceProblem: w.problem || null });
     const chats = chatsWorker ? chatList(chatsWorker) : Promise.resolve([]);
     const lists = await Promise.all(workspaces.map(async w => {
       const running = w.state ? w.state === "running" : w.ready;
-      let fresh = null;
+      let answer = null;
       if (running) {
         subscribe(w.name);
-        const state = await workerState(w.name).catch(() => null);
-        fresh = state?.projects || null;
-        if (state?.piProjects) piProjectsByWorker[w.name] = state.piProjects;
-      } else unsubscribe(w.name);
-      if (fresh) {
-        remember(w.name, fresh);
-        if (JSON.stringify(snapshots[w.name]) !== JSON.stringify(fresh)) { snapshots[w.name] = fresh; changed = true; }
+        answer = await workerState(w.name);
+      } else {
+        unsubscribe(w.name);
+        // Asleep: only the kept snapshot speaks for it, without sync words.
+        answers.delete(w.name);
+      }
+      const fresh = answer?.state.projects || null;
+      // Each answer is taken in once; a slow worker's last one serves many calls.
+      if (answer && !answer.taken) {
+        answer.taken = true;
+        if (answer.state.piProjects) piProjectsByWorker[w.name] = answer.state.piProjects;
+        if (fresh) {
+          remember(w.name, fresh);
+          const snapshot = kept(fresh);
+          if (JSON.stringify(snapshots[w.name]) !== JSON.stringify(snapshot)) { snapshots[w.name] = snapshot; changed = true; }
+        }
       }
       const shown = fresh || snapshots[w.name];
-      if (shown) return shown.map(p => tag(w, p, !!fresh));
+      if (shown) return shown.map(p => tag(w, p, !!fresh && Date.now() - answer.at < stateFreshMs));
       return [tag(w, { id: `workspace:${w.name}`, name: w.name, pending: true, branches: [], sessions: [], contexts: [], worktrees: {}, workspaceStatus: {} })];
     }));
     if (changed) saveSnapshots();
@@ -316,7 +346,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
       return chatSnapshot;
     }
     subscribe(w.name);
-    const state = await workerState(w.name).catch(() => null);
+    const state = (await workerState(w.name))?.state;
     if (state?.piConfiguration) chatsPi = state.piConfiguration;
     if (state?.endedChats) {
       chatsEnded = state.endedChats;
@@ -645,7 +675,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     let result = await forwarded.json().catch(() => ({}));
     // A kept volume already holds this project (closed earlier without deleting data): reuse it.
     if (forwarded.status === 409 && ["repository_exists", "project_exists"].includes(result.error)) {
-      const existing = (await workerState(created.name).catch(() => null))?.projects?.[0];
+      const existing = (await workerState(created.name))?.state.projects?.[0];
       if (existing) {
         remember(created.name, [existing]);
         return c.json({ id: existing.id, sessionId: null, workspace: created.name, reused: true }, 200);
@@ -656,10 +686,14 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
   }
 
   // Other devices' conversations of a pi project, straight from pi-sync, so the menu needs no worker.
-  // Only this project's own worker counts as "here": a copy another worker once opened still belongs in this list.
+  // "Here" is what this project's own worker lists now, open or closed: a copy another worker once opened still
+  // belongs in this list, and so does a closed one past the worker's cut-off, which nothing else would list.
   const projectSynced = async name => {
     const worker = await projectWorker(name).catch(() => null);
-    return remoteConversationsForProject(name, id => !!worker && owners.session.get(id) === worker);
+    const listed = new Set();
+    const walk = nodes => { for (const s of nodes || []) { listed.add(s.id); walk(s.children); } };
+    for (const p of (worker && snapshots[worker]) || []) { walk(p.sessions); walk(p.closed); }
+    return remoteConversationsForProject(name, id => listed.has(id) || agentOf(id)?.kind === "run");
   };
   const syncedPreview = id => remoteConversationPreview(id);
 

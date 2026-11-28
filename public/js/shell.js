@@ -157,7 +157,7 @@ async function openPrime(agent) {
   }
 }
 
-// A closed run sits with ended sessions, which state leaves out: restore it, then open it.
+// A closed run is in no list state sends: open it on the server first, then select it.
 async function openRun(id) {
   if (selectSessionById(id, { showOperation: true })) return;
   try {
@@ -360,9 +360,9 @@ export async function newProjectSession(projectId) {
 // Per conversation: one slow close (e.g. waking a worker) must not swallow clicks on other rows.
 const closesInFlight = new Set();
 const closeErrorMessage = error => ({
-  session_streaming: "Stop the current response before ending this conversation.",
+  session_streaming: "Stop the current response before closing this conversation.",
   workspace_starting: "This project's worker is starting. Try again in a few seconds.",
-}[error?.error] || error?.detail || error?.message || error?.error || "Could not end this conversation.");
+}[error?.error] || error?.detail || error?.message || error?.error || "Could not close this conversation.");
 
 function removeNode(nodes, id) {
   const index = (nodes || []).findIndex(node => node.id === id);
@@ -370,11 +370,11 @@ function removeNode(nodes, id) {
   return (nodes || []).some(node => removeNode(node.children, id));
 }
 
-// Ends a session or chat: stops its turn, withdraws it from sync, archives it.
+// Closes a session or chat: stops its turn and takes it off the sidebar. The conversation itself is not changed.
 export async function closeConversation(id, kind = "session") {
   if (!id || closesInFlight.has(id)) return;
   closesInFlight.add(id);
-  const label = kind === "chat" ? "End chat" : "End session";
+  const label = kind === "chat" ? "Close chat" : "Close session";
   const title = (kind === "chat" ? store.state.chats.find(chat => chat.id === id) : store.state.projects.map(p => findNode(p.sessions, id)).find(Boolean))?.title || (kind === "chat" ? "Chat" : "Session");
   const operation = beginOperation("close", label, "", "Request started.", id, { action: "close" });
   let result = null;
@@ -384,7 +384,7 @@ export async function closeConversation(id, kind = "session") {
     // Drop the row now; a slow /api/state must not show it again until the next refresh agrees.
     const s = store.state;
     if (s.projects.some(project => removeNode(project.sessions, id)) || s.chats.some((chat, i) => chat.id === id && s.chats.splice(i, 1))) store.notify("state");
-    toast(`Ended “${title}”.`, "info", { label: "Undo", run: () => restoreConversation(id) });
+    toast(`Closed “${title}”.`, "info", { label: "Undo", run: () => restoreConversation(id) });
     // Its worktree is now unused, clean and merged: offer the usual Delete branch confirmation.
     const cleanup = result?.cleanup;
     if (cleanup) toast(`${cleanup.branch} is merged and no session uses it.`, "info", { label: "Delete branch…", run: () => store.set({ confirm: { type: "deleteBranch", projectId: cleanup.projectId, id: null, branch: cleanup.branch, primaryBranch: cleanup.primaryBranch, label: cleanup.branch, sessions: [], closeSessions: false, force: false, dirty: false, status: "clean", error: null } }) });
@@ -398,7 +398,7 @@ export async function closeConversation(id, kind = "session") {
   }
 }
 
-// Undoes an end. The server shares the conversation again when the end detached it; the answer says when it could not.
+// Opens a closed conversation again. A copy an earlier build detached is shared again first; the answer says when it could not be.
 export async function restoreConversation(id) {
   try {
     const result = await api.restore(id);
@@ -406,7 +406,7 @@ export async function restoreConversation(id) {
     await refreshState();
     return result;
   } catch (error) {
-    store.setError(`Could not restore: ${error.detail || error.message || error.error || error}`);
+    store.setError(`Could not open: ${error.detail || error.message || error.error || error}`);
     return null;
   }
 }
@@ -557,7 +557,7 @@ class PiSidebar extends HTMLElement {
           <span class="lbl">${esc(n.title)}</span>
           <span class="live-dot" aria-label="${unread ? "Unread reply" : "Streaming"}"></span>
           <button class="row-close" data-act="close-row" data-kind="session" data-pid="${esc(n.pid || p.id)}" data-id="${esc(n.id)}"
-            data-label="${esc(n.title)}" data-branch="${esc(n.branch || "")}" title="End session" aria-label="End session ${esc(n.title)}">${icon("close")}</button>
+            data-label="${esc(n.title)}" data-branch="${esc(n.branch || "")}" title="Close" aria-label="Close ${esc(n.title)}">${icon("close")}</button>
         </div></div>`);
       // Children belong to the same repository as their parent.
       if (kids && (open || q || forceAll)) this.sessionRows(p, n.pid ? n.children.map(c => ({ ...c, pid: n.pid })) : n.children, depth + 1, forceAll ? "" : q, out, forceAll);
@@ -602,7 +602,7 @@ class PiSidebar extends HTMLElement {
           <div class="sec-head"><div class="sec-label">Projects</div></div>
           <button class="rail-cta" data-act="repo-picker">${icon("plus")}<span>New project</span></button>
           <div class="projects-list"></div>
-          <div class="sec-head chats-head"><button class="sec-label sec-menu" data-act="chats-menu" title="Chats: past chats and the chats worker">Chats</button></div>
+          <div class="sec-head chats-head"><button class="sec-label sec-menu" data-act="chats-menu" title="Chats: chats that are not open, and the chats worker">Chats</button></div>
           <button class="rail-cta" data-act="new-chat">${icon("plus")}<span>New chat</span></button>
           <div class="chats-list"></div>
         </div>
@@ -651,7 +651,7 @@ class PiSidebar extends HTMLElement {
         return `<div class="row ${s.chatId === cRow.id ? "active " : ""}${streaming ? "streaming " : ""}${unread ? "unread " : ""}" role="button" tabindex="0" data-act="chat-row" data-id="${esc(cRow.id)}">
         <span class="lbl">${esc(cRow.title)}</span><span class="live-dot" aria-label="${unread ? "Unread reply" : "Streaming"}"></span><span class="when">${esc(cRow.when)}</span>
         <button class="row-close" data-act="close-row" data-kind="chat" data-id="${esc(cRow.id)}"
-          data-label="${esc(cRow.title)}" data-branch="" title="End chat" aria-label="End chat ${esc(cRow.title)}">${icon("close")}</button>
+          data-label="${esc(cRow.title)}" data-branch="" title="Close" aria-label="Close ${esc(cRow.title)}">${icon("close")}</button>
       </div>`;
       }).join("");
     const deviceGroups = new Map();
