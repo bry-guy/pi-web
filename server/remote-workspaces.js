@@ -13,7 +13,7 @@ import { chatTransfer } from "./chat-transfer.js";
 import { discordFromEnv } from "./discord.js";
 import { createPrimes, runDoorConfig } from "./run-door.js";
 import { createRoleRuns } from "./role-runs.js";
-import { elsewhere, remoteConversationPreview, remoteConversationsForProject, syncStanding, syncedConversations as syncedConversationsFromServer, syncedProjects as syncedProjectsFromServer } from "./pi-sync.js";
+import { remoteConversationPreview, remoteConversationsForProject, syncedProjects as syncedProjectsFromServer } from "./pi-sync.js";
 
 // workspaced's CHATS_WORKSPACE: the worker without a repository.
 const CHATS = "chats";
@@ -41,7 +41,7 @@ export function remoteWorkspacesFromEnv(env, deps) {
   let discord = null, primes = null, roleRuns = null;
   const remoteSessions = deps.remoteSessions || null;
   const onEvent = (...a) => { discord?.event(...a); primes?.event(...a); roleRuns?.event(...a); };
-  const remote = createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, syncedConversations: syncedConversationsFromServer, onEvent, ...(fetchImpl ? { fetchImpl } : {}), ...deps });
+  const remote = createRemoteWorkspaces({ url: url.replace(/\/+$/, ""), token, modelAuthPath, cachePath, transfer: chatTransfer(), syncedProjects: syncedProjectsFromServer, onEvent, ...(fetchImpl ? { fetchImpl } : {}), ...deps });
   // role_agent calls from project sessions: the role runs hidden on its own worker and answers the caller.
   roleRuns = createRoleRuns({ remote, path: cachePath ? path.join(path.dirname(cachePath), "role-runs.json") : null });
   // The run door's agents are primes: each run reports into the agent's one conversation.
@@ -106,7 +106,7 @@ export function workerModelAuth(content) {
   return JSON.stringify(auth, null, 2);
 }
 
-export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, syncedProjects = async () => [], syncedConversations = async () => null, syncedTtlMs = 30_000, onEvent = null, log = console.log }) {
+export function createRemoteWorkspaces({ url, token, hub, github, sup = null, modelAuthPath = null, cachePath = null, transfer = null, fetchImpl = globalThis.fetch, readyTimeoutMs = 180_000, stateTimeoutMs = 400, retryMs = 5_000, modelAuthSyncMs = MODEL_AUTH_SYNC_MS, syncedProjects = async () => [], syncedTtlMs = 30_000, onEvent = null, log = console.log }) {
   const owners = { project: new Map(), session: new Map() };
 
   // pi projects with synced conversations (pi-sync), so a project not on web yet is still listed.
@@ -115,14 +115,6 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     if (Date.now() - synced.at < syncedTtlMs) return synced.projects;
     try { synced = { at: Date.now(), projects: await syncedProjects() }; } catch { synced.at = Date.now(); }
     return synced.projects;
-  }
-  // The sync server's conversations by id, for each session's sync words. Null (no words) when sync is not set up
-  // or the server did not answer: a stale list would guess.
-  let conversations = { at: -Infinity, items: null };
-  async function conversationList() {
-    if (Date.now() - conversations.at < syncedTtlMs) return conversations.items;
-    conversations = { at: Date.now(), items: await Promise.resolve().then(syncedConversations).catch(() => null) };
-    return conversations.items;
   }
   const streams = new Map();
   const auth = token ? { authorization: `Bearer ${token}` } : {};
@@ -207,10 +199,11 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     return { id, name: node?.title || null, started: f.started || null, running, failed: !!f.outcome && f.outcome !== "done" };
   }).sort((a, b) => String(b.started).localeCompare(String(a.started)));
   const conversationOf = agent => Object.keys(agents).find(id => agents[id]?.kind === "conversation" && agents[id].agent === agent) || null;
-  // `synced`: the sync server's list, when it answered; each session then says where it stands against it.
-  const flagged = (nodes, synced = null) => nodes?.map(n => {
+  // A session's sync words (`sync`) are the worker's reading of its files against the sync server. They only pass
+  // on from a worker that just answered (`live`): from a kept snapshot they could say "synced" of a stale copy.
+  const flagged = (nodes, live) => nodes?.map(({ sync, ...n }) => {
     const flag = agentOf(n.id);
-    return { ...n, ...(flag ? { agent: flag.agent, agentKind: flag.kind } : {}), ...(synced ? { sync: syncStanding(synced, n) } : {}), children: flagged(n.children, synced) };
+    return { ...n, ...(live && sync ? { sync } : {}), ...(flag ? { agent: flag.agent, agentKind: flag.kind } : {}), children: flagged(n.children, live) };
   });
   const agentIn = text => { try { return JSON.parse(text || "{}")?.agent; } catch { return null; } };
 
@@ -276,13 +269,8 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
     for (const name of streams.keys()) if (!known.has(name)) unsubscribe(name);
     const chatsWorker = all.find(isChats);
     const workspaces = all.filter(w => !isChats(w));
-    const synced = await conversationList();
-    // An ended copy that another device holds or has continued is that device's conversation now, not a past session.
-    // It still counts as here (projectSynced), so it opens by restoring its own file rather than as a second copy.
-    const away = s => synced?.has(s.id) && agentOf(s.id)?.kind !== "run" ? elsewhere(synced.get(s.id), s) : null;
-    const moved = ended => ended.flatMap(s => away(s) ? [{ id: s.id, title: s.title, ...away(s), updatedAt: synced.get(s.id).updatedAt }] : []);
     // Ended runs are left out of Past sessions too.
-    const tag = (w, p) => ({ ...p, ...(p.sessions ? { sessions: flagged(p.sessions, synced) } : {}), ...(p.ended ? { ended: p.ended.filter(s => agentOf(s.id)?.kind !== "run" && !away(s)), moved: moved(p.ended) } : {}), workspace: w.name, workspaceState: w.state || (w.ready ? "running" : "starting"), workspacePinned: !!w.pinned, workspaceGrant: w.grant || "default", workspaceProblem: w.problem || null });
+    const tag = (w, p, live = false) => ({ ...p, ...(p.sessions ? { sessions: flagged(p.sessions, live) } : {}), ...(p.ended ? { ended: p.ended.filter(s => agentOf(s.id)?.kind !== "run") } : {}), workspace: w.name, workspaceState: w.state || (w.ready ? "running" : "starting"), workspacePinned: !!w.pinned, workspaceGrant: w.grant || "default", workspaceProblem: w.problem || null });
     const chats = chatsWorker ? chatList(chatsWorker) : Promise.resolve([]);
     const lists = await Promise.all(workspaces.map(async w => {
       const running = w.state ? w.state === "running" : w.ready;
@@ -298,7 +286,7 @@ export function createRemoteWorkspaces({ url, token, hub, github, sup = null, mo
         if (JSON.stringify(snapshots[w.name]) !== JSON.stringify(fresh)) { snapshots[w.name] = fresh; changed = true; }
       }
       const shown = fresh || snapshots[w.name];
-      if (shown) return shown.map(p => tag(w, p));
+      if (shown) return shown.map(p => tag(w, p, !!fresh));
       return [tag(w, { id: `workspace:${w.name}`, name: w.name, pending: true, branches: [], sessions: [], contexts: [], worktrees: {}, workspaceStatus: {} })];
     }));
     if (changed) saveSnapshots();
