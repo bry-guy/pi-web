@@ -28,7 +28,7 @@ server/
   workspaces.js       live checkout/worktree discovery and Git status
   domain.js           /api/state assembly (projects, contexts, session trees)
   events.js           SSE hub (event contract v1 + sequence snapshots)
-  lifecycle.js        archival close plus legacy lifecycle compatibility
+  lifecycle.js        close and open (the sidebar list) plus legacy lifecycle compatibility
   supervisor/         real.js (pi SDK) · mock.js (scripted) — same interface
   auth-flows.js       server-side Pi OAuth/API-key interaction bridge
   github.js           GitHub device login, public/private API listing, and token store
@@ -109,8 +109,8 @@ version 5 and includes capability markers for workspace and branch features.
   operation.
 - Delete is a separate confirmed local branch/worktree operation. Affected
   sessions move to the primary branch, or active/affected sessions may be
-  closed from the confirmation dialog. Ordinary session close archives one
-  conversation only.
+  closed from the confirmation dialog. Ordinary session close takes one
+  conversation off the sidebar and changes nothing else.
 - Branch, checkout/worktree kind, clean/dirty state, ahead/behind, and sharing
   sessions are observed live. The file tree marks changes against the selected
   diff target: `vs origin` (default) compares the working tree with `@{upstream}`

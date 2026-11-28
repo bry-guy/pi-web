@@ -668,14 +668,15 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   newChat.click();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(store.state.chatId, "c1");
-  // The Chats heading opens its menu: new chat, past (ended) chats to reopen, and the chats worker.
+  // The Chats heading opens its menu: new chat, chats that are not open, and the chats worker.
   store.state.endedChats = [{ id: "c0", title: "Old chat", when: "1d ago" }];
   root.querySelector(".chats-head [data-act='chats-menu']").click();
   const chatsMenu = root.querySelector("pi-project-menu .session-picker");
   assert.ok(chatsMenu, "the Chats menu opens");
   assert.match(chatsMenu.textContent, /New chat/);
-  assert.match(chatsMenu.textContent, /Past chats\s*1/);
-  assert.match(chatsMenu.textContent, /Old chat/);
+  assert.match(chatsMenu.textContent, /Not open\s*1/);
+  assert.match(chatsMenu.textContent, /Old chat\s*1d ago/);
+  assert.doesNotMatch(chatsMenu.textContent, /Past chats|Ended/);
   chatsMenu.querySelector("[data-act='close-project-menu']").click();
   assert.equal(root.querySelector("pi-project-menu .session-picker"), null);
 
@@ -1192,27 +1193,30 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(root.querySelector("pi-session-picker [data-act='open-project-menu']"), null, "no Project entry in the session menu");
   root.querySelector("[data-act='close-session-picker']").click();
   root.querySelector("pi-sidebar [data-act='project-row'][data-id='p1']").click();
-  assert.ok(root.querySelector("pi-project-menu [data-act='end-idle']"));
+  assert.equal(root.querySelector("pi-project-menu [data-act='end-idle']").textContent, "Close idle");
   assert.ok(root.querySelector("pi-project-menu [data-act='remove-project']"));
   root.querySelector("pi-project-menu [data-act='close-project-menu']").click();
-  store.state.projects[0].ended = [{ id: "old1", title: "Old work", when: "2d", updatedAt: 1 }];
+  store.state.projects[0].closed = [{ id: "old1", title: "Old work", when: "2d", sync: "synced", updatedAt: 1 }];
   store.notify("state");
   assert.equal(root.querySelector("pi-sidebar [data-act='toggle-ended']"), null, "the sidebar has no Ended list");
   root.querySelector("pi-sidebar [data-act='project-row'][data-id='p1']").click();
   assert.ok(store.state.projectMenu, "clicking the project row opens the Project menu");
   assert.equal(store.state.sessionId, "s1", "and does not start a new session");
-  // A past session previews first, like a History entry; Open appears only under the preview.
-  assert.equal(root.querySelector("pi-project-menu [data-act='open-past']"), null, "no Open before a preview");
-  const pastRow = root.querySelector("pi-project-menu [data-act='toggle-preview'][data-key='past:old1']");
+  // A conversation that is not open previews first, like a History entry; Open appears only under the preview.
+  assert.match(root.querySelector("pi-project-menu").textContent, /Not open\s*1/);
+  assert.doesNotMatch(root.querySelector("pi-project-menu").textContent, /Past sessions|Ended|End idle/, "a closed conversation has not ended");
+  assert.equal(root.querySelector("pi-project-menu [data-act='open-closed']"), null, "no Open before a preview");
+  const pastRow = root.querySelector("pi-project-menu [data-act='toggle-preview'][data-key='closed:old1']");
   assert.match(pastRow.textContent, /Old work/);
+  assert.equal(pastRow.querySelector("small").textContent, "2d · synced", "its age and its sync words");
   dom.window.__transcriptResponse = { sessionId: "old1", seq: 0, streaming: false, records: [{ id: "u", role: "user", text: "Old question" }, { id: "a", role: "assistant", text: "Old answer" }, { id: "t", role: "tool", tool: "bash" }] };
   pastRow.click();
   await new Promise(resolve => setTimeout(resolve, 20));
   delete dom.window.__transcriptResponse;
-  assert.equal(root.querySelector("pi-project-menu [data-key='past:old1']").getAttribute("aria-expanded"), "true");
+  assert.equal(root.querySelector("pi-project-menu [data-key='closed:old1']").getAttribute("aria-expanded"), "true");
   assert.deepEqual([...root.querySelectorAll("pi-project-menu .convo-preview-msg p")].map(node => node.textContent), ["Old question", "Old answer"], "the preview shows the conversation's messages");
-  assert.ok(root.querySelector("pi-project-menu .convo-preview [data-act='open-past'][data-id='old1']"), "Open sits under the preview");
-  root.querySelector("pi-project-menu [data-key='past:old1']").click();
+  assert.ok(root.querySelector("pi-project-menu .convo-preview [data-act='open-closed'][data-id='old1']"), "Open sits under the preview");
+  root.querySelector("pi-project-menu [data-key='closed:old1']").click();
   assert.equal(root.querySelector("pi-project-menu .convo-preview"), null, "clicking the row again hides it");
   root.querySelector("pi-project-menu [data-act='remove-project']").click();
   assert.equal(store.state.confirm?.type, "removeProject");
@@ -1229,7 +1233,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(store.state.sessionPicker?.screen, "main", "a session-panel step goes back first");
   escape();
   assert.equal(store.state.sessionPicker, null, "then the session panel closes");
-  delete store.state.projects[0].ended;
+  delete store.state.projects[0].closed;
 
   // A pi project: project-level sessions in its menu, repository sessions behind a drill-through into each repository.
   const folder = { id: "pp-eco", kind: "folder", name: "eco", group: "eco", branches: [], contexts: [{ id: "folder", kind: "folder", branch: null, path: "/w/eco" }], sessions: [{ id: "f1", title: "Plan the week", when: "1m", contextId: "folder", children: [] }] };
@@ -1261,12 +1265,23 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     { id: "f4", title: "Unknown standing", when: "4m", contextId: "folder", children: [] },
   );
   folder.sessions[0].sync = "synced";
-  // Ended here and continued on the laptop: that device's conversation, not a past session.
-  folder.moved = [{ id: "m1", title: "Moved talk", where: "on laptop", when: "3h", updatedAt: "2026-11-27T10:00:00.000Z" }];
-  folder.ended = [{ id: "e1", title: "Old talk", when: "1d" }];
-  repo.moved = [{ id: "m2", title: "Moved repo work", where: "on phone", when: "5h", updatedAt: "2026-11-27T08:00:00.000Z" }];
-  store.set({ projectMenu: { projectId: "group:eco", synced: [] } });
-  const rowOf = title => [...root.querySelectorAll("pi-project-menu .history-entry-head")].find(row => row.querySelector("strong").textContent === title);
+  // Conversations that are not open list apart, newest first as the server sends them, each with its age and sync
+  // words; one continued on another device names that device.
+  folder.closed = [
+    { id: "m1", title: "Moved talk", when: "2w", sync: "on laptop · 3h" },
+    { id: "e1", title: "Old talk", when: "1d", sync: "synced" },
+    { id: "e2", title: "Unread talk", when: "3d" },
+  ];
+  repo.closed = [{ id: "m2", title: "Moved repo work", when: "1w", sync: "on phone · 5h" }];
+  // The sync server lists closed conversations too: one the closed list shows is not listed twice, and one past
+  // the closed list's cut-off is listed here and nowhere else.
+  const alsoSynced = [
+    { sessionId: "e1", title: "Old talk", repo: null, device: "web", when: "1d" },
+    { sessionId: "far", title: "Closed long ago", repo: null, device: "laptop", when: "9w" },
+  ];
+  store.set({ projectMenu: { projectId: "group:eco", synced: alsoSynced } });
+  const rows = title => [...root.querySelectorAll("pi-project-menu .history-entry-head")].filter(row => row.querySelector("strong").textContent === title);
+  const rowOf = title => rows(title)[0];
   const rowHint = title => rowOf(title)?.querySelector("small").textContent;
   assert.equal(rowHint("Plan the week"), "1m · synced");
   assert.equal(rowHint("Away talk"), "2m · on laptop · 2h");
@@ -1276,16 +1291,23 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   store.notify("state");
   assert.equal(rowHint("Plan the week"), "1m · on phone", "what pi-sync says in the running session comes first");
   delete store.state.extensionStatuses.f1;
-  assert.equal(rowHint("Moved talk"), "on laptop · 3h", "listed in Sessions with its device");
-  assert.equal(rowOf("Moved talk").dataset.act, "open-past");
-  assert.equal(rowHint("Old talk"), "Ended 1d");
-  assert.equal(rowOf("Moved repo work"), undefined, "a repository's moved conversation lists under its repository");
-  // Opening one restores it on the server (which shares it again and brings in the sync server's copy) before it is
-  // selected. This pi project lives only in the store, so state reloads are kept out while the selection changes.
+  assert.match(menuText(), /Not open\s*3/);
+  assert.doesNotMatch(menuText(), /Past sessions|Ended/);
+  assert.equal(rowHint("Moved talk"), "on laptop · 3h", "where it went on, with that device's age");
+  assert.equal(rowHint("Old talk"), "1d · synced");
+  assert.equal(rowHint("Unread talk"), "3d", "no sync words from a worker that did not just answer");
+  assert.equal(rows("Old talk").length, 1, "listed once, from the closed list");
+  assert.deepEqual([rowHint("Closed long ago"), rowOf("Closed long ago").dataset.act], ["on laptop · 9w", "open-synced"], "past the cut-off, it is still reachable");
+  assert.equal(rowOf("Moved talk").dataset.act, "toggle-preview");
+  assert.equal(rowOf("Moved repo work"), undefined, "a repository's closed conversation lists under its repository");
+  // Opening one asks the server first (which puts it on the sidebar, and attaches a copy an earlier End detached)
+  // before it is selected. This pi project lives only in the store, so state reloads are kept out while the selection changes.
+  const previewed = extra => ({ projectId: "group:eco", synced: [], preview: "closed:m1", previews: { "closed:m1": { records: [] } }, ...extra });
+  const openButton = () => root.querySelector("pi-project-menu .convo-preview [data-act='open-closed'][data-id='m1']");
   const realFetch = globalThis.fetch;
   const selected = { view: store.state.view, projectId: store.state.projectId, sessionId: store.state.sessionId, chatId: store.state.chatId };
   const restores = [];
-  let restoreAnswer = { ok: true, restored: true, attached: ["m1"] };
+  let restoreAnswer = { ok: true, restored: true };
   globalThis.fetch = async (input, options) => {
     if (String(input) === "/api/state") throw new Error("not in this check");
     if (String(input) !== "/api/sessions/m1/restore") return realFetch(input, options);
@@ -1293,17 +1315,18 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     return new Response(JSON.stringify(restoreAnswer), { status: 200, headers: { "content-type": "application/json" } });
   };
   try {
-    rowOf("Moved talk").click();
+    store.set({ projectMenu: previewed() });
+    openButton().click();
     for (let i = 0; i < 50 && store.state.sessionId !== "m1"; i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(restores.length, 1);
     assert.equal(restores[0][0], "POST");
-    assert.notEqual(restores[0][1], "m1", "restored before it is selected");
+    assert.notEqual(restores[0][1], "m1", "opened on the server before it is selected");
     assert.deepEqual([store.state.projectId, store.state.sessionId, store.state.projectMenu], ["pp-eco", "m1", null]);
 
-    // A restore that could not share the conversation again does not open it for typing: the menu stays and says why.
-    store.set({ ...selected, projectMenu: { projectId: "group:eco", synced: [] } });
-    restoreAnswer = { ok: true, restored: true, attached: [], syncError: "This conversation is not syncing: pi-sync is down. Run /sync attach in it." };
-    rowOf("Moved talk").click();
+    // A detached copy that could not be shared again does not open for typing: the menu stays and says why.
+    store.set({ ...selected, projectMenu: previewed() });
+    restoreAnswer = { ok: true, restored: false, attached: [], syncError: "This conversation is not syncing: pi-sync is down. Run /sync attach in it." };
+    openButton().click();
     for (let i = 0; i < 50 && !root.querySelector("pi-project-menu .session-picker-error"); i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.match(root.querySelector("pi-project-menu .session-picker-error").textContent, /not syncing: pi-sync is down/);
     assert.equal(store.state.sessionId, selected.sessionId, "the conversation is not selected");
@@ -1313,16 +1336,16 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
     globalThis.fetch = realFetch;
   }
   // A device or a title is the sync server's text, not markup.
-  folder.moved = [{ id: "m3", title: "<img src=x onerror=alert(1)>", where: "on <b>lap</b>top", when: "1h", updatedAt: "2026-11-27T11:00:00.000Z" }];
+  folder.closed = [{ id: "m3", title: "<img src=x onerror=alert(1)>", when: "1h", sync: "on <b>lap</b>top · 1h" }];
   store.set({ projectMenu: { projectId: "group:eco", synced: [{ sessionId: "sy9", title: "<i>remote</i>", repo: null, device: "<u>phone</u>", when: "2m" }] } });
   assert.equal(rowHint("<img src=x onerror=alert(1)>"), "on <b>lap</b>top · 1h");
   assert.equal(rowHint("<i>remote</i>"), "on <u>phone</u> · 2m");
   assert.equal(root.querySelector("pi-project-menu .history-entry :is(img, b, i, u)"), null, "nothing in a row became an element");
-  store.set({ projectMenu: { projectId: "group:eco", repo: "pp-eco-code", synced: [] } });
+  store.set({ projectMenu: { projectId: "group:eco", repo: "pp-eco-code", synced: [], preview: "closed:m2", previews: { "closed:m2": { records: [] } } } });
   assert.equal(rowHint("Moved repo work"), "on phone · 5h");
-  assert.deepEqual([rowOf("Moved repo work").dataset.act, rowOf("Moved repo work").dataset.pid], ["open-past", "pp-eco-code"]);
+  assert.equal(root.querySelector("pi-project-menu .convo-preview [data-act='open-closed'][data-id='m2']").dataset.pid, "pp-eco-code", "it opens in its repository");
   folder.sessions.length = 1;
-  delete folder.moved; delete folder.ended; delete repo.moved;
+  delete folder.closed; delete repo.closed;
 
   // Role runs fold into one collapsed row below the user's own sessions, and stay open across re-renders once opened.
   store.set({ projectMenu: { projectId: "group:eco", synced: [
@@ -1385,7 +1408,8 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   root.querySelector("pi-header [data-act='session-panel']").click();
   assert.equal(store.state.projectMenu, null, "not the Project menu");
   assert.ok(root.querySelector("pi-session-picker [data-act='rename-session']"), "Rename is reachable");
-  assert.ok(root.querySelector("pi-session-picker [data-act='end-session']"));
+  assert.equal(root.querySelector("pi-session-picker [data-act='close-session']").textContent, "Close");
+  assert.doesNotMatch(root.querySelector("pi-session-picker").textContent, /End session|withdraws|archives/);
   assert.equal(root.querySelector("pi-session-picker [aria-label='Git']"), null, "no Git section without a repository");
   assert.equal(root.querySelector("pi-session-picker [data-act='open-fork']"), null, "no fork without a repository");
   root.querySelector("pi-session-picker [data-act='open-project-menu']").click();
@@ -1608,6 +1632,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   dom.window.__mergeFails = false;
 
   const closeButton = root.querySelector("[data-id='sibling'] .row-close");
+  assert.deepEqual([closeButton.title, closeButton.getAttribute("aria-label").startsWith("Close ")], ["Close", true], "a conversation is closed, not ended");
   assert.ok(closeButton);
   closeButton.click();
   await new Promise(resolve => setTimeout(resolve, 20));

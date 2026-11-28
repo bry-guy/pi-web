@@ -1,9 +1,9 @@
-// Session lifecycle is deliberately independent of Git lifecycle.
-// Closing archives the conversation only; worktrees and branches remain
-// available to agents, terminals, and other sessions.
+// A conversation has no lifecycle: closing one only takes it off the sidebar, and
+// opening it puts it back. Worktrees and branches are never touched by either.
 import path from "node:path";
 import { loadBindings, loadClosed, loadConfig, saveBindings, saveClosed, syncConfig } from "./config.js";
 import { sessionWorkspace, sessionsUsingWorkspaceAsync } from "./domain.js";
+import { syncedConversations } from "./pi-sync.js";
 import * as ws from "./workspaces.js";
 
 
@@ -58,34 +58,33 @@ function descendantsOf(sup, sessionId) {
   });
 }
 
-// End a session and its descendants: stop a running turn, withdraw it from
-// pi-sync on this device (the server copy stays), then archive it.
+// Close a conversation and its forks: stop a running turn, let go of it here, and take it off the sidebar.
+// Unloading shuts its extensions down, so pi-sync uploads what is left, releases its lease and stops polling.
+// Nothing is written into the conversation: it stays shared, and opens again like any other.
 export async function closeSession(sup, hub, sessionId, { report = null } = {}) {
   const sessionIds = [sessionId, ...(await descendantsOf(sup, sessionId))];
-  report?.({ type: "phase", phase: "archive-read", message: "Reading the archived-session marker." });
-  // Read first: a corrupt archive fails before anything is stopped or detached.
-  const closed = loadClosed();
+  report?.({ type: "phase", phase: "closed-read", message: "Reading the list of closed conversations." });
+  // Read first: a corrupt list fails before anything is stopped.
+  loadClosed();
   for (const id of sessionIds) {
     if (sup.isStreaming?.(id)) {
       report?.({ type: "phase", phase: "stop", message: `Stopping the running turn in ${id}.` });
       await sup.stop(id).catch(() => undefined);
     }
-    // The pi-sync extension only runs in open sessions; on an unsynchronized one detach is a no-op.
-    if (syncConfig().serverUrl && sup.isOpen?.(id)) {
-      report?.({ type: "phase", phase: "sync-detach", message: `Withdrawing ${id} from synchronization.` });
-      // A failed detach must not keep the session open; the warning is in the operation log.
-      await sup.command(id, "/sync detach").catch(error => report?.({ type: "warning", phase: "sync-detach", message: `Could not withdraw from sync: ${error.message || error}` }));
-    }
+    // A failed unload must not keep it on the sidebar; the warning is in the operation log.
+    await sup.unload?.(id).catch(error => report?.({ type: "warning", phase: "unload", message: `Could not unload ${id}: ${error.message || error}` }));
   }
+  report?.({ type: "phase", phase: "closed-write", message: "Writing the list of closed conversations." });
+  // Read again and write with nothing awaited between: a close running beside this one keeps its ids.
+  const closed = loadClosed();
   for (const id of sessionIds) closed.add(id);
-  report?.({ type: "phase", phase: "archive-write", message: "Writing the archived-session marker." });
   saveClosed(closed);
   report?.({ type: "phase", phase: "session-event", message: "Emitting the session-closed event." });
   for (const id of sessionIds) hub.emit(id, "session_closed", { sessionId: id });
-  return { closed: true, archived: true };
+  return { closed: true };
 }
 
-// After an end: a worktree that no session uses any more, is clean and is merged into
+// After a close: a worktree that no open session uses any more, is clean and is merged into
 // main can be deleted. Returns what the client needs to offer that, or null.
 export async function cleanupCandidate(sup, workspacePath) {
   if (!workspacePath) return null;
@@ -103,9 +102,8 @@ export async function cleanupCandidate(sup, workspacePath) {
 
 // Shares `ids` again with pi-sync's attach, which works in the session's own file: it uploads what this copy
 // added, or takes the server's copy when that is newer (turns only this copy has are kept as a separate
-// conversation). Returns { attached: ids, syncError }, or {} without a sync server.
+// conversation). Returns { attached: ids, syncError }.
 export async function attachSynced(sup, ids) {
-  if (!syncConfig().serverUrl) return {};
   const attached = [];
   for (const id of ids) {
     try { await sup.command(id, "/sync attach"); attached.push(id); }
@@ -114,18 +112,33 @@ export async function attachSynced(sup, ids) {
   return { attached };
 }
 
-// Undo an end: unarchive the session and its forks, and share again those the end detached. A detached
-// conversation stays local, so its next message would fork from the server's copy. One that was never shared
-// carries no detach, and is left alone (no call to the sync server).
-export async function restoreSession(sup, hub, sessionId) {
-  const closed = loadClosed();
-  if (!closed.has(sessionId)) return { restored: false };
+// Opens a closed conversation: it and its forks go back on the sidebar, and pi-sync catches them up when they
+// load, as it does any conversation. Only a copy that still carries a detach (what closing wrote before) and that
+// the sync server lists is attached first; when that fails nothing opens, since typing into the stale copy would
+// fork the conversation. Returns { restored, attached?, syncError? }.
+export async function restoreSession(sup, hub, sessionId, { listed = syncedConversations } = {}) {
+  if (!loadClosed().has(sessionId)) return { restored: false };
   const ids = [sessionId, ...(await descendantsOf(sup, sessionId))];
+  const detached = syncConfig().serverUrl ? ids.filter(id => sup.syncCopy?.(id)?.detached) : [];
+  let attached;
+  if (detached.length) {
+    let items;
+    try { items = await listed(); }
+    catch (error) { return { restored: false, syncError: `This conversation was detached from sync, and the sync server did not answer (${error.message || error}). Try again.` }; }
+    const sync = await attachSynced(sup, detached.filter(id => items?.has(id)));
+    if (sync.syncError) {
+      // The attach loaded them; let go again, so nothing holds or polls a conversation that stays closed.
+      for (const id of detached) await sup.unload?.(id).catch(() => undefined);
+      return { restored: false, ...sync };
+    }
+    attached = sync.attached;
+  }
+  // Read and written with nothing awaited between, so a close or an open running beside this one is not lost.
+  const closed = loadClosed();
   for (const id of ids) closed.delete(id);
   saveClosed(closed);
-  const sync = await attachSynced(sup, ids.filter(id => sup.syncCopy?.(id)?.detached));
   hub.emit(sessionId, "session_meta", {});
-  return { restored: true, ...sync };
+  return { restored: true, ...(attached ? { attached } : {}) };
 }
 
 function failure(code, extra = {}) {

@@ -625,7 +625,7 @@ test("agent-sessions.json: an old bare name reads as an agent session, and sessi
   const fetchImpl = async url => {
     const p = new URL(url).pathname.replace("/v1/workspaces", "");
     if (p === "") return Response.json({ workspaces: [{ name: "ws1", repository: "project:labrat", state: "running" }] });
-    if (p === "/ws1/api/state") return Response.json({ projects: [{ id: "pp-labrat", sessions: [{ id: "c0", children: [{ id: "f0", children: [] }] }, { id: "r0", children: [] }, { id: "a0", children: [] }, { id: "s0", children: [] }], ended: [{ id: "r1" }, { id: "a1" }, { id: "e1" }] }] });
+    if (p === "/ws1/api/state") return Response.json({ projects: [{ id: "pp-labrat", sessions: [{ id: "c0", children: [{ id: "f0", children: [] }] }, { id: "r0", children: [] }, { id: "a0", children: [] }, { id: "s0", children: [] }], closed: [{ id: "r1" }, { id: "a1" }, { id: "e1" }] }] });
     return Response.json({}, { status: 503 });
   };
   const remote = createRemoteWorkspaces({ url: "http://w", hub: new EventHub(), fetchImpl, cachePath, modelAuthSyncMs: 0, retryMs: 60_000 });
@@ -645,7 +645,7 @@ test("agent-sessions.json: an old bare name reads as an agent session, and sessi
     const [project] = (await remote.refresh()).projects;
     const flags = nodes => nodes.map(n => [n.id, n.agent, n.agentKind, ...(n.children.length ? [flags(n.children)] : [])]);
     assert.deepEqual(flags(project.sessions), [["c0", "labrat", "conversation", [["f0", undefined, undefined]]], ["r0", "labrat", "run"], ["a0", "nightly", "agent"], ["s0", undefined, undefined]]);
-    assert.deepEqual(project.ended.map(s => s.id), ["a1", "e1"], "an ended run is not a past session");
+    assert.deepEqual(project.closed.map(s => s.id), ["a1", "e1"], "a closed run is not listed with closed conversations");
   } finally { remote.stop(); }
 });
 
