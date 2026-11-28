@@ -5,7 +5,6 @@ import path from "node:path";
 import { loadBindings, loadClosed, loadConfig, saveBindings, saveClosed, syncConfig } from "./config.js";
 import { sessionWorkspace, sessionsUsingWorkspaceAsync } from "./domain.js";
 import * as ws from "./workspaces.js";
-import { syncedConversations } from "./pi-sync.js";
 
 
 export function findProjectByWorkspace(wsPath) {
@@ -102,32 +101,29 @@ export async function cleanupCandidate(sup, workspacePath) {
   return { projectId: found.project.id, branch: context.branch, primaryBranch };
 }
 
-// Shares `ids` again where the sync server has them: an end detached them, and a detached conversation stays
-// local, so its next message would fork from the server's copy. pi-sync's attach works in the session's own file:
-// it uploads what this copy added, or takes the server's copy when that is newer (turns only this copy has are
-// kept as a separate conversation). Returns { attached: ids, syncError }, or {} without a sync server.
-export async function attachSynced(sup, ids, { conversations = syncedConversations } = {}) {
+// Shares `ids` again with pi-sync's attach, which works in the session's own file: it uploads what this copy
+// added, or takes the server's copy when that is newer (turns only this copy has are kept as a separate
+// conversation). Returns { attached: ids, syncError }, or {} without a sync server.
+export async function attachSynced(sup, ids) {
   if (!syncConfig().serverUrl) return {};
-  let onServer;
-  try { onServer = await conversations({ timeoutMs: 5_000 }); }
-  catch (error) { return { attached: [], syncError: `The sync server did not answer (${error.message || error}), so this conversation is not syncing. Run /sync attach in it.` }; }
   const attached = [];
   for (const id of ids) {
-    if (!onServer?.has(id)) continue;
     try { await sup.command(id, "/sync attach"); attached.push(id); }
     catch (error) { return { attached, syncError: `This conversation is not syncing: ${error.message || error}. Run /sync attach in it.` }; }
   }
   return { attached };
 }
 
-// Undo an end: unarchive the session and its forks, and share again those the sync server has.
-export async function restoreSession(sup, hub, sessionId, options) {
+// Undo an end: unarchive the session and its forks, and share again those the end detached. A detached
+// conversation stays local, so its next message would fork from the server's copy. One that was never shared
+// carries no detach, and is left alone (no call to the sync server).
+export async function restoreSession(sup, hub, sessionId) {
   const closed = loadClosed();
   if (!closed.has(sessionId)) return { restored: false };
   const ids = [sessionId, ...(await descendantsOf(sup, sessionId))];
   for (const id of ids) closed.delete(id);
   saveClosed(closed);
-  const sync = await attachSynced(sup, ids, options);
+  const sync = await attachSynced(sup, ids.filter(id => sup.syncCopy?.(id)?.detached));
   hub.emit(sessionId, "session_meta", {});
   return { restored: true, ...sync };
 }

@@ -16,7 +16,7 @@ import { GitHubClient } from "../github.js";
 import { findProjectByWorkspace } from "../lifecycle.js";
 import { gitCredentialEnvironment } from "../git-credentials.js";
 import { resolveProjectEnvironment } from "../project-environment.js";
-import { activePiSyncExtensionPath } from "../pi-sync.js";
+import { activePiSyncExtensionPath, copyFacts } from "../pi-sync.js";
 import { ExtensionUiHost } from "../extension-ui.js";
 import { writeLog } from "../logging.js";
 
@@ -202,7 +202,7 @@ export class RealSupervisor {
     const availableModels = new Set((modelState.models || []).map(model => model.id));
     for (const info of infos) this.paths.set(info.id, info.path);
     return infos.map(info => {
-      const { cwd: openedCwd, model: requestedModel, mtimeMs } = this._sessionSummary(SessionManager, info.path);
+      const { cwd: openedCwd, model: requestedModel } = this._sessionSummary(SessionManager, info.path);
       const liveModel = modelRef(this.live.get(info.id)?.session.model);
       const model = effectiveModelInfo(requestedModel, liveModel, availableModels, modelState.effectiveDefault);
       const recordedCwd = info.cwd || openedCwd || cwd;
@@ -213,8 +213,6 @@ export class RealSupervisor {
         parentSessionId: info.parentSessionPath ? this._idFromPath(info.parentSessionPath) : null,
         created: info.created,
         modified: info.modified,
-        // When the file was last written; `modified` is the last message's time.
-        written: mtimeMs ? new Date(mtimeMs) : null,
         firstMessage: info.firstMessage || "",
         ...model,
       };
@@ -236,13 +234,13 @@ export class RealSupervisor {
   }
 
   _sessionSummary(SessionManager, filePath) {
-    let stamp = null, mtimeMs = null;
-    try { const stat = fs.statSync(filePath); stamp = `${stat.mtimeMs}:${stat.size}`; mtimeMs = stat.mtimeMs; } catch { /* removed session */ }
+    let stamp = null;
+    try { const stat = fs.statSync(filePath); stamp = `${stat.mtimeMs}:${stat.size}`; } catch { /* removed session */ }
     const cached = this.sessionSummaries.get(filePath);
     if (stamp && cached?.stamp === stamp) return cached;
     let manager;
     try { manager = SessionManager.open(filePath); } catch { /* malformed/removed session */ }
-    const summary = { stamp, mtimeMs, cwd: manager?.getCwd?.() || null, model: modelRefFromEntries(manager?.getBranch?.() || []) };
+    const summary = { stamp, cwd: manager?.getCwd?.() || null, model: modelRefFromEntries(manager?.getBranch?.() || []) };
     if (stamp) this.sessionSummaries.set(filePath, summary);
     else this.sessionSummaries.delete(filePath);
     return summary;
@@ -266,6 +264,13 @@ export class RealSupervisor {
   _boundCwd(id, fallback) {
     const bindings = loadBindings();
     return bindings[id]?.workspacePath || this.live.get(id)?.cwd || this.info.get(id)?.cwd || fallback || null;
+  }
+
+  /** What the copy of session `id` here holds, for comparing with the sync server (pi-sync.js copyFacts); null when its file is not known. */
+  syncCopy(id) {
+    const file = this.paths.get(id) || this.info.get(id)?.path;
+    if (!file) return null;
+    return (sdk?.SessionManager ? this._sessionSummary(sdk.SessionManager, file) : this.sessionSummaries.get(file))?.sync || null;
   }
 
   async _discover(id) {

@@ -1,4 +1,4 @@
-import { piSyncState } from "../pi-sync.js";
+import { knownConversations, labelProjects, piSyncState } from "../pi-sync.js";
 import { STARTED_AT } from "../version.js";
 import { saveConfig } from "../config.js";
 import { listPiProjects, piProjectsDir, reconcile } from "../pi-projects.js";
@@ -52,6 +52,9 @@ export function register(api, deps) {
     }
     // Each pi project's own folder is listed like a repository, so its sessions need no repository.
     if (!remoteState) for (const group of listPiProjects()) projects.push(await folderState(group, sup));
+    // Where each session stands with sync, when this process reads session files and the sync server has answered.
+    const synced = !remoteState && sup.syncCopy ? knownConversations() : null;
+    if (synced) labelProjects(projects, synced, id => sup.syncCopy(id));
     const { chats, ended: endedChats } = remoteState || await chatsListing(sup);
     return c.json({
       apiContractVersion: API_CONTRACT_VERSION,
