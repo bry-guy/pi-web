@@ -41,6 +41,10 @@ test("a copy reads synced only when it ends in the entry the sync server's copy 
   const standing = (copy, self = "web") => syncStanding(items, "c", copy, self);
   assert.equal(standing(copyFacts(entries("e1", "e2", "e3"))), "synced");
   assert.equal(standing(copyFacts(entries("e1", "e2", "e3", "e4"))), "not uploaded yet", "this copy holds turns the server lacks");
+  const idle = type => ({ type, id: `s-${type}` });
+  assert.equal(standing(copyFacts(entries("e1", "e2", "e3", idle("thinking_level_change"), idle("model_change")))), "synced", "pi-sync holds settings switches for the next turn");
+  assert.equal(standing(copyFacts(entries("e1", "e2", "e3", idle("model_change"), "e4"))), "not uploaded yet", "a turn after the switch is not uploaded");
+  assert.equal(standing(copyFacts(entries("e1", "e2", "e3", idle("session_info")))), "not uploaded yet", "a rename is uploaded when idle, so it counts");
   assert.equal(standing(copyFacts(entries("e1", "e2"))), "on laptop · 2h", "one entry behind is behind: no margin of time");
   assert.equal(standing(copyFacts(entries("e1", "e2", "x9"))), "on laptop · 2h", "both went on: the server has what this copy lacks");
   assert.equal(standing(copyFacts(entries("e1", "e2", "e3", link("d1", true)))), "not synced", "detached here, whatever the heads say");

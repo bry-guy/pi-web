@@ -120,7 +120,12 @@ async function ownDevice() {
 export function copyFacts(entries, head) {
   const link = entries.findLast(entry => entry.type === "custom" && entry.customType === "pi-sync-link");
   const ids = `\n${entries.map(entry => entry.id).join("\n")}\n`;
-  return { head: head || entries.at(-1)?.id || null, detached: link?.data?.detached === true, has: id => !!id && ids.includes(`\n${id}\n`) };
+  // pi-sync's own rule (localChanged): a model or thinking switch after the last upload waits for the next turn.
+  const onlySettingsAfter = id => {
+    const at = entries.findIndex(entry => entry.id === id);
+    return at >= 0 && entries.slice(at + 1).every(entry => entry.type === "model_change" || entry.type === "thinking_level_change");
+  };
+  return { head: head || entries.at(-1)?.id || null, detached: link?.data?.detached === true, has: id => !!id && ids.includes(`\n${id}\n`), onlySettingsAfter };
 }
 
 /**
@@ -136,7 +141,7 @@ export function elsewhere(item, copy, self = null) {
 
 /**
  * A row's words for the copy here against the server's list (`items`), or null for a copy not read. "synced" only
- * when both end in the same entry; a copy with more is "not uploaded yet"; a detached one is "not synced".
+ * when both end in the same entry, or this copy has only model and thinking switches since; a copy with more is "not uploaded yet"; a detached one is "not synced".
  */
 export function syncStanding(items, id, copy, self = null) {
   if (!copy?.head) return null;
@@ -144,7 +149,7 @@ export function syncStanding(items, id, copy, self = null) {
   if (!item || copy.detached) return "not synced";
   const away = elsewhere(item, copy, self);
   if (away) return `${away.where} · ${away.when}`;
-  return item.headEntryId === copy.head ? "synced" : "not uploaded yet";
+  return item.headEntryId === copy.head || copy.onlySettingsAfter(item.headEntryId) ? "synced" : "not uploaded yet";
 }
 
 /**
