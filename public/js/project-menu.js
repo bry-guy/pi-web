@@ -3,7 +3,7 @@
 // The Chats menu is its sibling for plain chats: new chat, past chats, and the chats worker.
 import { api, refreshState, refreshWorkers } from "./api.js";
 import { setHTML, store, toast } from "./store.js";
-import { esc, groupMembers, icon, mobile, sidebarEntry, newChat, newProjectSession, restoreConversation, selectChat, selectSession, syncSummary } from "./shell.js";
+import { esc, groupMembers, icon, mobile, sidebarEntry, newChat, newProjectSession, selectChat, selectSession, syncSummary } from "./shell.js";
 import { workerAction, workerCard } from "./workers.js";
 import { gitErrorMessage, launchSetup } from "./panel-utils.js";
 import { renderMarkdown } from "./markdown.js";
@@ -118,6 +118,20 @@ class PiProjectMenu extends HTMLElement {
       .finally(() => { if (this.menu() === menu) this.render(); });
   }
 
+  /**
+   * Opening an ended conversation brings it back into its list. One that could not be shared again is not opened:
+   * its copy here may lack what the sync server has, and typing into it would fork the conversation.
+   */
+  openPast(id, select) {
+    return this.run("Opening conversation…", async () => {
+      const result = await api.restore(id);
+      await refreshState().catch(() => undefined);
+      if (result.syncError) throw new Error(result.syncError);
+      this.close();
+      select();
+    });
+  }
+
   async run(label, work) {
     const menu = this.menu();
     if (!menu || menu.busy) return;
@@ -152,13 +166,7 @@ class PiProjectMenu extends HTMLElement {
       this.render();
       return;
     }
-    if (act === "open-past") {
-      // Opening a past session brings it back into the project's list.
-      this.close();
-      await restoreConversation(t.dataset.id);
-      selectSession(project.id, t.dataset.id);
-      return;
-    }
+    if (act === "open-past") { await this.openPast(t.dataset.id, () => selectSession(project.id, t.dataset.id)); return; }
     if (act === "open-synced") {
       await this.run("Opening conversation…", async () => {
         const primary = project.defaultBranch || project.primaryBranch || "main";
@@ -226,12 +234,7 @@ class PiProjectMenu extends HTMLElement {
       this.render();
       return;
     }
-    if (act === "open-past") {
-      this.close();
-      await restoreConversation(t.dataset.id);
-      selectSession(t.dataset.pid, t.dataset.id);
-      return;
-    }
+    if (act === "open-past") { await this.openPast(t.dataset.id, () => selectSession(t.dataset.pid, t.dataset.id)); return; }
     if (act === "open-synced") {
       await this.run("Opening conversation…", async () => {
         const repo = t.dataset.repo && group.members.find(m => m.id === t.dataset.repo);
@@ -357,7 +360,7 @@ class PiProjectMenu extends HTMLElement {
     const shown = filter ? flat.filter(n => sessionMatches([n.title, ...meta(n).filter(v => v && (v === n.where || v === n.branch))], filter)) : flat;
     const search = total > FILTER_ABOVE ? `<div class="rail-search-wrap session-filter-wrap">${icon("search")}<input class="rail-search session-filter" type="search" placeholder="Filter sessions" aria-label="Filter sessions" value="${esc(menu.filter || "")}"><button class="rail-search-clear" data-act="clear-filter" title="Clear filter" aria-label="Clear filter" ${menu.filter ? "" : "hidden"}>${icon("close")}</button></div>` : "";
     const empty = total ? "No sessions match the filter." : menu.synced === null ? "Loading sessions…" : "No sessions yet.";
-    const entries = list => list.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" ${head(n)}><span class="history-main"><strong>${esc(n.title)}</strong><small>${esc(meta(n).filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("");
+    const entries = list => list.map(n => `<div class="history-entry"><button type="button" class="history-entry-head" ${head(n)}><span class="history-main"><strong>${n.title}</strong><small>${esc(meta(n).filter(Boolean).join(" · "))}</small></span><span class="history-status">Open</span></button></div>`).join("");
     const runs = shown.filter(n => isRoleRun(n.title));
     const mine = shown.filter(n => !isRoleRun(n.title));
     const runGroup = runs.length
@@ -421,13 +424,7 @@ class PiProjectMenu extends HTMLElement {
       this.render();
       return;
     }
-    if (act === "open-past") {
-      // Opening an ended chat brings it back into the list.
-      this.close();
-      await restoreConversation(t.dataset.id);
-      selectChat(t.dataset.id);
-      return;
-    }
+    if (act === "open-past") { await this.openPast(t.dataset.id, () => selectChat(t.dataset.id)); return; }
     const worker = e.target.closest("[data-act$='-worker']");
     if (worker) {
       if (["restart-worker", "reset-worker"].includes(worker.dataset.act)) this.close();
