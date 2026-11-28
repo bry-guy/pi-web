@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { gitCredentialEnvironment } from "./git-credentials.js";
 
 const NAME = /^[a-z0-9][a-z0-9._-]{0,62}$/;
@@ -92,7 +93,8 @@ export function reconcile(cfg, { env = process.env, clone = cloneInBackground } 
     for (const repo of group.repos) {
       const entry = repoEntry(group, repo);
       if (fs.existsSync(path.join(entry.repoPath, ".git"))) wanted.set(entry.id, entry);
-      else clone(repo, entry.repoPath);
+      // A local path another machine recorded can never clone here; every state call would try again.
+      else if (!missingLocalPath(repo.url)) clone(repo, entry.repoPath);
     }
   }
   let changed = false;
@@ -113,6 +115,12 @@ export function reconcile(cfg, { env = process.env, clone = cloneInBackground } 
   }
   cfg.projects = kept;
   return changed;
+}
+
+function missingLocalPath(url) {
+  let local = null;
+  try { local = url.startsWith("file://") ? fileURLToPath(url) : path.isAbsolute(url) ? url : null; } catch { /* not a file URL this platform reads */ }
+  return !!local && !fs.existsSync(local);
 }
 
 function cloneInBackground(repo, dest) {

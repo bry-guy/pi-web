@@ -167,6 +167,30 @@ test("delete refuses a session whose prompt arrived while it was being looked up
   assert.ok(supervisor.paths.has("session-1"), "nothing was removed");
 });
 
+test("unloading a session shuts its extensions down and lets go of it without touching its file", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "piweb-unload-"));
+  const file = path.join(dir, "s1.jsonl");
+  fs.writeFileSync(file, '{"type":"session","id":"s1"}\n');
+  const steps = [];
+  const supervisor = new RealSupervisor({ emit() {} });
+  supervisor.paths.set("s1", file);
+  supervisor.live.set("s1", {
+    // pi-sync releases its lease and stops polling on session_shutdown.
+    session: { sessionId: "s1", extensionRunner: { emit: async event => { steps.push(`${event.type}:${supervisor.isLive("s1") ? "listed" : "let go"}`); } }, dispose: () => steps.push("dispose") },
+    unsubscribe: () => steps.push("unsubscribe"),
+  });
+  (supervisor.opened ??= new Set()).add("s1");
+  try {
+    await supervisor.unload("s1");
+    assert.deepEqual(steps, ["session_shutdown:let go", "unsubscribe", "dispose"], "a request during the shutdown must load it afresh");
+    assert.equal(supervisor.isOpen("s1"), false);
+    assert.equal(fs.readFileSync(file, "utf8"), '{"type":"session","id":"s1"}\n');
+    assert.ok(supervisor.paths.has("s1"), "the session is still known, and opens again");
+    await supervisor.unload("s1");
+    assert.equal(steps.length, 3, "unloading what is not loaded does nothing");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("overlapping prompt admission is rejected before SDK streaming begins", async () => {
   let settle;
   const supervisor = new RealSupervisor({});

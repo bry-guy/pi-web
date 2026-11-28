@@ -231,7 +231,7 @@ class PiSessionPicker extends HTMLElement {
       this.render();
       return;
     }
-    if (act === "end-session") {
+    if (act === "close-session") {
       const id = this.picker()?.sourceSessionId;
       if (id && !this.busy) { this.close(); await closeConversation(id, "session"); }
       return;
@@ -502,7 +502,7 @@ class PiSessionPicker extends HTMLElement {
             ${folder ? "" : actionRow("Fork", "Copies this conversation to a new branch and worktree.", `<button class="btn btn-secondary" data-act="open-fork" ${this.busy ? "disabled" : ""}>Fork…</button>`)}
             ${folder ? "" : hookRows}
             ${project.group ? actionRow("Project", `${project.group}'s repositories, sessions and worker.`, `<button class="btn btn-secondary" data-act="open-project-menu" ${this.busy ? "disabled" : ""}>Project…</button>`) : ""}
-            ${actionRow("End session", "Stops it, withdraws it from sync on this server and archives it. Git is not touched.", `<button class="btn btn-caution" data-act="end-session" ${this.busy ? "disabled" : ""}>End</button>`)}
+            ${actionRow("Close", "Stops a running reply and takes it off the sidebar. The conversation is not changed and opens again from the project menu. Git is not touched.", `<button class="btn btn-caution" data-act="close-session" ${this.busy ? "disabled" : ""}>Close</button>`)}
           </div>
         </section>`;
         body = folder ? sessionSection : `${sessionSection}${gitSection}${this.historySection(picker)}`;
