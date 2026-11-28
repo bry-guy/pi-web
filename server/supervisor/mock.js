@@ -200,6 +200,11 @@ export class MockSupervisor {
     this.live.delete(id);
     this.opened?.delete(id);
   }
+  async unload(id) {
+    for (const t of [...(this.live.get(id)?.timers || []), ...(this.live.get(id)?.agentTimers || [])]) clearTimeout(t);
+    this.live.delete(id);
+    this.opened?.delete(id);
+  }
   async rehome(id, newCwd) {
     const s = this._load(id);
     if (!s) throw new Error("no such session");

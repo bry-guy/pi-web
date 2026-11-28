@@ -1,5 +1,5 @@
-import { loadClosed, saveClosed, syncConfig } from "../config.js";
-import { attachSynced } from "../lifecycle.js";
+import { loadClosed, syncConfig } from "../config.js";
+import { restoreSession } from "../lifecycle.js";
 import { remoteConversationPreview, remoteConversationsForProject, remoteConversationsForRepository } from "../pi-sync.js";
 import { withRepositoryAdmission as runRepositoryAdmission } from "../repository-admission.js";
 import { createPiProject, ensurePrimeAgentsFile, forgetRepo, listPiProjects, piProject, pushState, recordRepo, repoEntry } from "../pi-projects.js";
@@ -169,7 +169,10 @@ export function register(api, deps) {
     if (!project && !folder) return err(c, 404, "no_such_project");
     if (!syncConfig(loadConfig()).serverUrl) return c.json({ sessions: [] });
     try {
-      const localIds = new Set((await sup.allSessions()).map(session => session.id));
+      // A closed conversation the sync server has is listed too, so one past the closed list's cut-off stays
+      // reachable; the menu drops those its closed list already shows. Closed forks follow their root.
+      const closed = loadClosed();
+      const localIds = new Set((await sup.allSessions()).filter(session => !closed.has(session.id) || closed.has(session.parentSessionId)).map(session => session.id));
       if (folder) return c.json({ sessions: await remoteConversationsForProject(folder.name, id => localIds.has(id)) });
       return c.json({ sessions: await remoteConversationsForRepository(project.repoPath, localIds, { project: project.group || null }) });
     } catch { return c.json({ sessions: [], unavailable: true }); }
@@ -187,14 +190,12 @@ export function register(api, deps) {
     if (!syncConfig(loadConfig()).serverUrl) return { error: err(c, 409, "sync_not_configured") };
     if (typeof syncSessionId !== "string" || !syncSessionId) return { error: err(c, 400, "bad_sync_session") };
     reporter.log({ type: "phase", phase: "open-synced", message: `Opening synchronized conversation ${syncSessionId}.` });
-    // A copy already here (ended earlier, so detached) is attached again in its own file, which brings in the
-    // server's copy; /sync open would write a second file for the same id and leave it archived.
+    // A copy already here (a closed conversation) opens in its own file, like any closed one; /sync open would
+    // write a second file for the same id and leave it closed.
     if ((await sup.allSessions()).some(session => session.id === syncSessionId)) {
-      const closed = loadClosed();
-      if (closed.delete(syncSessionId)) saveClosed(closed);
-      const { attached, syncError } = await attachSynced(sup, [syncSessionId]);
-      if (attached.length) return { sessionId: syncSessionId };
-      const operation = reporter.finish({ status: "error", httpStatus: 409, message: syncError || "The conversation could not be opened." });
+      const { syncError } = await restoreSession(sup, hub, syncSessionId);
+      if (!syncError) return { sessionId: syncSessionId };
+      const operation = reporter.finish({ status: "error", httpStatus: 409, message: syncError });
       return { error: err(c, 409, "sync_open_failed", { message: syncError, operation }) };
     }
     const { id: createdId } = await sup.createSession({ cwd });

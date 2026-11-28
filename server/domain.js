@@ -146,7 +146,7 @@ export async function projectState(project, sup) {
 
   const closed = loadClosed();
   const discovered = await discoverProjectSessions(contexts, bindings, closed, sup, project.id);
-  const { all, sessions, ended, updatedAt } = sessionTree(discovered, closed, sup, pathToContext);
+  const { all, sessions, closed: closedList, updatedAt } = sessionTree(discovered, closed, sup, pathToContext);
 
   const contextSessions = context => all
     .filter(session => pathKey(session.cwd) === pathKey(context.path))
@@ -178,7 +178,7 @@ export async function projectState(project, sup) {
     worktrees,
     workspaceStatus,
     sessions,
-    ended,
+    closed: closedList,
     updated: updatedAt ? rel(updatedAt) : "—",
     updatedAt,
     hooks: publicHooks(cfg, project),
@@ -186,7 +186,11 @@ export async function projectState(project, sup) {
   };
 }
 
-/** Visible session trees (fork lineage), ended roots and last activity for discovered sessions. */
+// The closed list is cut here. A conversation past it that the sync server has is still reachable: the synced
+// lists show it (routes/projects.js synced-sessions, remote-workspaces.js projectSynced).
+const CLOSED_SHOWN = 20;
+
+/** Visible session trees (fork lineage), closed roots and last activity for discovered sessions. */
 function sessionTree(found, closed, sup, pathToContext = {}) {
   // Like chats: an unprompted, unnamed session nothing has open is hidden, not deleted.
   const discovered = found.map(s => s.closed || hasPrompt(s) || promptText(s.name) || sup.isStreaming(s.id) || sup.isOpen?.(s.id) ? s : { ...s, closed: true });
@@ -224,15 +228,15 @@ function sessionTree(found, closed, sup, pathToContext = {}) {
       children,
     };
   };
-  // Ended (archived) sessions for the sidebar's Ended list: tree roots only, newest first.
-  const ended = discovered
+  // Conversations that are not on the sidebar, for the Project menu: tree roots only, newest first.
+  const closedRoots = discovered
     .filter(s => closed.has(s.id) && !closed.has(s.parentSessionId) && (hasPrompt(s) || promptText(s.name)))
     .sort(byRecency)
-    .slice(0, 20)
+    .slice(0, CLOSED_SHOWN)
     .map(s => ({ id: s.id, title: titleOf(s), when: rel(s.modified), updatedAt: isoTime(s.modified) }));
   const sessions = roots.sort((a, b) => compareTimestamp(treeActivity(b), treeActivity(a))).map(toNode);
   const updatedAt = all.reduce((latest, session) => newerTimestamp(latest, isoTime(session.modified)), null);
-  return { all, sessions, ended, updatedAt };
+  return { all, sessions, closed: closedRoots, updatedAt };
 }
 
 /** Web's id for a pi project's own folder (no repository). */
@@ -257,7 +261,7 @@ export async function folderState(group, sup) {
       if (at && inside(at, group.path) && !inRepos(at)) found.push({ ...s, cwd: at, closed: closed.has(s.id) });
     }
   } catch { /* the folder may be new */ }
-  const { sessions, ended, updatedAt } = sessionTree(found, closed, sup, Object.fromEntries(found.map(s => [pathKey(s.cwd), context])));
+  const { sessions, closed: closedList, updatedAt } = sessionTree(found, closed, sup, Object.fromEntries(found.map(s => [pathKey(s.cwd), context])));
   return {
     id: folderId(group.name),
     name: group.name,
@@ -274,7 +278,7 @@ export async function folderState(group, sup) {
     worktrees: {},
     workspaceStatus: {},
     sessions,
-    ended,
+    closed: closedList,
     updated: updatedAt ? rel(updatedAt) : "\u2014",
     updatedAt,
     hooks: {},
@@ -285,7 +289,7 @@ export async function chatsState(sup) {
   return (await chatsListing(sup)).chats;
 }
 
-// Open chats for the sidebar, and ended ones (newest 20) for the Chats menu's Past chats.
+// Open chats for the sidebar, and closed ones (newest 20, as `ended`: the name older builds read) for the Chats menu.
 export async function chatsListing(sup) {
   const root = chatsDir();
   const cwds = [root];
