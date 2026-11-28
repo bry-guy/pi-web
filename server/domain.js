@@ -220,6 +220,7 @@ function sessionTree(found, closed, sup, pathToContext = {}) {
       draft: !hasPrompt(n) && !promptText(n.name) && !sup.isStreaming(n.id),
       when: rel(n.modified),
       updatedAt,
+      writtenAt: isoTime(n.written),
       activityAt,
       children,
     };
@@ -229,7 +230,7 @@ function sessionTree(found, closed, sup, pathToContext = {}) {
     .filter(s => closed.has(s.id) && !closed.has(s.parentSessionId) && (hasPrompt(s) || promptText(s.name)))
     .sort(byRecency)
     .slice(0, 20)
-    .map(s => ({ id: s.id, title: titleOf(s), when: rel(s.modified), updatedAt: isoTime(s.modified) }));
+    .map(s => ({ id: s.id, title: titleOf(s), when: rel(s.modified), updatedAt: isoTime(s.modified), writtenAt: isoTime(s.written) }));
   const sessions = roots.sort((a, b) => compareTimestamp(treeActivity(b), treeActivity(a))).map(toNode);
   const updatedAt = all.reduce((latest, session) => newerTimestamp(latest, isoTime(session.modified)), null);
   return { all, sessions, ended, updatedAt };
