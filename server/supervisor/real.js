@@ -16,7 +16,7 @@ import { GitHubClient } from "../github.js";
 import { findProjectByWorkspace } from "../lifecycle.js";
 import { gitCredentialEnvironment } from "../git-credentials.js";
 import { resolveProjectEnvironment } from "../project-environment.js";
-import { activePiSyncExtensionPath } from "../pi-sync.js";
+import { activePiSyncExtensionPath, copyFacts } from "../pi-sync.js";
 import { ExtensionUiHost } from "../extension-ui.js";
 import { writeLog } from "../logging.js";
 
@@ -240,7 +240,7 @@ export class RealSupervisor {
     if (stamp && cached?.stamp === stamp) return cached;
     let manager;
     try { manager = SessionManager.open(filePath); } catch { /* malformed/removed session */ }
-    const summary = { stamp, cwd: manager?.getCwd?.() || null, model: modelRefFromEntries(manager?.getBranch?.() || []) };
+    const summary = { stamp, cwd: manager?.getCwd?.() || null, model: modelRefFromEntries(manager?.getBranch?.() || []), sync: copyFacts(manager?.getEntries?.() || [], manager?.getLeafId?.()) };
     if (stamp) this.sessionSummaries.set(filePath, summary);
     else this.sessionSummaries.delete(filePath);
     return summary;
@@ -264,6 +264,13 @@ export class RealSupervisor {
   _boundCwd(id, fallback) {
     const bindings = loadBindings();
     return bindings[id]?.workspacePath || this.live.get(id)?.cwd || this.info.get(id)?.cwd || fallback || null;
+  }
+
+  /** What the copy of session `id` here holds, for comparing with the sync server (pi-sync.js copyFacts); null when its file is not known. */
+  syncCopy(id) {
+    const file = this.paths.get(id) || this.info.get(id)?.path;
+    if (!file) return null;
+    return (sdk?.SessionManager ? this._sessionSummary(sdk.SessionManager, file) : this.sessionSummaries.get(file))?.sync || null;
   }
 
   async _discover(id) {

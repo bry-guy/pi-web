@@ -485,14 +485,32 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(syncLabel(), null, "no sync label without a pi-sync status");
   store.state.extensionStatuses.s1 = { "pi-sync": "sync: up to date" };
   store.notify("state");
-  assert.equal(syncLabel().textContent, "Sync: up to date", "the pi-sync extension status is the label");
+  assert.equal(syncLabel().textContent, "synced", "the pi-sync extension status is the label, in the rows' words");
   assert.equal(syncLabel().closest("button, [data-act='sync-detail']"), null, "the sync state is plain text inside the header target");
   assert.ok(syncLabel().closest("[data-act='session-panel']"), "the sync state sits in the one session-menu target");
-  store.state.extensionStatuses.s1 = { "pi-sync": "sync: in use by Laptop" };
+  store.state.extensionStatuses.s1 = { "pi-sync": "sync: in use on Laptop" };
   store.notify("state");
-  assert.ok(root.querySelector("pi-header .sync-label.busy"));
+  assert.equal(root.querySelector("pi-header .sync-label.busy").textContent, "on Laptop");
+  store.state.extensionStatuses.s1 = { "pi-sync": "sync: offline" };
+  store.notify("state");
+  assert.equal(root.querySelector("pi-header .sync-label.error").textContent, "sync: offline", "other states read as pi-sync wrote them");
+  // Only "up to date" means synced: a passing or unknown state shows as written.
+  for (const text of ["sync: reconnected", "sync: on", "sync: upload pending", "sync: something new"]) {
+    store.state.extensionStatuses.s1 = { "pi-sync": text };
+    store.notify("state");
+    assert.equal(syncLabel().textContent, text);
+  }
+  store.state.extensionStatuses.s1 = { "pi-sync": "sync: up to date · 2 desynced" };
+  store.notify("state");
+  assert.equal(syncLabel().textContent, "synced · 2 desynced");
   delete store.state.extensionStatuses.s1;
+  // Without a status from a running session, the label is where the sync server's list puts the conversation.
+  store.findSession("s1").sync = "on laptop · 2h";
   store.notify("state");
+  assert.equal(syncLabel().textContent, "on laptop · 2h", "a page that never saw a status event still says where the conversation stands");
+  delete store.findSession("s1").sync;
+  store.notify("state");
+  assert.equal(syncLabel(), null);
   root.querySelector("[data-act='close-session-picker']").click();
   // The whole header row is the hit target; its own buttons keep their actions.
   for (const [selector, why] of [["pi-header header.bar", "the header row"], ["pi-header .bar-sub", "blank space on the Git line"], ["pi-header", "a tap left on <pi-header> by a re-render"]]) {
@@ -1229,12 +1247,82 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
   assert.equal(root.querySelector("pi-project-menu .session-picker-subtitle").textContent, "eco · code");
   const repoRows = [...root.querySelectorAll("pi-project-menu .history-entry-head")].map(row => row.textContent);
   assert.ok(repoRows.some(text => /Fix the bug/.test(text) && /main · 12345678 · 2m/.test(text)), "a repository session shows branch and short commit");
-  assert.ok(repoRows.some(text => /Remote repo work/.test(text) && /feat · fedcba98 · laptop · 3m/.test(text)));
+  assert.ok(repoRows.some(text => /Remote repo work/.test(text) && /feat · fedcba98 · on laptop · 3m/.test(text)));
   assert.ok(root.querySelector("pi-project-menu [data-act='open-synced'][data-sync-id='sy1'][data-repo='pp-eco-code']"), "it opens in the repository");
   assert.doesNotMatch(menuText(), /Plan the week|Remote project talk/);
   root.querySelector("pi-project-menu [data-act='close-project-menu']").click();
   assert.ok(store.state.projectMenu, "Back from a repository returns to its project");
   assert.match(menuText(), /Plan the week/);
+
+  // Every row says where it stands with sync: pi-sync's words while the session runs, else the sync server's list.
+  folder.sessions.push(
+    { id: "f2", title: "Away talk", when: "2m", contextId: "folder", sync: "on laptop · 2h", children: [] },
+    { id: "f3", title: "Private notes", when: "3m", contextId: "folder", sync: "not synced", children: [] },
+    { id: "f4", title: "Unknown standing", when: "4m", contextId: "folder", children: [] },
+  );
+  folder.sessions[0].sync = "synced";
+  // Ended here and continued on the laptop: that device's conversation, not a past session.
+  folder.moved = [{ id: "m1", title: "Moved talk", where: "on laptop", when: "3h", updatedAt: "2026-11-27T10:00:00.000Z" }];
+  folder.ended = [{ id: "e1", title: "Old talk", when: "1d" }];
+  repo.moved = [{ id: "m2", title: "Moved repo work", where: "on phone", when: "5h", updatedAt: "2026-11-27T08:00:00.000Z" }];
+  store.set({ projectMenu: { projectId: "group:eco", synced: [] } });
+  const rowOf = title => [...root.querySelectorAll("pi-project-menu .history-entry-head")].find(row => row.querySelector("strong").textContent === title);
+  const rowHint = title => rowOf(title)?.querySelector("small").textContent;
+  assert.equal(rowHint("Plan the week"), "1m · synced");
+  assert.equal(rowHint("Away talk"), "2m · on laptop · 2h");
+  assert.equal(rowHint("Private notes"), "3m · not synced");
+  assert.equal(rowHint("Unknown standing"), "4m", "no label when the sync server did not answer");
+  store.state.extensionStatuses.f1 = { "pi-sync": "sync: in use on phone" };
+  store.notify("state");
+  assert.equal(rowHint("Plan the week"), "1m · on phone", "what pi-sync says in the running session comes first");
+  delete store.state.extensionStatuses.f1;
+  assert.equal(rowHint("Moved talk"), "on laptop · 3h", "listed in Sessions with its device");
+  assert.equal(rowOf("Moved talk").dataset.act, "open-past");
+  assert.equal(rowHint("Old talk"), "Ended 1d");
+  assert.equal(rowOf("Moved repo work"), undefined, "a repository's moved conversation lists under its repository");
+  // Opening one restores it on the server (which shares it again and brings in the sync server's copy) before it is
+  // selected. This pi project lives only in the store, so state reloads are kept out while the selection changes.
+  const realFetch = globalThis.fetch;
+  const selected = { view: store.state.view, projectId: store.state.projectId, sessionId: store.state.sessionId, chatId: store.state.chatId };
+  const restores = [];
+  let restoreAnswer = { ok: true, restored: true, attached: ["m1"] };
+  globalThis.fetch = async (input, options) => {
+    if (String(input) === "/api/state") throw new Error("not in this check");
+    if (String(input) !== "/api/sessions/m1/restore") return realFetch(input, options);
+    restores.push([options?.method, store.state.sessionId]);
+    return new Response(JSON.stringify(restoreAnswer), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    rowOf("Moved talk").click();
+    for (let i = 0; i < 50 && store.state.sessionId !== "m1"; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(restores.length, 1);
+    assert.equal(restores[0][0], "POST");
+    assert.notEqual(restores[0][1], "m1", "restored before it is selected");
+    assert.deepEqual([store.state.projectId, store.state.sessionId, store.state.projectMenu], ["pp-eco", "m1", null]);
+
+    // A restore that could not share the conversation again does not open it for typing: the menu stays and says why.
+    store.set({ ...selected, projectMenu: { projectId: "group:eco", synced: [] } });
+    restoreAnswer = { ok: true, restored: true, attached: [], syncError: "This conversation is not syncing: pi-sync is down. Run /sync attach in it." };
+    rowOf("Moved talk").click();
+    for (let i = 0; i < 50 && !root.querySelector("pi-project-menu .session-picker-error"); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.match(root.querySelector("pi-project-menu .session-picker-error").textContent, /not syncing: pi-sync is down/);
+    assert.equal(store.state.sessionId, selected.sessionId, "the conversation is not selected");
+    assert.ok(store.state.projectMenu, "and the menu stays open");
+  } finally {
+    store.set(selected);
+    globalThis.fetch = realFetch;
+  }
+  // A device or a title is the sync server's text, not markup.
+  folder.moved = [{ id: "m3", title: "<img src=x onerror=alert(1)>", where: "on <b>lap</b>top", when: "1h", updatedAt: "2026-11-27T11:00:00.000Z" }];
+  store.set({ projectMenu: { projectId: "group:eco", synced: [{ sessionId: "sy9", title: "<i>remote</i>", repo: null, device: "<u>phone</u>", when: "2m" }] } });
+  assert.equal(rowHint("<img src=x onerror=alert(1)>"), "on <b>lap</b>top · 1h");
+  assert.equal(rowHint("<i>remote</i>"), "on <u>phone</u> · 2m");
+  assert.equal(root.querySelector("pi-project-menu .history-entry :is(img, b, i, u)"), null, "nothing in a row became an element");
+  store.set({ projectMenu: { projectId: "group:eco", repo: "pp-eco-code", synced: [] } });
+  assert.equal(rowHint("Moved repo work"), "on phone · 5h");
+  assert.deepEqual([rowOf("Moved repo work").dataset.act, rowOf("Moved repo work").dataset.pid], ["open-past", "pp-eco-code"]);
+  folder.sessions.length = 1;
+  delete folder.moved; delete folder.ended; delete repo.moved;
 
   // Role runs fold into one collapsed row below the user's own sessions, and stay open across re-renders once opened.
   store.set({ projectMenu: { projectId: "group:eco", synced: [
@@ -1291,6 +1379,7 @@ test("DOM gate: actions, focus, models, and keyboard paths work", async () => {
 
   store.set({ projectMenu: null, view: "chat", projectId: "pp-eco", sessionId: "f1", chatId: null });
   assert.equal(root.querySelector("pi-header .workspace-trigger").textContent.trim(), "eco", "a project session's header names only its project");
+  assert.equal(root.querySelector("pi-header .sync-label").textContent, "synced", "the header uses the row's words");
   assert.match(root.querySelector("pi-header [data-act='session-panel']").getAttribute("aria-label"), /^Session menu for /);
   // A project-folder session's header opens its session panel too: session actions, no Git, and a way to the Project menu.
   root.querySelector("pi-header [data-act='session-panel']").click();

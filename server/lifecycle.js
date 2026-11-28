@@ -101,15 +101,31 @@ export async function cleanupCandidate(sup, workspacePath) {
   return { projectId: found.project.id, branch: context.branch, primaryBranch };
 }
 
-// Undo an end: unarchive the session and its forks. A pi-sync detach stays in the
-// conversation, so a restored session is not shared again until attached.
+// Shares `ids` again with pi-sync's attach, which works in the session's own file: it uploads what this copy
+// added, or takes the server's copy when that is newer (turns only this copy has are kept as a separate
+// conversation). Returns { attached: ids, syncError }, or {} without a sync server.
+export async function attachSynced(sup, ids) {
+  if (!syncConfig().serverUrl) return {};
+  const attached = [];
+  for (const id of ids) {
+    try { await sup.command(id, "/sync attach"); attached.push(id); }
+    catch (error) { return { attached, syncError: `This conversation is not syncing: ${error.message || error}. Run /sync attach in it.` }; }
+  }
+  return { attached };
+}
+
+// Undo an end: unarchive the session and its forks, and share again those the end detached. A detached
+// conversation stays local, so its next message would fork from the server's copy. One that was never shared
+// carries no detach, and is left alone (no call to the sync server).
 export async function restoreSession(sup, hub, sessionId) {
   const closed = loadClosed();
   if (!closed.has(sessionId)) return { restored: false };
-  for (const id of [sessionId, ...(await descendantsOf(sup, sessionId))]) closed.delete(id);
+  const ids = [sessionId, ...(await descendantsOf(sup, sessionId))];
+  for (const id of ids) closed.delete(id);
   saveClosed(closed);
+  const sync = await attachSynced(sup, ids.filter(id => sup.syncCopy?.(id)?.detached));
   hub.emit(sessionId, "session_meta", {});
-  return { restored: true };
+  return { restored: true, ...sync };
 }
 
 function failure(code, extra = {}) {

@@ -1,6 +1,7 @@
 // Locates the installed pi-sync package. The app only loads its Pi extension
 // (which owns sync) and lists shared conversations; it has no sync layer of its own.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadConfig, syncConfig } from "./config.js";
@@ -81,6 +82,92 @@ export async function remoteConversationsForProject(project, isHere = () => fals
   return listItems((await client.list()).sessions.filter(item => item.project === project && !isHere(item.sessionId)), await loadPiSyncModule());
 }
 
+/** Every conversation on the sync server by id, or null when no sync server is set. Throws when it does not answer. */
+export async function syncedConversations({ timeoutMs = 1_500 } = {}) {
+  const base = syncConfig(loadConfig()).serverUrl;
+  if (!base) return null;
+  const client = await createSyncClient(base, { timeoutMs });
+  return new Map(listItems((await client.list()).sessions, await loadPiSyncModule()).map(item => [item.sessionId, item]));
+}
+
+// The sync server's list as this process last got it. /api/state must not wait for another server, so reading it
+// never waits: a reading older than 30 seconds starts a refresh for the next one.
+const KNOWN_TTL_MS = 30_000;
+let known = { at: -Infinity, items: null, self: null, loading: null };
+
+/** { items, self } (the conversations by id, this device's sync name), or null: no sync server, no answer, or one over a minute old. */
+export function knownConversations({ list = syncedConversations, device = ownDevice, now = Date.now() } = {}) {
+  if (now - known.at >= KNOWN_TTL_MS && !known.loading) {
+    known.loading = Promise.resolve().then(() => list({ timeoutMs: 5_000 }))
+      .then(async items => { known = { at: Date.now(), items, self: items ? await device() : null, loading: null }; })
+      // No answer: nothing is known until the next one, rather than the old list.
+      .catch(() => { known = { at: Date.now(), items: null, self: null, loading: null }; });
+  }
+  return known.items && now - known.at < 2 * KNOWN_TTL_MS ? { items: known.items, self: known.self } : null;
+}
+
+/** The name pi-sync gives this device (its extension's own rule), so a lease or a visit of ours is not "elsewhere". */
+async function ownDevice() {
+  const module = await loadPiSyncModule();
+  const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+  return module.loadConfig(module.configPaths(agentDir)).deviceLabel || module.defaultDeviceLabel(agentDir);
+}
+
+/**
+ * What a session file holds, for comparing with the sync server: its head entry, whether it was detached here
+ * (pi-sync's last `pi-sync-link` entry; a detached copy never syncs, whatever the server has), and has(entryId).
+ */
+export function copyFacts(entries, head) {
+  const link = entries.findLast(entry => entry.type === "custom" && entry.customType === "pi-sync-link");
+  const ids = `\n${entries.map(entry => entry.id).join("\n")}\n`;
+  return { head: head || entries.at(-1)?.id || null, detached: link?.data?.detached === true, has: id => !!id && ids.includes(`\n${id}\n`) };
+}
+
+/**
+ * Whether the sync server's `item` is past the copy here: another device holds it, or its head is an entry this
+ * copy (`copy`: copyFacts) does not have. { where: "on <device>", when } or null; null too for a copy not read.
+ */
+export function elsewhere(item, copy, self = null) {
+  const held = item.leaseHolder && item.leaseHolder !== self ? item.leaseHolder : null;
+  if (!held && (!copy?.head || item.headEntryId === copy.head || copy.has(item.headEntryId))) return null;
+  // The device named is the holder, else the newest other device the server has seen; never this one.
+  return { where: `on ${held || (item.devices || []).find(label => label !== self) || "another device"}`, when: rel(item.updatedAt) };
+}
+
+/**
+ * A row's words for the copy here against the server's list (`items`), or null for a copy not read. "synced" only
+ * when both end in the same entry; a copy with more is "not uploaded yet"; a detached one is "not synced".
+ */
+export function syncStanding(items, id, copy, self = null) {
+  if (!copy?.head) return null;
+  const item = items.get(id);
+  if (!item || copy.detached) return "not synced";
+  const away = elsewhere(item, copy, self);
+  if (away) return `${away.where} · ${away.when}`;
+  return item.headEntryId === copy.head ? "synced" : "not uploaded yet";
+}
+
+/**
+ * Gives each session of `projects` (as /api/state lists them) its sync words, and moves an ended copy that another
+ * device holds or has continued from `ended` to `moved`: it is that device's conversation now, not a past session.
+ */
+export function labelProjects(projects, { items, self }, copyOf) {
+  const label = nodes => {
+    for (const node of nodes || []) {
+      const words = syncStanding(items, node.id, copyOf(node.id), self);
+      if (words) node.sync = words;
+      label(node.children);
+    }
+  };
+  for (const project of projects) {
+    label(project.sessions);
+    if (!project.ended) continue;
+    const away = new Map(project.ended.map(s => [s.id, items.has(s.id) ? elsewhere(items.get(s.id), copyOf(s.id), self) : null]));
+    project.moved = project.ended.filter(s => away.get(s.id)).map(s => ({ id: s.id, title: s.title, ...away.get(s.id), updatedAt: items.get(s.id).updatedAt }));
+    project.ended = project.ended.filter(s => !away.get(s.id));
+  }
+}
+
 function listItems(sessions, module) {
   return sessions
     .sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
@@ -94,6 +181,9 @@ function listItems(sessions, module) {
       updatedAt: item.updatedAt || item.createdAt,
       when: rel(item.updatedAt || item.createdAt),
       device: item.devices?.[0]?.label || null,
+      // Every device the server has seen it on, newest first, and the entry its copy ends in.
+      devices: (item.devices || []).map(device => device.label),
+      headEntryId: item.headEntryId || null,
       leaseHolder: item.leaseHolder || null,
     }));
 }

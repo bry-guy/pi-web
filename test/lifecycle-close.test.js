@@ -67,6 +67,63 @@ test("restore undoes an end", async () => {
   assert.equal(fixture.closedSessions().has(mainSessionId), false);
 });
 
+// Sync is set up, the copies of `detached` carry pi-sync's detach marker, and the /sync commands given are recorded.
+async function withSync(detached, run) {
+  const previous = process.env.PI_SYNC_SERVER_URL;
+  // Nothing listens here: restoring must not need the sync server for a conversation that was never shared.
+  process.env.PI_SYNC_SERVER_URL = "http://127.0.0.1:9";
+  const commands = [];
+  fixture.supervisor.command = async (id, text) => { commands.push([id, text]); return { action: "handled" }; };
+  fixture.supervisor.syncCopy = id => ({ head: "e1", detached: detached.includes(id), has: () => true });
+  try { await run(commands); } finally {
+    if (previous === undefined) delete process.env.PI_SYNC_SERVER_URL;
+    else process.env.PI_SYNC_SERVER_URL = previous;
+  }
+}
+
+test("restoring a session its end detached attaches it again; one that was never shared stays local", async () => {
+  const { mainSessionId } = fixture;
+  const local = await fixture.checkoutSession();
+  await withSync([mainSessionId], async commands => {
+    await fixture.post(`/api/sessions/${mainSessionId}/close`);
+    await fixture.post(`/api/sessions/${local}/close`);
+    commands.length = 0;
+    assert.deepEqual(await (await fixture.post(`/api/sessions/${mainSessionId}/restore`)).json(), { ok: true, restored: true, attached: [mainSessionId] });
+    assert.deepEqual(commands, [[mainSessionId, "/sync attach"]], "without the attach its next message would stay local");
+    const started = Date.now();
+    assert.deepEqual(await (await fixture.post(`/api/sessions/${local}/restore`)).json(), { ok: true, restored: true, attached: [] });
+    assert.equal(commands.length, 1, "a conversation that was never shared is not shared by a restore");
+    assert.ok(Date.now() - started < 2_000, "and nothing waits for the sync server");
+  });
+});
+
+test("a restore whose attach fails says the conversation is not syncing", async () => {
+  const { mainSessionId } = fixture;
+  await withSync([mainSessionId], async () => {
+    await fixture.post(`/api/sessions/${mainSessionId}/close`);
+    fixture.supervisor.command = async () => { throw new Error("The sync server did not answer"); };
+    const answer = await (await fixture.post(`/api/sessions/${mainSessionId}/restore`)).json();
+    assert.equal(answer.restored, true);
+    assert.deepEqual(answer.attached, []);
+    assert.match(answer.syncError, /not syncing: The sync server did not answer/);
+  });
+});
+
+test("opening a synchronized conversation that ended here attaches its own copy instead of writing a second one", async () => {
+  const { mainSessionId } = fixture;
+  await withSync([mainSessionId], async commands => {
+    await fixture.post(`/api/sessions/${mainSessionId}/close`);
+    commands.length = 0;
+    const before = (await fixture.supervisor.allSessions()).length;
+    const response = await fixture.post(`/api/projects/${fixture.projectId}/sessions`, { mode: "synced", syncSessionId: mainSessionId });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).id, mainSessionId);
+    assert.deepEqual(commands, [[mainSessionId, "/sync attach"]], "not /sync open in a new session");
+    assert.equal((await fixture.supervisor.allSessions()).length, before, "no second session");
+    assert.equal(fixture.closedSessions().has(mainSessionId), false, "and it is listed again");
+  });
+});
+
 test("ending the last session on a clean, merged worktree offers to delete its branch", async () => {
   const clean = await fixture.createWorktreeSession("feat/done");
   const cleanup = (await (await fixture.post(`/api/sessions/${clean.sessionId}/close`)).json()).cleanup;
