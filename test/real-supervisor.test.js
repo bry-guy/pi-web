@@ -850,6 +850,19 @@ test("session summaries are reused until the session file changes", () => {
   assert.equal(opens, 2);
 });
 
+test("a session file's summary says what its copy holds for sync: its head, a detach, and each entry", () => {
+  const supervisor = new RealSupervisor(new EventHub());
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "piweb-sync-copy-")), "s.jsonl");
+  fs.writeFileSync(file, "{}\n");
+  const entries = [{ type: "message", id: "e1" }, { type: "custom", customType: "pi-sync-link", id: "e2", data: { detached: true } }];
+  const SessionManager = { open: () => ({ getCwd: () => "/w", getBranch: () => [], getEntries: () => entries, getLeafId: () => "e2" }) };
+  assert.equal(supervisor.syncCopy("s"), null, "an unknown session");
+  supervisor.paths.set("s", file);
+  supervisor._sessionSummary(SessionManager, file);
+  const copy = supervisor.syncCopy("s");
+  assert.deepEqual([copy.head, copy.detached, copy.has("e1"), copy.has("e9")], ["e2", true, true, false]);
+});
+
 test("a prime report is a custom message with no model turn, shown in the transcript and live", async () => {
   const events = [];
   const supervisor = new RealSupervisor({ emit: (id, type, data) => events.push({ type, data }) });
