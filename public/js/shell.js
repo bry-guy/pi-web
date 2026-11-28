@@ -398,14 +398,16 @@ export async function closeConversation(id, kind = "session") {
   }
 }
 
-// Undoes an end. The server shares the conversation again when the sync server has it, and says so when it could not.
+// Undoes an end. The server shares the conversation again when the end detached it; the answer says when it could not.
 export async function restoreConversation(id) {
   try {
     const result = await api.restore(id);
     if (result.syncError) store.setError(result.syncError);
     await refreshState();
+    return result;
   } catch (error) {
     store.setError(`Could not restore: ${error.detail || error.message || error.error || error}`);
+    return null;
   }
 }
 
@@ -854,14 +856,15 @@ class PiHeader extends HTMLElement {
 
 }
 
-// One wording for the header and the session rows. What pi-sync says in a running session comes first ("sync: up
-// to date" reads "synced", "sync: in use on X" reads "on X", anything else as it is); without that, `standing`:
-// where the sync server's list puts the copy here ("synced", "on <device> · <when>", "not synced").
+// One wording for the header and the session rows. What pi-sync says in a running session comes first: only
+// "sync: up to date" reads "synced" and "sync: in use on X" reads "on X"; every other text shows as written, so a
+// passing or unknown state never reads as synced. Without a live text, `standing`: the server's reading of the copy
+// against the sync server ("synced", "not uploaded yet", "on <device> · <when>", "not synced").
 export function syncSummary(extensionText = "", standing = "") {
   const full = String(extensionText || "");
   const detail = full.replace(/^sync:\s*/, "");
   const message = !detail ? String(standing || "")
-    : /^(up to date|on|reconnected)(?= · |$)/.test(detail) ? detail.replace(/^(up to date|on|reconnected)/, "synced")
+    : /^up to date(?= · |$)/.test(detail) ? `synced${detail.slice(10)}`
     : /^in use on /.test(detail) ? detail.slice(7) : full;
   if (!message) return null;
   const tone = /^on /.test(message) ? "busy" : /offline|missing|taken over|failed|error|unavailable|rejected/.test(detail) ? "error" : "";

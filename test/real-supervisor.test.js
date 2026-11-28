@@ -557,7 +557,7 @@ test("configured extensions load commands and session_start tools", () => {
     const extensionScript = `
       import { EventHub } from './server/events.js';
       import { RealSupervisor } from './server/supervisor/real.js';
-      const supervisor = new RealSupervisor(new EventHub());
+      const supervisor = new RealSupervisor({});
       const created = await supervisor.createSession({ cwd: process.env.TEST_CWD });
       const commands = await supervisor.commands(created.id);
       const tools = supervisor.live.get(created.id).session.getAllTools().map(tool => tool.name);
@@ -671,7 +671,7 @@ test("the registered real bash tool refreshes mappings after reattachment", () =
       import fs from "node:fs";
       import { EventHub } from "./server/events.js";
       import { RealSupervisor } from "./server/supervisor/real.js";
-      const supervisor = new RealSupervisor(new EventHub());
+      const supervisor = new RealSupervisor({});
       const created = await supervisor.createSession({ cwd: process.env.TEST_CWD });
       await supervisor.commands(created.id);
       const state = supervisor.live.get(created.id);
@@ -775,7 +775,7 @@ test("a failed Pi package install falls back to the core session runtime", () =>
     const fallbackScript = `
       import { EventHub } from './server/events.js';
       import { RealSupervisor } from './server/supervisor/real.js';
-      const supervisor = new RealSupervisor(new EventHub());
+      const supervisor = new RealSupervisor({});
       const created = await supervisor.createSession({ cwd: process.env.TEST_CWD });
       const commands = await supervisor.commands(created.id);
       console.log(JSON.stringify({ commands: commands.map(command => command.name), pi: await supervisor.piConfigurationState() }));
@@ -848,6 +848,19 @@ test("session summaries are reused until the session file changes", () => {
   fs.appendFileSync(file, "b\n");
   assert.equal(supervisor._sessionSummary(SessionManager, file).cwd, "/two");
   assert.equal(opens, 2);
+});
+
+test("a session file's summary says what its copy holds for sync: its head, a detach, and each entry", () => {
+  const supervisor = new RealSupervisor({});
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "piweb-sync-copy-")), "s.jsonl");
+  fs.writeFileSync(file, "{}\n");
+  const entries = [{ type: "message", id: "e1" }, { type: "custom", customType: "pi-sync-link", id: "e2", data: { detached: true } }];
+  const SessionManager = { open: () => ({ getCwd: () => "/w", getBranch: () => [], getEntries: () => entries, getLeafId: () => "e2" }) };
+  assert.equal(supervisor.syncCopy("s"), null, "an unknown session");
+  supervisor.paths.set("s", file);
+  supervisor._sessionSummary(SessionManager, file);
+  const copy = supervisor.syncCopy("s");
+  assert.deepEqual([copy.head, copy.detached, copy.has("e1"), copy.has("e9")], ["e2", true, true, false]);
 });
 
 test("a prime report is a custom message with no model turn, shown in the transcript and live", async () => {
